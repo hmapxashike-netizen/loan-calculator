@@ -4,6 +4,16 @@ from datetime import datetime, timedelta
 from io import BytesIO
 import numpy_financial as npf
 
+from accounting_core import (
+    Account,
+    AccountCategory,
+    EventAccountMapping,
+    MappingCategory,
+    MappingRegistry,
+    PostingSide,
+    SystemEventTag,
+)
+
 from loans import (
     add_months,
     days_in_month,
@@ -43,6 +53,23 @@ except Exception as e:
 
 # --- App state & global settings (UI) ---
 
+def _get_mapping_registry() -> MappingRegistry:
+    """Lazy-initialise an in-memory MappingRegistry stored in session state."""
+    if "accounting_mapping_registry" not in st.session_state:
+        st.session_state["accounting_mapping_registry"] = MappingRegistry()
+    return st.session_state["accounting_mapping_registry"]
+
+
+def _get_fx_rates() -> list[dict]:
+    """
+    Simple FX rate store in session state.
+    Each item: {"currency": str, "rate_to_base": float, "as_of": str}.
+    """
+    if "accounting_fx_rates" not in st.session_state:
+        st.session_state["accounting_fx_rates"] = []
+    return st.session_state["accounting_fx_rates"]
+
+
 def _get_consumer_schemes() -> list[dict]:
     """Consumer schemes from system config (managed in System configurations)."""
     return _get_system_config().get("consumer_schemes", [
@@ -65,6 +92,14 @@ def _get_global_loan_settings() -> dict:
 def _get_system_config() -> dict:
     """Penalty, waterfall, suspension, curing, compounding, default rates per loan type."""
     defaults = {
+        "base_currency": "USD",
+        "accepted_currencies": ["USD"],
+        "loan_default_currencies": {
+            "consumer_loan": "USD",
+            "term_loan": "USD",
+            "bullet_loan": "USD",
+            "customised_repayments": "USD",
+        },
         "penalty_interest_quotation": "Absolute Rate",
         "penalty_balance_basis": "Arrears",
         "payment_waterfall": "Standard",
@@ -149,10 +184,79 @@ def system_configurations_ui():
         "rate_basis": rate_basis,
     }
 
+    cfg = _get_system_config()
+
+    st.divider()
+    st.subheader("Currencies")
+    st.caption(
+        "Define the base currency for the system and which currencies are accepted. "
+        "Loan screens will default to these currencies but can be overridden per loan."
+    )
+    base_currency = st.text_input(
+        "Base currency (ISO code)",
+        value=str(cfg.get("base_currency", "USD")).upper(),
+        max_chars=8,
+        key="syscfg_base_currency",
+    ).strip().upper() or "USD"
+    accepted_default = cfg.get("accepted_currencies", [base_currency])
+    accepted_csv = st.text_input(
+        "Accepted currencies (comma-separated)",
+        value=",".join(accepted_default),
+        help="Example: USD,ZWL,ZAR. The base currency should be included.",
+        key="syscfg_accepted_currencies",
+    )
+    accepted_list = [
+        c.strip().upper() for c in accepted_csv.split(",") if c.strip()
+    ] or [base_currency]
+    if base_currency not in accepted_list:
+        accepted_list.insert(0, base_currency)
+
+    loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
+    consumer_default_ccy = st.selectbox(
+        "Default currency – Consumer loans",
+        accepted_list,
+        index=accepted_list.index(
+            loan_curr_cfg.get("consumer_loan", base_currency)
+        )
+        if loan_curr_cfg.get("consumer_loan", base_currency) in accepted_list
+        else 0,
+        key="syscfg_ccy_consumer",
+    )
+    term_default_ccy = st.selectbox(
+        "Default currency – Term loans",
+        accepted_list,
+        index=accepted_list.index(
+            loan_curr_cfg.get("term_loan", base_currency)
+        )
+        if loan_curr_cfg.get("term_loan", base_currency) in accepted_list
+        else 0,
+        key="syscfg_ccy_term",
+    )
+    bullet_default_ccy = st.selectbox(
+        "Default currency – Bullet loans",
+        accepted_list,
+        index=accepted_list.index(
+            loan_curr_cfg.get("bullet_loan", base_currency)
+        )
+        if loan_curr_cfg.get("bullet_loan", base_currency) in accepted_list
+        else 0,
+        key="syscfg_ccy_bullet",
+    )
+    cust_default_ccy = st.selectbox(
+        "Default currency – Customised repayments",
+        accepted_list,
+        index=accepted_list.index(
+            loan_curr_cfg.get("customised_repayments", base_currency)
+        )
+        if loan_curr_cfg.get("customised_repayments", base_currency)
+        in accepted_list
+        else 0,
+        key="syscfg_ccy_cust",
+    )
+
     st.divider()
     st.subheader("Penalty interest")
     st.caption("How penalty interest is quoted and computed.")
-    cfg = _get_system_config()
     penalty_quotation = st.radio(
         "Quotation of penalty interest rate",
         ["Absolute Rate", "Margin"],
@@ -293,6 +397,14 @@ def system_configurations_ui():
     )
 
     st.session_state["system_config"] = {
+        "base_currency": base_currency,
+        "accepted_currencies": accepted_list,
+        "loan_default_currencies": {
+            "consumer_loan": consumer_default_ccy,
+            "term_loan": term_default_ccy,
+            "bullet_loan": bullet_default_ccy,
+            "customised_repayments": cust_default_ccy,
+        },
         "penalty_interest_quotation": penalty_quotation,
         "penalty_balance_basis": penalty_balance,
         "penalty_rates": {
@@ -346,9 +458,26 @@ def _render_header():
 def consumer_loan_ui():
     schemes = _get_consumer_schemes()
     scheme_names = [s["name"] for s in schemes]
-    default_additional_rate_pct = _get_system_config().get("consumer_default_additional_rate_pct", 0.0)
+    cfg = _get_system_config()
+    default_additional_rate_pct = cfg.get("consumer_default_additional_rate_pct", 0.0)
 
     st.sidebar.header("Consumer Loan Parameters")
+    # Currency selection with system default + override
+    accepted_currencies = cfg.get(
+        "accepted_currencies", [cfg.get("base_currency", "USD")]
+    )
+    loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
+    default_ccy = loan_curr_cfg.get("consumer_loan", cfg.get("base_currency", "USD"))
+    if default_ccy not in accepted_currencies:
+        accepted_currencies = [default_ccy, *accepted_currencies]
+    currency = st.sidebar.selectbox(
+        "Currency",
+        accepted_currencies,
+        index=accepted_currencies.index(default_ccy)
+        if default_ccy in accepted_currencies
+        else 0,
+        key="cl_currency",
+    )
     st.caption("Schemes and default rates are managed in **System configurations**.")
     scheme_options = scheme_names + ["Other"]
     scheme = st.sidebar.selectbox("Loan Scheme", scheme_options, key="cl_scheme")
@@ -442,6 +571,7 @@ def consumer_loan_ui():
         glob.get("rate_basis", "Per month"), flat_rate, scheme=scheme,
         additional_monthly_rate=additional_buffer_rate,
     )
+    details["currency"] = currency
     total_facility = details["facility"]
     amount_required_display = details["principal"]
     total_monthly_rate = details["monthly_rate"]
@@ -527,7 +657,24 @@ def consumer_loan_ui():
 
 def term_loan_ui():
     glob = _get_global_loan_settings()
+    cfg = _get_system_config()
     st.sidebar.header("Term Loan Parameters")
+    # Currency selection with system default + override
+    accepted_currencies = cfg.get(
+        "accepted_currencies", [cfg.get("base_currency", "USD")]
+    )
+    loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
+    default_ccy = loan_curr_cfg.get("term_loan", cfg.get("base_currency", "USD"))
+    if default_ccy not in accepted_currencies:
+        accepted_currencies = [default_ccy, *accepted_currencies]
+    currency = st.sidebar.selectbox(
+        "Currency",
+        accepted_currencies,
+        index=accepted_currencies.index(default_ccy)
+        if default_ccy in accepted_currencies
+        else 0,
+        key="term_currency",
+    )
     principal_input_choice = st.sidebar.radio(
         "Principal input",
         ["Amount required (net)", "Total facility amount"],
@@ -555,7 +702,7 @@ def term_loan_ui():
     disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
 
     # Term loan: defaults from System configurations, user can override
-    dr = _get_system_config().get("default_rates", {}).get("term_loan", {})
+    dr = cfg.get("default_rates", {}).get("term_loan", {})
     rate_label = "Interest rate (% per annum)" if glob.get("rate_basis") == "Per annum" else "Interest rate (% per month)"
     rate_pct = st.sidebar.number_input(rate_label, 0.0, 100.0, float(dr.get("interest_pct", 7.0)), step=0.1, key="term_rate")
     drawdown_fee_pct = st.sidebar.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="term_drawdown") / 100.0
@@ -627,6 +774,7 @@ def term_loan_ui():
         input_total_facility, grace_type, moratorium_months, first_repayment_date, use_anniversary,
         glob.get("rate_basis", "Per month"), flat_rate,
     )
+    details["currency"] = currency
     installment = details["installment"]
     end_date = details["end_date"]
 
@@ -687,7 +835,24 @@ def term_loan_ui():
 
 def bullet_loan_ui():
     glob = _get_global_loan_settings()
+    cfg = _get_system_config()
     st.sidebar.header("Bullet Loan Parameters")
+    # Currency selection with system default + override
+    accepted_currencies = cfg.get(
+        "accepted_currencies", [cfg.get("base_currency", "USD")]
+    )
+    loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
+    default_ccy = loan_curr_cfg.get("bullet_loan", cfg.get("base_currency", "USD"))
+    if default_ccy not in accepted_currencies:
+        accepted_currencies = [default_ccy, *accepted_currencies]
+    currency = st.sidebar.selectbox(
+        "Currency",
+        accepted_currencies,
+        index=accepted_currencies.index(default_ccy)
+        if default_ccy in accepted_currencies
+        else 0,
+        key="bullet_currency",
+    )
     principal_input_choice = st.sidebar.radio(
         "Principal input",
         ["Amount required (net)", "Total facility amount"],
@@ -719,7 +884,7 @@ def bullet_loan_ui():
     disbursement_input = st.sidebar.date_input("Disbursement Date", datetime.today().date(), key="bullet_disb")
     disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
 
-    dr = _get_system_config().get("default_rates", {}).get("bullet_loan", {})
+    dr = cfg.get("default_rates", {}).get("bullet_loan", {})
     rate_label = "Interest rate (% per annum)" if glob.get("rate_basis") == "Per annum" else "Interest rate (% per month)"
     rate_pct = st.sidebar.number_input(rate_label, min_value=0.0, max_value=100.0, value=float(dr.get("interest_pct", 7.0)), step=0.1, key="bullet_rate")
     drawdown_fee_pct = st.sidebar.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="bullet_drawdown") / 100.0
@@ -758,6 +923,7 @@ def bullet_loan_ui():
         input_total_facility, bullet_type, first_repayment_date, use_anniversary,
         glob.get("rate_basis", "Per month"), flat_rate,
     )
+    details["currency"] = currency
 
     # Display
     st.markdown(
@@ -809,9 +975,28 @@ def bullet_loan_ui():
 
 def customised_repayments_ui():
     glob = _get_global_loan_settings()
+    cfg = _get_system_config()
     flat_rate = glob.get("interest_method") == "Flat rate"
 
     st.sidebar.header("Customised Repayments Parameters")
+    # Currency selection with system default + override
+    accepted_currencies = cfg.get(
+        "accepted_currencies", [cfg.get("base_currency", "USD")]
+    )
+    loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
+    default_ccy = loan_curr_cfg.get(
+        "customised_repayments", cfg.get("base_currency", "USD")
+    )
+    if default_ccy not in accepted_currencies:
+        accepted_currencies = [default_ccy, *accepted_currencies]
+    currency = st.sidebar.selectbox(
+        "Currency",
+        accepted_currencies,
+        index=accepted_currencies.index(default_ccy)
+        if default_ccy in accepted_currencies
+        else 0,
+        key="cust_currency",
+    )
     principal_input_choice = st.sidebar.radio(
         "Principal input",
         ["Amount required (net)", "Total facility amount"],
@@ -851,7 +1036,7 @@ def customised_repayments_ui():
     first_rep_display_calc = (first_rep_calc.date() if first_rep_calc else default_first_rep)
     st.sidebar.date_input("First repayment date (from table)", first_rep_display_calc, key="cust_first_rep", disabled=True, help="From first row with non-zero payment.")
     first_repayment_date = datetime.combine(first_rep_display_calc, datetime.min.time())
-    dr = _get_system_config().get("default_rates", {}).get("customised_repayments", {})
+    dr = cfg.get("default_rates", {}).get("customised_repayments", {})
     rate_label = "Interest rate (% per annum)" if glob.get("rate_basis") == "Per annum" else "Interest rate (% per month)"
     rate_pct = st.sidebar.number_input(rate_label, 0.0, 100.0, float(dr.get("interest_pct", 7.0)), step=0.1, key="cust_rate")
     drawdown_fee_pct = st.sidebar.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="cust_drawdown") / 100.0
@@ -947,6 +1132,7 @@ def customised_repayments_ui():
                     "drawdown_fee": float(drawdown_fee_pct),
                     "arrangement_fee": float(arrangement_fee_pct),
                     "start_date": start_date.isoformat(),
+                    "currency": currency,
                     "schedule": df.to_dict(orient="records"),
                 })
 
@@ -1141,6 +1327,23 @@ def capture_loan_ui():
                 cfg = _get_system_config()
                 schemes = _get_consumer_schemes()
                 scheme_names = [s["name"] for s in schemes]
+                accepted_currencies = cfg.get(
+                    "accepted_currencies", [cfg.get("base_currency", "USD")]
+                )
+                loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
+                default_ccy = loan_curr_cfg.get(
+                    "consumer_loan", cfg.get("base_currency", "USD")
+                )
+                if default_ccy not in accepted_currencies:
+                    accepted_currencies = [default_ccy, *accepted_currencies]
+                currency = st.selectbox(
+                    "Currency",
+                    accepted_currencies,
+                    index=accepted_currencies.index(default_ccy)
+                    if default_ccy in accepted_currencies
+                    else 0,
+                    key="cap_cl_currency",
+                )
                 scheme = st.selectbox("Scheme", scheme_names + ["Other"], key="cap_cl_scheme")
                 principal_input = st.radio("Principal input", ["Amount required (net)", "Total facility amount"], key="cap_cl_principal_input")
                 input_tf = principal_input == "Total facility amount"
@@ -1161,6 +1364,7 @@ def capture_loan_ui():
                     loan_required, loan_term, start_date, base_rate, admin_fee, input_tf,
                     glob.get("rate_basis", "Per month"), flat_rate, scheme=scheme,
                 )
+                details["currency"] = currency
                 details["penalty_rate_pct"] = penalty_pct
                 details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
                 st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
@@ -1173,6 +1377,23 @@ def capture_loan_ui():
             elif ltype == "Term Loan":
                 cfg = _get_system_config()
                 dr = cfg.get("default_rates", {}).get("term_loan", {})
+                accepted_currencies = cfg.get(
+                    "accepted_currencies", [cfg.get("base_currency", "USD")]
+                )
+                loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
+                default_ccy = loan_curr_cfg.get(
+                    "term_loan", cfg.get("base_currency", "USD")
+                )
+                if default_ccy not in accepted_currencies:
+                    accepted_currencies = [default_ccy, *accepted_currencies]
+                currency = st.selectbox(
+                    "Currency",
+                    accepted_currencies,
+                    index=accepted_currencies.index(default_ccy)
+                    if default_ccy in accepted_currencies
+                    else 0,
+                    key="cap_term_currency",
+                )
                 principal_input = st.radio("Principal input", ["Amount required (net)", "Total facility amount"], key="cap_term_principal_input")
                 input_tf = principal_input == "Total facility amount"
                 loan_required = st.number_input("Loan amount", min_value=0.0, value=1000.0, step=100.0, format="%.2f", key="cap_term_principal")
@@ -1200,6 +1421,7 @@ def capture_loan_ui():
                         input_tf, grace_type, moratorium_months, first_rep, use_anniversary,
                         glob.get("rate_basis", "Per month"), flat_rate,
                     )
+                    details["currency"] = currency
                     details["penalty_rate_pct"] = penalty_pct
                     details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
                     st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
@@ -1212,6 +1434,23 @@ def capture_loan_ui():
             elif ltype == "Bullet Loan":
                 cfg = _get_system_config()
                 dr = cfg.get("default_rates", {}).get("bullet_loan", {})
+                accepted_currencies = cfg.get(
+                    "accepted_currencies", [cfg.get("base_currency", "USD")]
+                )
+                loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
+                default_ccy = loan_curr_cfg.get(
+                    "bullet_loan", cfg.get("base_currency", "USD")
+                )
+                if default_ccy not in accepted_currencies:
+                    accepted_currencies = [default_ccy, *accepted_currencies]
+                currency = st.selectbox(
+                    "Currency",
+                    accepted_currencies,
+                    index=accepted_currencies.index(default_ccy)
+                    if default_ccy in accepted_currencies
+                    else 0,
+                    key="cap_bullet_currency",
+                )
                 bullet_type = st.radio("Bullet type", ["Straight bullet (no interim payments)", "Bullet with interest payments"], key="cap_bullet_type")
                 principal_input = st.radio("Principal input", ["Amount required (net)", "Total facility amount"], key="cap_bullet_principal_input")
                 input_tf = principal_input == "Total facility amount"
@@ -1236,6 +1475,7 @@ def capture_loan_ui():
                             loan_required, loan_term, disbursement_date, rate_pct, drawdown_pct, arrangement_pct,
                             input_tf, bullet_type, first_rep, use_anniversary, glob.get("rate_basis", "Per month"), flat_rate,
                         )
+                        details["currency"] = currency
                         details["penalty_rate_pct"] = penalty_pct
                         details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
                         st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
@@ -1249,6 +1489,7 @@ def capture_loan_ui():
                         loan_required, loan_term, disbursement_date, rate_pct, drawdown_pct, arrangement_pct,
                         input_tf, bullet_type, None, True, glob.get("rate_basis", "Per month"), flat_rate,
                     )
+                    details["currency"] = currency
                     details["penalty_rate_pct"] = penalty_pct
                     details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
                     st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
@@ -1262,6 +1503,23 @@ def capture_loan_ui():
                 # Customised Repayments
                 cfg = _get_system_config()
                 dr = cfg.get("default_rates", {}).get("customised_repayments", {})
+                accepted_currencies = cfg.get(
+                    "accepted_currencies", [cfg.get("base_currency", "USD")]
+                )
+                loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
+                default_ccy = loan_curr_cfg.get(
+                    "customised_repayments", cfg.get("base_currency", "USD")
+                )
+                if default_ccy not in accepted_currencies:
+                    accepted_currencies = [default_ccy, *accepted_currencies]
+                currency = st.selectbox(
+                    "Currency",
+                    accepted_currencies,
+                    index=accepted_currencies.index(default_ccy)
+                    if default_ccy in accepted_currencies
+                    else 0,
+                    key="cap_cust_currency",
+                )
                 principal_input = st.radio("Principal input", ["Amount required (net)", "Total facility amount"], key="cap_cust_principal_input")
                 input_tf = principal_input == "Total facility amount"
                 loan_required = st.number_input("Loan amount", min_value=0.0, value=1000.0, step=100.0, format="%.2f", key="cap_cust_principal")
@@ -1364,6 +1622,7 @@ def capture_loan_ui():
                         "start_date": start_date, "end_date": end_date_from_table,
                         "first_repayment_date": first_rep_for_save, "payment_timing": "anniversary" if use_anniversary else "last_day_of_month",
                         "penalty_rate_pct": penalty_pct, "penalty_quotation": cfg.get("penalty_interest_quotation", "Absolute Rate"),
+                        "currency": currency,
                     }
                     if st.button("Use this schedule", key="cap_cust_use"):
                         st.session_state["capture_loan_details"] = details
@@ -1737,6 +1996,264 @@ def teller_ui():
                 st.exception(e)
 
 
+def accounting_ui():
+    """
+    Accounting configurations: Chart of Accounts, Event mappings, FX rates.
+    Backed by in-memory state (resets when app restarts).
+    """
+    registry = _get_mapping_registry()
+
+    st.markdown(
+        "<div style='background-color: #0F766E; color: white; padding: 8px 12px; "
+        "font-weight: bold; font-size: 1.1rem;'>Accounting</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    tab_coa, tab_mappings, tab_fx = st.tabs(
+        ["Chart of Accounts", "Event mappings", "FX rates"]
+    )
+
+    # Chart of Accounts
+    with tab_coa:
+        st.subheader("Chart of Accounts")
+        st.caption(
+            "Maintain accounting accounts used for postings. "
+            "Coding rules are enforced by the engine."
+        )
+
+        accounts_list = [
+            {
+                "Code": acc.id,
+                "Name": acc.name,
+                "Category": acc.category.value,
+                "Parent": acc.parent_id or "",
+                "Branch": acc.branch or "",
+                "Product line": acc.product_line or "",
+                "Active": "Yes" if acc.is_active else "No",
+            }
+            for acc in registry.accounts.values()
+        ]
+        if accounts_list:
+            st.dataframe(
+                pd.DataFrame(accounts_list).sort_values("Code"),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No accounts defined yet. Add the first account below.")
+
+        st.divider()
+        st.subheader("Add / update account")
+
+        coa_col1, coa_col2 = st.columns(2)
+        with coa_col1:
+            new_code = st.text_input(
+                "Account code",
+                help="7 characters, e.g. A100000 for a parent asset account.",
+                key="acct_code",
+            ).strip()
+            new_name = st.text_input("Account name", key="acct_name").strip()
+        with coa_col2:
+            category_label_to_enum = {
+                c.value.title().replace("_", " "): c for c in AccountCategory
+            }
+            selected_cat_label = st.selectbox(
+                "Category",
+                list(category_label_to_enum.keys()),
+                key="acct_category",
+            )
+            selected_category = category_label_to_enum[selected_cat_label]
+
+            parent_options = ["(None – parent account)"] + sorted(
+                [acc.id for acc in registry.accounts.values() if acc.parent_id is None]
+            )
+            parent_choice = st.selectbox(
+                "Parent account",
+                parent_options,
+                key="acct_parent",
+            )
+            parent_id = None if parent_choice.startswith("(") else parent_choice
+
+        coa_col3, coa_col4 = st.columns(2)
+        with coa_col3:
+            branch = (
+                st.text_input("Branch (optional)", key="acct_branch").strip() or None
+            )
+        with coa_col4:
+            product_line = (
+                st.text_input("Product line (optional)", key="acct_product").strip()
+                or None
+            )
+
+        if st.button("Save account", type="primary", key="acct_save_btn"):
+            if not new_code or not new_name:
+                st.error("Please provide both account code and name.")
+            else:
+                try:
+                    account = Account(
+                        id=new_code,
+                        name=new_name,
+                        category=selected_category,
+                        parent_id=parent_id,
+                        branch=branch,
+                        product_line=product_line,
+                    )
+                    registry.add_or_update_account(account)
+                    st.success(f"Account {new_code} saved.")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Could not save account: {e}")
+
+    # Event mappings
+    with tab_mappings:
+        st.subheader("Event mappings")
+        st.caption(
+            "Map loan lifecycle events to debit/credit accounts. "
+            "These mappings are used by the posting engine."
+        )
+
+        if not registry.accounts:
+            st.warning("Define at least one account in the Chart of Accounts tab first.")
+        else:
+            mapping_rows = [
+                {
+                    "Event": m.event_tag.value,
+                    "Side": m.side.value,
+                    "Role": m.mapping_category.value,
+                    "Account": m.account_id,
+                }
+                for m in registry.mappings
+            ]
+            if mapping_rows:
+                st.dataframe(
+                    pd.DataFrame(mapping_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.info("No event mappings configured yet. Add one below.")
+
+            st.divider()
+            st.subheader("Add / update mapping")
+
+            col_ev1, col_ev2 = st.columns(2)
+            with col_ev1:
+                event_label_to_enum = {
+                    t.value.replace("_", " ").title(): t for t in SystemEventTag
+                }
+                selected_event_label = st.selectbox(
+                    "System event",
+                    list(event_label_to_enum.keys()),
+                    key="map_event",
+                )
+                selected_event = event_label_to_enum[selected_event_label]
+
+                side_label_to_enum = {
+                    "Debit": PostingSide.DEBIT,
+                    "Credit": PostingSide.CREDIT,
+                }
+                selected_side_label = st.radio(
+                    "Posting side",
+                    list(side_label_to_enum.keys()),
+                    key="map_side",
+                )
+                selected_side = side_label_to_enum[selected_side_label]
+
+            with col_ev2:
+                role_label_to_enum = {
+                    r.value.replace("_", " ").title(): r for r in MappingCategory
+                }
+                selected_role_label = st.selectbox(
+                    "Logical role",
+                    list(role_label_to_enum.keys()),
+                    key="map_role",
+                )
+                selected_role = role_label_to_enum[selected_role_label]
+
+                account_ids = sorted(registry.accounts.keys())
+                selected_account_id = st.selectbox(
+                    "Account code",
+                    account_ids,
+                    key="map_account",
+                )
+
+            if st.button("Save mapping", type="primary", key="map_save_btn"):
+                try:
+                    mapping = EventAccountMapping(
+                        event_tag=selected_event,
+                        side=selected_side,
+                        mapping_category=selected_role,
+                        account_id=selected_account_id,
+                    )
+                    registry.add_or_update_mapping(mapping, user_id="ui_admin")
+                    st.success("Mapping saved.")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"Could not save mapping: {e}")
+
+    # FX rates
+    with tab_fx:
+        st.subheader("FX rates")
+        st.caption(
+            "Maintain simple FX rates to a base currency (e.g. USD). "
+            "These are stored in memory only and reset when the app restarts."
+        )
+
+        fx_rates = _get_fx_rates()
+        if fx_rates:
+            st.dataframe(
+                pd.DataFrame(fx_rates),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No FX rates configured yet.")
+
+        st.divider()
+        fx_c1, fx_c2, fx_c3 = st.columns(3)
+        with fx_c1:
+            cur = st.text_input(
+                "Currency code", placeholder="e.g. ZWL", key="fx_currency"
+            ).upper()
+        with fx_c2:
+            rate = st.number_input(
+                "Rate to base",
+                min_value=0.0,
+                value=0.0,
+                step=0.0001,
+                format="%.4f",
+                key="fx_rate",
+            )
+        with fx_c3:
+            as_of = st.date_input(
+                "As of date",
+                value=datetime.today().date(),
+                key="fx_as_of",
+            )
+
+        if st.button("Add / update FX rate", type="primary", key="fx_save_btn"):
+            if not cur:
+                st.error("Please enter a currency code.")
+            elif rate <= 0:
+                st.error("Rate must be greater than zero.")
+            else:
+                existing = next((r for r in fx_rates if r["currency"] == cur), None)
+                if existing:
+                    existing["rate_to_base"] = float(rate)
+                    existing["as_of"] = as_of.isoformat()
+                else:
+                    fx_rates.append(
+                        {
+                            "currency": cur,
+                            "rate_to_base": float(rate),
+                            "as_of": as_of.isoformat(),
+                        }
+                    )
+                st.session_state["accounting_fx_rates"] = fx_rates
+                st.success(f"FX rate for {cur} saved.")
+
+
 def main():
     _render_header()
     _get_global_loan_settings()  # ensure defaults exist
@@ -1744,7 +2261,7 @@ def main():
     st.sidebar.header("Navigation")
     nav = st.sidebar.radio(
         "Section",
-        ["Customers", "Loan management", "Teller", "System configurations"],
+        ["Customers", "Loan management", "Teller", "Accounting", "System configurations"],
     )
     st.sidebar.divider()
 
@@ -1774,7 +2291,9 @@ def main():
                 bullet_loan_ui()
             else:
                 customised_repayments_ui()
-    else:
+    elif nav == "Accounting":
+        accounting_ui()
+    elif nav == "System configurations":
         system_configurations_ui()
 
 
