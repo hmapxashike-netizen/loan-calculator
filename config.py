@@ -8,11 +8,11 @@ from urllib.parse import quote_plus
 
 # 1. Database Credentials
 # Using the credentials from your recent successful psql sessions.
-DB_USER = "postgres"
-DB_PASSWORD = "M1k@y1@2017"  
-DB_HOST = "localhost"
-DB_PORT = "5432"
-DB_NAME = "lms_db"
+DB_USER = os.environ.get("LMS_DB_USER", "postgres")
+DB_PASSWORD = os.environ.get("LMS_DB_PASSWORD", "")  # no real password in code
+DB_HOST = os.environ.get("LMS_DB_HOST", "localhost")
+DB_PORT = os.environ.get("LMS_DB_PORT", "5432")
+DB_NAME = os.environ.get("LMS_DB_NAME", "lms_db")
 
 def get_database_url() -> str:
     """Build PostgreSQL connection URL for lms_db."""

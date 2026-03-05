@@ -5,24 +5,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import psycopg2
-import psycopg2.extras
+from psycopg2.extras import RealDictCursor
 
-from config import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
+from config import get_database_url
 
 
-def get_db_connection():
-    """
-    Create a new psycopg2 connection using settings from config.py.
-    In production, override these via environment variables.
-    """
-    return psycopg2.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT,
-        cursor_factory=psycopg2.extras.DictCursor,
-    )
+def get_conn():
+    """Create a new psycopg2 connection using config.get_database_url()."""
+    return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
 
 
 @dataclass
@@ -59,12 +49,21 @@ class UserRepository:
 
     def get_by_email(self, email: str) -> Optional[User]:
         with self.conn.cursor() as cur:
-            cur.execute(
-                "SELECT * FROM users WHERE email = %s",
-                (email,),
-            )
+            cur.execute("SELECT * FROM users WHERE email = %s", (email,))
             row = cur.fetchone()
         return self._row_to_user(row) if row else None
+
+    def list_users(self) -> list[User]:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM users
+                ORDER BY created_at DESC
+                """
+            )
+            rows = cur.fetchall()
+        return [self._row_to_user(row) for row in rows]
 
     def create_user(self, email: str, password_hash: str, full_name: str, role: str) -> User:
         with self.conn.cursor() as cur:
@@ -80,10 +79,53 @@ class UserRepository:
         self.conn.commit()
         return self._row_to_user(row)
 
-    def increment_failed_attempts(self, user_id: str, *, lockout_minutes: Optional[int]) -> None:
+    def update_role(self, user_id: str, new_role: str) -> None:
         with self.conn.cursor() as cur:
-            if lockout_minutes:
-                locked_until = datetime.now(timezone.utc) + timedelta(minutes=lockout_minutes)
+            cur.execute(
+                "UPDATE users SET role = %s WHERE id = %s",
+                (new_role, user_id),
+            )
+        self.conn.commit()
+
+    def set_active(self, user_id: str, is_active: bool) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET is_active = %s WHERE id = %s",
+                (is_active, user_id),
+            )
+        self.conn.commit()
+
+    def unlock_account(self, user_id: str) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET failed_login_attempts = 0,
+                    locked_until = NULL
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+        self.conn.commit()
+
+    def update_password(self, user_id: str, password_hash: str) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET password_hash = %s,
+                    failed_login_attempts = 0,
+                    locked_until = NULL
+                WHERE id = %s
+                """,
+                (password_hash, user_id),
+            )
+        self.conn.commit()
+
+    def increment_failed_attempts(self, user_id: str, *, lockout: bool) -> None:
+        with self.conn.cursor() as cur:
+            if lockout:
+                locked_until = datetime.now(timezone.utc) + timedelta(minutes=15)
                 cur.execute(
                     """
                     UPDATE users
@@ -143,4 +185,18 @@ class SecurityAuditLogRepository:
                 (user_id, email_used, success, ip_address, user_agent),
             )
         self.conn.commit()
+
+    def list_recent(self, limit: int = 100) -> list[dict]:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM security_audit_log
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+        return list(rows)
 

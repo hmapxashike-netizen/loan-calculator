@@ -5,8 +5,6 @@ from typing import Callable, Optional, Dict, Any
 
 import streamlit as st
 
-from auth_dal import User
-
 
 def get_current_user() -> Optional[Dict[str, Any]]:
     """
@@ -16,18 +14,25 @@ def get_current_user() -> Optional[Dict[str, Any]]:
     return st.session_state.get("current_user")
 
 
-def set_current_user(user: User) -> None:
+def set_current_user(user: Any) -> None:
     """
-    Store only non-sensitive fields in session_state.
+    Store only non-sensitive user fields in session_state.
+    Accepts a DAL User object or a compatible mapping.
     """
-    st.session_state["current_user"] = {
-        "id": user.id,
-        "email": user.email,
-        "full_name": user.full_name,
-        "role": user.role,
-        "is_active": user.is_active,
-        "last_login": user.last_login.isoformat() if user.last_login else None,
+    data = {
+        "id": getattr(user, "id", None) if not isinstance(user, dict) else user.get("id"),
+        "email": getattr(user, "email", None) if not isinstance(user, dict) else user.get("email"),
+        "full_name": getattr(user, "full_name", None) if not isinstance(user, dict) else user.get("full_name"),
+        "role": getattr(user, "role", None) if not isinstance(user, dict) else user.get("role"),
+        "is_active": getattr(user, "is_active", None) if not isinstance(user, dict) else user.get("is_active"),
     }
+    last_login = getattr(user, "last_login", None) if not isinstance(user, dict) else user.get("last_login")
+    if last_login is not None:
+        try:
+            data["last_login"] = last_login.isoformat()  # datetime
+        except AttributeError:
+            data["last_login"] = str(last_login)
+    st.session_state["current_user"] = data
 
 
 def clear_current_user() -> None:
@@ -36,21 +41,23 @@ def clear_current_user() -> None:
 
 def require_login() -> Dict[str, Any]:
     """
-    Gate helper for main.py. If not logged in, stop the script.
-    Returns the current_user dict if authenticated.
+    Gate helper for main.py and pages. If not logged in, stop the script.
+    Returns current_user dict when authenticated.
     """
     user = get_current_user()
     if user is None:
+        st.warning("You must be logged in to access this page.")
         st.stop()
     return user
 
 
 def require_role(*allowed_roles: str) -> Callable:
     """
-    Decorator to protect individual page functions.
+    Decorator to protect Streamlit page functions by role.
+
     Example:
         @require_role("ADMIN", "LOAN_OFFICER")
-        def officer_dashboard():
+        def officer_page():
             ...
     """
 

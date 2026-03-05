@@ -157,6 +157,83 @@ def get_amortization_schedule(
 
 # --- Term loan (Actual/360) ---
 
+
+def _solve_level_payment_actual_360(
+    opening_balance: float,
+    annual_rate: float,
+    periods_days: list[int],
+    *,
+    flat_rate: bool,
+    principal_for_flat: float,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+) -> float:
+    """
+    Solve for a constant instalment that amortises opening_balance to ~0
+    using Actual/360 and the provided day-counts per period.
+
+    This preserves the existing interest formula:
+        interest_i = basis_i * annual_rate * (days_i / 360)
+    where basis_i is either outstanding balance (reducing) or original
+    principal (flat), but ensures heterogeneous period lengths (e.g. stubs)
+    are reflected in the payment size.
+    """
+    n = len(periods_days)
+    if n == 0 or opening_balance <= 0:
+        return 0.0
+    if annual_rate <= 0:
+        # Pure principal amortisation
+        return opening_balance / n
+
+    # Lower bound: must at least cover max period interest to amortise.
+    basis0 = principal_for_flat if flat_rate else opening_balance
+    max_days = max(periods_days)
+    max_interest = basis0 * annual_rate * (max_days / 360.0)
+    low = float(max_interest) * 1.001
+
+    # Upper bound: generous multiple of principal to guarantee convergence.
+    high = low + opening_balance * 5.0
+
+    def _ending_balance(pmt: float) -> float:
+        """
+        Internal helper for bisection: simulate the loan using the given payment.
+
+        IMPORTANT: This deliberately allows the balance to go negative in the
+        final periods so that the root we solve for corresponds to exhausting
+        the balance exactly on the last scheduled repayment date, rather than
+        potentially finishing earlier. Clamping to zero inside this function
+        would change the shape of the function and can lead to solutions that
+        fully repay in an earlier period (with subsequent zero instalments),
+        which is not desired here.
+        """
+        bal = float(opening_balance)
+        for days in periods_days:
+            basis = principal_for_flat if flat_rate else bal
+            interest = basis * annual_rate * (days / 360.0)
+            principal = pmt - interest
+            bal -= principal
+        return bal
+
+    # If the lower bound already over-amortises (very low rate / short term),
+    # accept it to avoid unnecessary iterations.
+    bal_low = _ending_balance(low)
+    if bal_low <= 0:
+        return low
+
+    for _ in range(max_iter):
+        mid = 0.5 * (low + high)
+        bal_mid = _ending_balance(mid)
+        if abs(bal_mid) < tol:
+            return mid
+        if bal_mid > 0:
+            # Payment too low → positive remaining balance
+            low = mid
+        else:
+            # Payment too high → negative remaining balance
+            high = mid
+    return 0.5 * (low + high)
+
+
 def get_term_loan_amortization_schedule(
     total_facility: float,
     annual_rate: float,
@@ -204,19 +281,38 @@ def get_term_loan_amortization_schedule(
             prev_date = end_date
         remaining = num_periods - moratorium_months
         if remaining > 0:
-            pmt = float(npf.pmt(annual_rate / 12, remaining, -balance))
+            # Solve constant instalment using actual days for remaining periods.
+            periods_days: list[int] = []
+            tmp_prev = prev_date
+            for idx in range(moratorium_months, num_periods):
+                end_date = repayment_dates_list[idx]
+                periods_days.append((end_date - tmp_prev).days)
+                tmp_prev = end_date
+            pmt = _solve_level_payment_actual_360(
+                opening_balance=balance,
+                annual_rate=annual_rate,
+                periods_days=periods_days,
+                flat_rate=flat_rate,
+                principal_for_flat=principal_for_flat,
+            )
             for i in range(moratorium_months, num_periods):
                 end_date = repayment_dates_list[i]
                 days = (end_date - prev_date).days
                 interest = (principal_for_flat if flat_rate else balance) * annual_rate * (days / 360)
-                principal = pmt - interest
+                principal = max(0.0, pmt - interest)
+                payment = pmt
+                is_last = (i == num_periods - 1)
+                if is_last:
+                    # Force full payoff on the final instalment using any tiny residual balance.
+                    principal = balance
+                    payment = interest + principal
                 balance -= principal
                 principal_balance -= principal
                 pb, to = round(max(0, principal_balance), 2), round(max(0, balance), 2)
                 schedule.append({
                     "Period": i + 1,
                     "Date": end_date.strftime("%d-%b-%Y"),
-                    "Monthly Installment": round(pmt, 2),
+                    "Monthly Installment": round(payment, 2),
                     "Principal": round(principal, 2),
                     "Interest": round(interest, 2),
                     "Principal Balance": pb,
@@ -241,19 +337,37 @@ def get_term_loan_amortization_schedule(
             })
             prev_date = end_date
         remaining = num_periods - principal_start_idx
-        pmt = float(npf.pmt(annual_rate / 12, remaining, -balance))
+        # Solve constant instalment for the principal-paying periods only.
+        periods_days = []
+        tmp_prev = prev_date
+        for idx in range(principal_start_idx, num_periods):
+            end_date = repayment_dates_list[idx]
+            periods_days.append((end_date - tmp_prev).days)
+            tmp_prev = end_date
+        pmt = _solve_level_payment_actual_360(
+            opening_balance=balance,
+            annual_rate=annual_rate,
+            periods_days=periods_days,
+            flat_rate=flat_rate,
+            principal_for_flat=principal_for_flat,
+        )
         for i in range(principal_start_idx, num_periods):
             end_date = repayment_dates_list[i]
             days = (end_date - prev_date).days
             interest = (principal_for_flat if flat_rate else balance) * annual_rate * (days / 360)
-            principal = pmt - interest
+            principal = max(0.0, pmt - interest)
+            payment = pmt
+            is_last = (i == num_periods - 1)
+            if is_last:
+                principal = balance
+                payment = interest + principal
             balance -= principal
             principal_balance -= principal
             pb, to = round(max(0, principal_balance), 2), round(max(0, balance), 2)
             schedule.append({
                 "Period": i + 1,
                 "Date": end_date.strftime("%d-%b-%Y"),
-                "Monthly Installment": round(pmt, 2),
+                "Monthly Installment": round(payment, 2),
                 "Principal": round(principal, 2),
                 "Interest": round(interest, 2),
                 "Principal Balance": pb,
@@ -262,19 +376,37 @@ def get_term_loan_amortization_schedule(
             prev_date = end_date
         return pd.DataFrame(schedule), pmt
     else:
-        pmt = float(npf.pmt(annual_rate / 12, num_periods, -balance))
+        # No grace: solve constant instalment across all periods using actual days.
+        periods_days = []
+        tmp_prev = prev_date
+        for idx in range(num_periods):
+            end_date = repayment_dates_list[idx]
+            periods_days.append((end_date - tmp_prev).days)
+            tmp_prev = end_date
+        pmt = _solve_level_payment_actual_360(
+            opening_balance=balance,
+            annual_rate=annual_rate,
+            periods_days=periods_days,
+            flat_rate=flat_rate,
+            principal_for_flat=principal_for_flat,
+        )
         for i in range(num_periods):
             end_date = repayment_dates_list[i]
             days = (end_date - prev_date).days
             interest = (principal_for_flat if flat_rate else balance) * annual_rate * (days / 360)
-            principal = pmt - interest
+            principal = max(0.0, pmt - interest)
+            payment = pmt
+            is_last = (i == num_periods - 1)
+            if is_last:
+                principal = balance
+                payment = interest + principal
             balance -= principal
             principal_balance -= principal
             pb, to = round(max(0, principal_balance), 2), round(max(0, balance), 2)
             schedule.append({
                 "Period": i + 1,
                 "Date": end_date.strftime("%d-%b-%Y"),
-                "Monthly Installment": round(pmt, 2),
+                "Monthly Installment": round(payment, 2),
                 "Principal": round(principal, 2),
                 "Interest": round(interest, 2),
                 "Principal Balance": pb,

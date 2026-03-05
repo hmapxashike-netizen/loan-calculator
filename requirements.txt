@@ -2,4 +2,3 @@ streamlit
 numpy-financial
 psycopg2-binary
 openpyxl
-bcrypt

@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import streamlit as st
 
-from auth_dal import get_db_connection, UserRepository
+from dal import get_conn, UserRepository
 from auth_service import AuthService
 from middleware import set_current_user, clear_current_user
 
 
 def login_form():
     st.subheader("Login")
-    email = st.text_input("Email", key="login_email")
-    password = st.text_input("Password", type="password", key="login_password")
+    # Use a centered, narrower column so fields are not full-width
+    col_left, col_center, col_right = st.columns([1, 2, 1])
+    with col_center:
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Password", type="password", key="login_password")
 
     if st.button("Login", type="primary"):
         if not email or not password:
@@ -18,18 +21,22 @@ def login_form():
             return
 
         try:
-            conn = get_db_connection()
+            conn = get_conn()
         except Exception as e:
             st.error(f"Database connection error: {e}")
             return
 
         try:
             auth = AuthService(conn)
-            user = auth.authenticate(email=email, password=password, ip=None, user_agent=None)
+            user, status = auth.authenticate(email=email, password=password, ip=None, user_agent=None)
         finally:
             conn.close()
 
-        if not user:
+        if status == "locked":
+            st.error("Your account is locked due to too many failed attempts. Please try again later or contact an administrator.")
+            return
+
+        if status != "ok" or not user:
             st.error("Invalid email or password.")
             return
 
@@ -39,14 +46,16 @@ def login_form():
 
         set_current_user(user)
         st.success(f"Welcome, {user.full_name}!")
-        st.experimental_rerun()
+        st.rerun()
 
 
 def registration_form():
-    st.subheader("Register as Borrower")
-    email = st.text_input("Email", key="reg_email")
-    full_name = st.text_input("Full name", key="reg_full_name")
-    password = st.text_input("Password", type="password", key="reg_password")
+    st.subheader("Register (Borrower)")
+    col_left, col_center, col_right = st.columns([1, 2, 1])
+    with col_center:
+        email = st.text_input("Email", key="reg_email")
+        full_name = st.text_input("Full name", key="reg_full_name")
+        password = st.text_input("Password", type="password", key="reg_password")
 
     if st.button("Create account"):
         if not (email and full_name and password):
@@ -54,7 +63,7 @@ def registration_form():
             return
 
         try:
-            conn = get_db_connection()
+            conn = get_conn()
         except Exception as e:
             st.error(f"Database connection error: {e}")
             return
@@ -62,7 +71,7 @@ def registration_form():
         try:
             users = UserRepository(conn)
             if users.get_by_email(email):
-                # Generic message to avoid enumeration
+                # Generic error to avoid enumeration
                 st.error("Unable to create account.")
                 return
 
@@ -78,7 +87,6 @@ def registration_form():
             conn.close()
 
         st.success("Account created. You can now log in.")
-        st.experimental_rerun()
 
 
 def auth_page():
@@ -89,7 +97,7 @@ def auth_page():
         st.info(f"Logged in as {u['email']} ({u['role']})")
         if st.button("Log out"):
             clear_current_user()
-            st.experimental_rerun()
+            st.rerun()
         return
 
     tab_login, tab_register = st.tabs(["Login", "Register"])

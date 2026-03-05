@@ -61,12 +61,16 @@ def create_individual(
     email1: str | None = None,
     email2: str | None = None,
     addresses: list[dict] | None = None,
+    sector_id: int | None = None,
+    subsector_id: int | None = None,
 ) -> int:
     """Create an individual customer. Returns customer_id."""
     with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO customers (type, status) VALUES ('individual', 'active') RETURNING id"
+                """INSERT INTO customers (type, status, sector_id, subsector_id)
+                   VALUES ('individual', 'active', %s, %s) RETURNING id""",
+                (sector_id, subsector_id),
             )
             customer_id = cur.fetchone()[0]
             cur.execute(
@@ -150,12 +154,16 @@ def create_corporate(
     contact_person: dict | None = None,
     directors: list[dict] | None = None,
     shareholders: list[dict] | None = None,
+    sector_id: int | None = None,
+    subsector_id: int | None = None,
 ) -> int:
     """Create a corporate customer. Returns customer_id."""
     with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO customers (type, status) VALUES ('corporate', 'active') RETURNING id"
+                """INSERT INTO customers (type, status, sector_id, subsector_id)
+                   VALUES ('corporate', 'active', %s, %s) RETURNING id""",
+                (sector_id, subsector_id),
             )
             customer_id = cur.fetchone()[0]
             cur.execute(
@@ -229,6 +237,87 @@ def update_corporate(
             vals.append(customer_id)
             cur.execute(
                 f"UPDATE corporates SET {', '.join(updates)}, updated_at = NOW() WHERE customer_id = %s",
+                vals,
+            )
+
+
+# ---------- Sector / Subsector (configurable; on customers) ----------
+
+def list_sectors() -> list[dict]:
+    """List all sectors for dropdowns/config. Returns [] if sectors table does not exist (run schema/11_sectors_subsectors_agents.sql)."""
+    try:
+        with _connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT id, name, sort_order FROM sectors ORDER BY sort_order, name")
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        if psycopg2 and hasattr(psycopg2, "ProgrammingError") and isinstance(e, psycopg2.ProgrammingError):
+            return []
+        raise
+
+
+def list_subsectors(sector_id: int | None = None) -> list[dict]:
+    """List subsectors; optionally filter by sector_id. Returns [] if subsectors table does not exist."""
+    try:
+        with _connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if sector_id is not None:
+                    cur.execute(
+                        "SELECT id, sector_id, name, sort_order FROM subsectors WHERE sector_id = %s ORDER BY sort_order, name",
+                        (sector_id,),
+                    )
+                else:
+                    cur.execute("SELECT id, sector_id, name, sort_order FROM subsectors ORDER BY sector_id, sort_order, name")
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        if psycopg2 and hasattr(psycopg2, "ProgrammingError") and isinstance(e, psycopg2.ProgrammingError):
+            return []
+        raise
+
+
+def create_sector(name: str, sort_order: int = 0) -> int:
+    """Create a sector. Returns sector id."""
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO sectors (name, sort_order) VALUES (%s, %s) RETURNING id",
+                (name.strip(), sort_order),
+            )
+            return cur.fetchone()[0]
+
+
+def create_subsector(sector_id: int, name: str, sort_order: int = 0) -> int:
+    """Create a subsector. Returns subsector id."""
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO subsectors (sector_id, name, sort_order) VALUES (%s, %s, %s) RETURNING id",
+                (sector_id, name.strip(), sort_order),
+            )
+            return cur.fetchone()[0]
+
+
+def update_customer_sector(
+    customer_id: int,
+    sector_id: int | None = None,
+    subsector_id: int | None = None,
+) -> None:
+    """Update customer's sector and/or subsector."""
+    updates = []
+    vals = []
+    if sector_id is not None:
+        updates.append("sector_id = %s")
+        vals.append(sector_id)
+    if subsector_id is not None:
+        updates.append("subsector_id = %s")
+        vals.append(subsector_id)
+    if not updates:
+        return
+    vals.append(customer_id)
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE customers SET {', '.join(updates)}, updated_at = NOW() WHERE id = %s",
                 vals,
             )
 
@@ -465,7 +554,7 @@ def list_customers(
     """List customers; filter by status ('active'/'inactive') and/or type ('individual'/'corporate')."""
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            q = "SELECT id, type, status, created_at, updated_at FROM customers WHERE 1=1"
+            q = "SELECT id, type, status, sector_id, subsector_id, created_at, updated_at FROM customers WHERE 1=1"
             params = []
             if status:
                 q += " AND status = %s"
@@ -482,7 +571,10 @@ def get_customer(customer_id: int) -> dict | None:
     """Get full customer record (header + individual or corporate + addresses + contact person/directors/shareholders)."""
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, type, status, created_at, updated_at FROM customers WHERE id = %s", (customer_id,))
+            cur.execute(
+                "SELECT id, type, status, sector_id, subsector_id, created_at, updated_at FROM customers WHERE id = %s",
+                (customer_id,),
+            )
             row = _row(cur)
             if not row:
                 return None
