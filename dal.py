@@ -200,3 +200,30 @@ class SecurityAuditLogRepository:
             rows = cur.fetchall()
         return list(rows)
 
+
+def list_users_for_selection(active_only: bool = True) -> list[dict]:
+    """
+    List users for Relationship manager dropdown (internal staff).
+    Returns [{"id": str, "full_name": str, "email": str}, ...].
+    Returns [] if users table does not exist.
+    """
+    try:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                where = " WHERE is_active = TRUE" if active_only else ""
+                cur.execute(
+                    f"""
+                    SELECT id, full_name, email
+                    FROM users
+                    {where}
+                    ORDER BY full_name
+                    """
+                )
+                rows = cur.fetchall()
+            return [{"id": str(r["id"]), "full_name": r["full_name"], "email": r["email"]} for r in rows]
+        finally:
+            conn.close()
+    except Exception:
+        return []
+

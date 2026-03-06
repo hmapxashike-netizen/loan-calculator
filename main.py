@@ -64,7 +64,7 @@ def admin_home():
                     for u in users
                 ]
             )
-            st.dataframe(df.drop(columns=["password_hash"], errors="ignore"), use_container_width=True)
+            st.dataframe(df.drop(columns=["password_hash"], errors="ignore"), width="stretch")
 
             st.markdown("### Manage selected user")
             email_choices = [u.email for u in users]
@@ -184,7 +184,7 @@ def admin_home():
             st.info("No audit events yet.")
         else:
             df = pd.DataFrame(rows)
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width="stretch")
 
 
 def loan_management_app():

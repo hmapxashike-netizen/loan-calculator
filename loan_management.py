@@ -124,9 +124,9 @@ def save_loan(
                     annual_rate, monthly_rate, drawdown_fee, arrangement_fee, admin_fee,
                     disbursement_date, start_date, end_date, first_repayment_date, maturity_date,
                     installment, total_payment, grace_type, moratorium_months, bullet_type, scheme,
-                    payment_timing, metadata, status, agent_id
+                    payment_timing, metadata, status, agent_id, relationship_manager_id
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 ) RETURNING id
                 """,
                 (
@@ -155,6 +155,7 @@ def save_loan(
                     Json(metadata) if metadata else None,
                     details.get("status", "active"),
                     details.get("agent_id"),
+                    details.get("relationship_manager_id"),
                 ),
             )
             loan_id = cur.fetchone()[0]

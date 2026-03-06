@@ -56,6 +56,13 @@ except Exception as e:
     _agents_error = str(e)
 
 try:
+    from dal import list_users_for_selection
+    _users_for_rm_available = True
+except Exception:
+    _users_for_rm_available = False
+    list_users_for_selection = lambda: []
+
+try:
     from loan_management import (
         save_loan as save_loan_to_db,
         record_repayment,
@@ -875,21 +882,6 @@ def system_configurations_ui():
 
 # --- MAIN APP ---
 
-def _render_header():
-    st.markdown(
-        "<h1 style='text-align: center; font-size: 2.8rem; font-weight: 900; "
-        "color: #1E3A8A; letter-spacing: 0.02em; margin-bottom: 0;'>"
-        "LINCOLN CAPITAL (PRIVATE) LIMITED</h1>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        "<p style='text-align: center; font-size: 1.1rem; color: #64748B; margin-top: 0.25rem;'>"
-        "Loan Management System</p>",
-        unsafe_allow_html=True,
-    )
-    st.divider()
-
-
 def eod_ui():
     """End-of-day processing configuration and manual run."""
     from eod import run_eod_for_date
@@ -1122,7 +1114,7 @@ def consumer_loan_ui():
     # 5. Amortization Schedule
     st.divider()
     st.subheader("Repayment Schedule")
-    st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
+    st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
 
     # 6. Save button - DB-ready structure (from shared engine)
     loan_record = {**details, "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
@@ -1302,7 +1294,7 @@ def term_loan_ui():
 
     st.divider()
     st.subheader("Repayment Schedule (Actual/360)")
-    st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
+    st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
 
     loan_record = {**details, "loan_type": "term_loan", "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
     for k in ("disbursement_date", "start_date", "end_date", "first_repayment_date"):
@@ -1442,7 +1434,7 @@ def bullet_loan_ui():
 
     st.divider()
     st.subheader("Repayment Schedule (Actual/360)")
-    st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
+    st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
 
     loan_record = {**details, "loan_type": "bullet_loan", "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
     for k in ("disbursement_date", "maturity_date", "first_repayment_date"):
@@ -1584,7 +1576,7 @@ def customised_repayments_ui():
             "Total Outstanding": st.column_config.NumberColumn(disabled=True, format="%.2f"),
             "Payment": st.column_config.NumberColumn(format="%.2f"),
         },
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         key="cust_editor",
     )
@@ -1770,29 +1762,45 @@ def capture_loan_ui():
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    t1, t2, t3 = st.tabs(["1. Customer & loan type", "2. Compute schedule", "3. Review & save"])
+    if "capture_loan_step" not in st.session_state:
+        st.session_state["capture_loan_step"] = 0
+    step = st.session_state["capture_loan_step"]
+    st.caption(f"**Step {step + 1} of 3** — 1. Customer & loan type · 2. Compute schedule · 3. Review & save")
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    with t1:
+    if step == 0:
         st.subheader("Select customer and loan type")
         customers_list = list_customers(status="active") or []
         if not customers_list:
             st.warning("No active customers. Add a customer first under **Customers**.")
         else:
-            options = [(c["id"], get_display_name(c["id"]) or f"Customer #{c['id']}") for c in customers_list]
-            choice = st.selectbox(
-                "Customer",
-                range(len(options)),
-                format_func=lambda i: options[i][1],
-                key="cap_customer_sel",
-            )
-            if choice is not None:
-                st.session_state["capture_customer_id"] = options[choice][0]
-            loan_type = st.selectbox(
-                "Loan type",
-                ["Consumer Loan", "Term Loan", "Bullet Loan", "Customised Repayments"],
-                key="cap_loan_type",
-            )
-            st.session_state["capture_loan_type"] = loan_type
+            col_a, col_b = st.columns([1, 1])
+            with col_a:
+                options = [(c["id"], get_display_name(c["id"]) or f"Customer #{c['id']}") for c in customers_list]
+                choice = st.selectbox(
+                    "Customer",
+                    range(len(options)),
+                    format_func=lambda i: options[i][1],
+                    key="cap_customer_sel",
+                )
+                if choice is not None:
+                    st.session_state["capture_customer_id"] = options[choice][0]
+                loan_type = st.selectbox(
+                    "Loan type",
+                    ["Consumer Loan", "Term Loan", "Bullet Loan", "Customised Repayments"],
+                    key="cap_loan_type",
+                )
+                st.session_state["capture_loan_type"] = loan_type
+            with col_b:
+                if _users_for_rm_available:
+                    users_rm = list_users_for_selection()
+                    rm_opts = [(None, "(None)")] + [(u["id"], f"{u['full_name']} ({u['email']})") for u in users_rm]
+                    rm_labels = [t[1] for t in rm_opts]
+                    rm_ids = [t[0] for t in rm_opts]
+                    rm_sel = st.selectbox("Relationship manager (internal)", rm_labels, key="cap_rm_t1")
+                    st.session_state["capture_relationship_manager_id"] = rm_ids[rm_labels.index(rm_sel)] if rm_sel else None
+                else:
+                    st.session_state["capture_relationship_manager_id"] = None
             st.success("Proceed to **2. Compute schedule** to enter loan parameters and generate the schedule.")
         # Clear selection: reset entire capture flow
         if st.button("Clear selection", key="cap_clear_t1"):
@@ -1800,13 +1808,22 @@ def capture_loan_ui():
                 if k.startswith("capture_"):
                     st.session_state.pop(k, None)
             st.rerun()
+        st.markdown("<br>", unsafe_allow_html=True)
+        btn_col1, btn_col2, _ = st.columns([1, 1, 2])
+        with btn_col2:
+            if st.button("Next →", type="primary", key="cap_next_0"):
+                st.session_state["capture_loan_step"] = 1
+                st.rerun()
 
-    with t2:
+    elif step == 1:
         st.subheader("Compute schedule")
         cid = st.session_state.get("capture_customer_id")
         ltype = st.session_state.get("capture_loan_type")
         if not cid or not ltype:
             st.info("Complete **1. Customer & loan type** first.")
+            if st.button("← Back", key="cap_back_1_empty"):
+                st.session_state["capture_loan_step"] = 0
+                st.rerun()
         else:
             # Clear saved schedule only (keeps customer/loan type; user can recompute)
             if st.session_state.get("capture_loan_details") is not None or st.session_state.get("capture_loan_schedule_df") is not None:
@@ -1814,18 +1831,52 @@ def capture_loan_ui():
                     st.session_state.pop("capture_loan_details", None)
                     st.session_state.pop("capture_loan_schedule_df", None)
                     st.rerun()
-            if _agents_available:
-                try:
-                    agents_list_cap = list_agents(status="active") or []
-                except Exception:
-                    agents_list_cap = []
-                agent_labels_cap = ["(None)"] + [a["name"] for a in agents_list_cap]
-                agent_ids_cap = [None] + [a["id"] for a in agents_list_cap]
-                sel_agent_label = st.selectbox("Agent", agent_labels_cap, key="capture_agent_sel")
-                sel_agent_id = agent_ids_cap[agent_labels_cap.index(sel_agent_label)] if sel_agent_label else None
-                st.session_state["capture_agent_id"] = sel_agent_id
-            else:
-                st.session_state["capture_agent_id"] = None
+            rm_col, agent_col = st.columns(2)
+            with rm_col:
+                if _users_for_rm_available:
+                    users_rm = list_users_for_selection()
+                    rm_opts = [(None, "(None)")] + [(u["id"], f"{u['full_name']} ({u['email']})") for u in users_rm]
+                    rm_labels_t2 = [t[1] for t in rm_opts]
+                    rm_ids_t2 = [t[0] for t in rm_opts]
+                    default_rm_idx = 0
+                    if st.session_state.get("capture_relationship_manager_id"):
+                        try:
+                            default_rm_idx = rm_ids_t2.index(st.session_state["capture_relationship_manager_id"])
+                        except ValueError:
+                            pass
+                    rm_sel_t2 = st.selectbox(
+                        "Relationship manager (internal)",
+                        rm_labels_t2,
+                        index=default_rm_idx,
+                        key="capture_rm_sel",
+                    )
+                    st.session_state["capture_relationship_manager_id"] = rm_ids_t2[rm_labels_t2.index(rm_sel_t2)] if rm_sel_t2 else None
+                else:
+                    st.session_state["capture_relationship_manager_id"] = None
+            with agent_col:
+                if _agents_available:
+                    try:
+                        agents_list_cap = list_agents(status="active") or []
+                    except Exception:
+                        agents_list_cap = []
+                    agent_labels_cap = ["(None)"] + [a["name"] for a in agents_list_cap]
+                    agent_ids_cap = [None] + [a["id"] for a in agents_list_cap]
+                    default_agent_idx = 0
+                    if st.session_state.get("capture_agent_id") is not None:
+                        try:
+                            default_agent_idx = agent_ids_cap.index(st.session_state["capture_agent_id"])
+                        except ValueError:
+                            pass
+                    sel_agent_label = st.selectbox(
+                        "Agent (external broker)",
+                        agent_labels_cap,
+                        index=default_agent_idx,
+                        key="capture_agent_sel",
+                    )
+                    sel_agent_id = agent_ids_cap[agent_labels_cap.index(sel_agent_label)] if sel_agent_label else None
+                    st.session_state["capture_agent_id"] = sel_agent_id
+                else:
+                    st.session_state["capture_agent_id"] = None
             glob = _get_global_loan_settings()
             flat_rate = glob.get("interest_method") == "Flat rate"
             payment_timing_anniversary = True  # will set from form
@@ -1921,7 +1972,7 @@ def capture_loan_ui():
                 details["currency"] = currency
                 details["penalty_rate_pct"] = penalty_pct
                 details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
-                st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
+                st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
                 if st.button("Use this schedule", key="cap_cl_use"):
                     st.session_state["capture_loan_details"] = details
                     st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -2052,7 +2103,7 @@ def capture_loan_ui():
                     details["currency"] = currency
                     details["penalty_rate_pct"] = penalty_pct
                     details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
-                    st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
+                    st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
                     if st.button("Use this schedule", key="cap_term_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -2160,7 +2211,7 @@ def capture_loan_ui():
                         details["currency"] = currency
                         details["penalty_rate_pct"] = penalty_pct
                         details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
-                        st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
+                        st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
                         if st.button("Use this schedule", key="cap_bullet_use"):
                             st.session_state["capture_loan_details"] = details
                             st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -2174,7 +2225,7 @@ def capture_loan_ui():
                     details["currency"] = currency
                     details["penalty_rate_pct"] = penalty_pct
                     details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
-                    st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
+                    st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
                     if st.button("Use this schedule", key="cap_bullet_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -2276,7 +2327,7 @@ def capture_loan_ui():
                         "Total Outstanding": st.column_config.NumberColumn(disabled=True, format="%.2f"),
                         "Payment": st.column_config.NumberColumn(format="%.2f"),
                     },
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     key="cap_cust_editor",
                 )
@@ -2313,8 +2364,22 @@ def capture_loan_ui():
                         st.rerun()
                 else:
                     st.warning("Clear the schedule (Total Outstanding = $0) before using it.")
+        st.markdown("<br>", unsafe_allow_html=True)
+        has_schedule = st.session_state.get("capture_loan_details") is not None and st.session_state.get("capture_loan_schedule_df") is not None
+        if not has_schedule:
+            st.caption("Click **Use this schedule** above to proceed to Review & save.")
+        btn_b, btn_n, _ = st.columns([1, 1, 2])
+        with btn_b:
+            if st.button("← Back", key="cap_back_1"):
+                st.session_state["capture_loan_step"] = 0
+                st.rerun()
+        with btn_n:
+            if st.button("Next →", type="primary", key="cap_next_1", disabled=not has_schedule):
+                if has_schedule:
+                    st.session_state["capture_loan_step"] = 2
+                    st.rerun()
 
-    with t3:
+    elif step == 2:
         st.subheader("Review & save")
         # Show save result from previous run (success or failure)
         save_result = st.session_state.pop("capture_last_save_result", None)
@@ -2331,23 +2396,40 @@ def capture_loan_ui():
         if not details or df_schedule is None or not cid or not ltype:
             if save_result is None:
                 st.info("Complete **1. Customer & loan type** and **2. Compute schedule** first.")
-            if st.button("Clear and start over", key="cap_clear_t3_empty"):
-                for k in list(st.session_state.keys()):
-                    if k.startswith("capture_"):
-                        st.session_state.pop(k, None)
-                st.rerun()
+            col_clr, col_b = st.columns(2)
+            with col_clr:
+                if st.button("Clear and start over", key="cap_clear_t3_empty"):
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("capture_"):
+                            st.session_state.pop(k, None)
+                    st.rerun()
+            with col_b:
+                if st.button("← Back", key="cap_back_2_empty"):
+                    st.session_state["capture_loan_step"] = 1
+                    st.rerun()
         else:
-            st.markdown(f"**Customer:** {get_display_name(cid)} (ID {cid})")
-            st.markdown(f"**Loan type:** {ltype}")
-            st.markdown(f"**Principal:** {details.get('facility', 0):,.2f} | **Net proceeds:** {details.get('principal', 0):,.2f} | **Term:** {details.get('term', 0)} months")
+            st.subheader("Loan summary")
+            sum_col1, sum_col2 = st.columns(2)
+            with sum_col1:
+                st.markdown(f"**Customer:** {get_display_name(cid)} (ID {cid})")
+                st.markdown(f"**Loan type:** {ltype}")
+            with sum_col2:
+                st.markdown(f"**Principal:** {details.get('facility', 0):,.2f}")
+                st.markdown(f"**Net proceeds:** {details.get('principal', 0):,.2f} | **Term:** {details.get('term', 0)} months")
             st.divider()
             st.subheader("Schedule")
-            st.dataframe(format_schedule_display(df_schedule), use_container_width=True, hide_index=True)
-            col_save, col_cancel = st.columns(2)
+            st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+            st.divider()
+            st.subheader("Save to database")
+            col_save, col_cancel, col_back = st.columns([2, 1, 1])
             with col_save:
                 if st.button("Save loan to database", type="primary", key="cap_save_btn"):
                     try:
-                        details_with_agent = {**details, "agent_id": st.session_state.get("capture_agent_id")}
+                        details_with_agent = {
+                            **details,
+                            "agent_id": st.session_state.get("capture_agent_id"),
+                            "relationship_manager_id": st.session_state.get("capture_relationship_manager_id"),
+                        }
                         loan_id = save_loan_to_db(cid, ltype, details_with_agent, df_schedule)
                         st.session_state["capture_last_save_result"] = {"success": True, "loan_id": loan_id}
                         for k in ["capture_loan_details", "capture_loan_schedule_df"]:
@@ -2361,6 +2443,10 @@ def capture_loan_ui():
                     for k in list(st.session_state.keys()):
                         if k.startswith("capture_"):
                             st.session_state.pop(k, None)
+                    st.rerun()
+            with col_back:
+                if st.button("← Back", key="cap_back_2"):
+                    st.session_state["capture_loan_step"] = 1
                     st.rerun()
 
 
@@ -2380,302 +2466,310 @@ def customers_ui():
 
     with tab1:
         st.subheader("New individual customer")
-        with st.form("individual_form", clear_on_submit=True):
-            col_id1, col_id2 = st.columns(2)
-            with col_id1:
-                name = st.text_input("Full name *", placeholder="e.g. John Doe", key="ind_full_name")
-            with col_id2:
-                national_id = st.text_input("National ID", placeholder="Optional", key="ind_national_id")
-            sector_id, subsector_id = None, None
-            if _customers_available:
-                sectors_list = list_sectors()
-                subsectors_list = list_subsectors()
-                if sectors_list:
-                    sector_names = ["(None)"] + [s["name"] for s in sectors_list]
-                    sel_sector_name = st.selectbox("Sector", sector_names, key="ind_sector")
-                    sector_id = next((s["id"] for s in sectors_list if s["name"] == sel_sector_name), None) if sel_sector_name != "(None)" else None
-                    subs_by_sector = [ss for ss in subsectors_list if sector_id and ss["sector_id"] == sector_id]
-                    sub_names = ["(None)"] + [s["name"] for s in subs_by_sector]
-                    sel_subsector_name = st.selectbox("Subsector", sub_names, key="ind_subsector")
-                    subsector_id = next((s["id"] for s in subs_by_sector if s["name"] == sel_subsector_name), None) if sel_subsector_name != "(None)" else None
-            col1, col2 = st.columns(2)
-            with col1:
-                phone1 = st.text_input("Phone 1", placeholder="Optional", key="ind_phone1")
-                email1 = st.text_input("Email 1", placeholder="Optional", key="ind_email1")
-            with col2:
-                phone2 = st.text_input("Phone 2", placeholder="Optional", key="ind_phone2")
-                email2 = st.text_input("Email 2", placeholder="Optional", key="ind_email2")
-            employer_details = st.text_area("Employer details", placeholder="Optional", key="ind_employer_details")
-            with st.expander("Addresses (optional)"):
-                addr_type = st.text_input("Address type", placeholder="e.g. physical, postal", key="ind_addr_type")
-                line1 = st.text_input("Address line 1", key="ind_addr_line1")
-                line2 = st.text_input("Address line 2", key="ind_addr_line2")
-                city = st.text_input("City", key="ind_addr_city")
-                region = st.text_input("Region", key="ind_addr_region")
-                postal_code = st.text_input("Postal code", key="ind_addr_postal_code")
-                country = st.text_input("Country", key="ind_addr_country")
-                use_addr = st.checkbox("Include this address", value=False, key="ind_use_addr")
-            submitted = st.form_submit_button("Create individual")
-            if submitted and name.strip():
-                addresses = None
-                if use_addr and line1.strip():
-                    addresses = [{"address_type": addr_type or None, "line1": line1 or None, "line2": line2 or None, "city": city or None, "region": region or None, "postal_code": postal_code or None, "country": country or None}]
-                try:
-                    cid = create_individual(
-                        name=name.strip(),
-                        national_id=national_id.strip() or None,
-                        employer_details=employer_details.strip() or None,
-                        phone1=phone1.strip() or None,
-                        phone2=phone2.strip() or None,
-                        email1=email1.strip() or None,
-                        email2=email2.strip() or None,
-                        addresses=addresses,
-                        sector_id=sector_id,
-                        subsector_id=subsector_id,
-                    )
-                    st.success(f"Individual customer created. Customer ID: **{cid}**.")
-                except Exception as e:
-                    st.error(f"Could not create customer: {e}")
-            elif submitted and not name.strip():
-                st.warning("Please enter a name.")
+        col_main, _ = st.columns([1, 1])
+        with col_main:
+            with st.form("individual_form", clear_on_submit=True):
+                col_id1, col_id2 = st.columns(2)
+                with col_id1:
+                    name = st.text_input("Full name *", placeholder="e.g. John Doe", key="ind_full_name")
+                with col_id2:
+                    national_id = st.text_input("National ID", placeholder="Optional", key="ind_national_id")
+                sector_id, subsector_id = None, None
+                if _customers_available:
+                    sectors_list = list_sectors()
+                    subsectors_list = list_subsectors()
+                    if sectors_list:
+                        sector_names = ["(None)"] + [s["name"] for s in sectors_list]
+                        sel_sector_name = st.selectbox("Sector", sector_names, key="ind_sector")
+                        sector_id = next((s["id"] for s in sectors_list if s["name"] == sel_sector_name), None) if sel_sector_name != "(None)" else None
+                        subs_by_sector = [ss for ss in subsectors_list if sector_id and ss["sector_id"] == sector_id]
+                        sub_names = ["(None)"] + [s["name"] for s in subs_by_sector]
+                        sel_subsector_name = st.selectbox("Subsector", sub_names, key="ind_subsector")
+                        subsector_id = next((s["id"] for s in subs_by_sector if s["name"] == sel_subsector_name), None) if sel_subsector_name != "(None)" else None
+                col1, col2 = st.columns(2)
+                with col1:
+                    phone1 = st.text_input("Phone 1", placeholder="Optional", key="ind_phone1")
+                    email1 = st.text_input("Email 1", placeholder="Optional", key="ind_email1")
+                with col2:
+                    phone2 = st.text_input("Phone 2", placeholder="Optional", key="ind_phone2")
+                    email2 = st.text_input("Email 2", placeholder="Optional", key="ind_email2")
+                employer_details = st.text_area("Employer details", placeholder="Optional", key="ind_employer_details", height=80)
+                with st.expander("Addresses (optional)"):
+                    addr_type = st.text_input("Address type", placeholder="e.g. physical, postal", key="ind_addr_type")
+                    line1 = st.text_input("Address line 1", key="ind_addr_line1")
+                    line2 = st.text_input("Address line 2", key="ind_addr_line2")
+                    city = st.text_input("City", key="ind_addr_city")
+                    region = st.text_input("Region", key="ind_addr_region")
+                    postal_code = st.text_input("Postal code", key="ind_addr_postal_code")
+                    country = st.text_input("Country", key="ind_addr_country")
+                    use_addr = st.checkbox("Include this address", value=False, key="ind_use_addr")
+                submitted = st.form_submit_button("Create individual")
+                if submitted and name.strip():
+                    addresses = None
+                    if use_addr and line1.strip():
+                        addresses = [{"address_type": addr_type or None, "line1": line1 or None, "line2": line2 or None, "city": city or None, "region": region or None, "postal_code": postal_code or None, "country": country or None}]
+                    try:
+                        cid = create_individual(
+                            name=name.strip(),
+                            national_id=national_id.strip() or None,
+                            employer_details=employer_details.strip() or None,
+                            phone1=phone1.strip() or None,
+                            phone2=phone2.strip() or None,
+                            email1=email1.strip() or None,
+                            email2=email2.strip() or None,
+                            addresses=addresses,
+                            sector_id=sector_id,
+                            subsector_id=subsector_id,
+                        )
+                        st.success(f"Individual customer created. Customer ID: **{cid}**.")
+                    except Exception as e:
+                        st.error(f"Could not create customer: {e}")
+                elif submitted and not name.strip():
+                    st.warning("Please enter a name.")
 
     with tab2:
         st.subheader("New corporate customer")
-        with st.form("corporate_form", clear_on_submit=True):
-            corp_top1, corp_top2 = st.columns(2)
-            with corp_top1:
-                legal_name = st.text_input("Legal name *", placeholder="Company Ltd", key="corp_legal_name")
-                reg_number = st.text_input("Registration number", placeholder="Optional", key="corp_reg_number")
-            with corp_top2:
-                trading_name = st.text_input("Trading name", placeholder="Optional", key="corp_trading_name")
-                tin = st.text_input("TIN", placeholder="Optional", key="corp_tin")
-            corp_sector_id, corp_subsector_id = None, None
-            if _customers_available:
-                corp_sectors_list = list_sectors()
-                corp_subsectors_list = list_subsectors()
-                if corp_sectors_list:
-                    corp_sector_names = ["(None)"] + [s["name"] for s in corp_sectors_list]
-                    corp_sel_sector = st.selectbox("Sector", corp_sector_names, key="corp_sector")
-                    corp_sector_id = next((s["id"] for s in corp_sectors_list if s["name"] == corp_sel_sector), None) if corp_sel_sector != "(None)" else None
-                    corp_subs = [ss for ss in corp_subsectors_list if corp_sector_id and ss["sector_id"] == corp_sector_id]
-                    corp_sub_names = ["(None)"] + [s["name"] for s in corp_subs]
-                    corp_sel_subsector = st.selectbox("Subsector", corp_sub_names, key="corp_subsector")
-                    corp_subsector_id = next((s["id"] for s in corp_subs if s["name"] == corp_sel_subsector), None) if corp_sel_subsector != "(None)" else None
-            with st.expander("Addresses (optional)"):
-                addr_type = st.text_input("Address type", placeholder="e.g. registered, physical", key="corp_addr_type")
-                line1 = st.text_input("Address line 1", key="corp_addr_line1")
-                line2 = st.text_input("Address line 2", key="corp_addr_line2")
-                city = st.text_input("City", key="corp_addr_city")
-                region = st.text_input("Region", key="corp_addr_region")
-                postal_code = st.text_input("Postal code", key="corp_addr_postal_code")
-                country = st.text_input("Country", key="corp_addr_country")
-                use_addr = st.checkbox("Include this address", value=False, key="corp_use_addr")
-            with st.expander("Contact person (optional)"):
-                cp_name = st.text_input("Full name", key="corp_cp_name")
-                cp_national_id = st.text_input("National ID", key="corp_cp_national_id")
-                cp_designation = st.text_input("Designation", key="corp_cp_designation")
-                cp_phone1 = st.text_input("Phone 1", key="corp_cp_phone1")
-                cp_phone2 = st.text_input("Phone 2", key="corp_cp_phone2")
-                cp_email = st.text_input("Email", key="corp_cp_email")
-                cp_addr1 = st.text_input("Address line 1", key="corp_cp_addr1")
-                cp_addr2 = st.text_input("Address line 2", key="corp_cp_addr2")
-                cp_city = st.text_input("City", key="corp_cp_city")
-                cp_country = st.text_input("Country", key="corp_cp_country")
-                use_cp = st.checkbox("Include contact person", value=False, key="corp_use_cp")
-            with st.expander("Directors (optional)"):
-                dir_name = st.text_input("Director full name", key="corp_dir_name")
-                dir_national_id = st.text_input("Director national ID", key="corp_dir_national_id")
-                dir_designation = st.text_input("Director designation", key="corp_dir_designation")
-                dir_phone1 = st.text_input("Director phone 1", key="corp_dir_phone1")
-                dir_phone2 = st.text_input("Director phone 2", key="corp_dir_phone2")
-                dir_email = st.text_input("Director email", key="corp_dir_email")
-                use_dir = st.checkbox("Include this director", value=False, key="corp_use_dir")
-            with st.expander("Shareholders (optional)"):
-                sh_name = st.text_input("Shareholder full name", key="corp_sh_name")
-                sh_national_id = st.text_input("Shareholder national ID", key="corp_sh_national_id")
-                sh_designation = st.text_input("Shareholder designation", key="corp_sh_designation")
-                sh_phone1 = st.text_input("Shareholder phone 1", key="corp_sh_phone1")
-                sh_phone2 = st.text_input("Shareholder phone 2", key="corp_sh_phone2")
-                sh_email = st.text_input("Shareholder email", key="corp_sh_email")
-                sh_pct = st.number_input("Shareholding %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, key="corp_sh_pct")
-                use_sh = st.checkbox("Include this shareholder", value=False, key="corp_use_sh")
-            submitted = st.form_submit_button("Create corporate")
-            if submitted and legal_name.strip():
-                addresses = [{"address_type": addr_type or None, "line1": line1 or None, "line2": line2 or None, "city": city or None, "region": region or None, "postal_code": postal_code or None, "country": country or None}] if use_addr and line1.strip() else None
-                contact_person = None
-                if use_cp and cp_name.strip():
-                    contact_person = {"full_name": cp_name.strip(), "national_id": cp_national_id.strip() or None, "designation": cp_designation.strip() or None, "phone1": cp_phone1.strip() or None, "phone2": cp_phone2.strip() or None, "email": cp_email.strip() or None, "address_line1": cp_addr1.strip() or None, "address_line2": cp_addr2.strip() or None, "city": cp_city.strip() or None, "country": cp_country.strip() or None}
-                directors = [{"full_name": dir_name.strip(), "national_id": dir_national_id.strip() or None, "designation": dir_designation.strip() or None, "phone1": dir_phone1.strip() or None, "phone2": dir_phone2.strip() or None, "email": dir_email.strip() or None, "address_line1": None, "address_line2": None, "city": None, "country": None}] if use_dir and dir_name.strip() else None
-                shareholders = [{"full_name": sh_name.strip(), "national_id": sh_national_id.strip() or None, "designation": sh_designation.strip() or None, "phone1": sh_phone1.strip() or None, "phone2": sh_phone2.strip() or None, "email": sh_email.strip() or None, "address_line1": None, "address_line2": None, "city": None, "country": None, "shareholding_pct": sh_pct}] if use_sh and sh_name.strip() else None
-                try:
-                    cid = create_corporate(
-                        legal_name=legal_name.strip(),
-                        trading_name=trading_name.strip() or None,
-                        reg_number=reg_number.strip() or None,
-                        tin=tin.strip() or None,
-                        addresses=addresses,
-                        contact_person=contact_person,
-                        directors=directors,
-                        shareholders=shareholders,
-                        sector_id=corp_sector_id,
-                        subsector_id=corp_subsector_id,
-                    )
-                    st.success(f"Corporate customer created. Customer ID: **{cid}**.")
-                except Exception as e:
-                    st.error(f"Could not create customer: {e}")
-                    st.exception(e)
-            elif submitted and not legal_name.strip():
-                st.warning("Please enter a legal name.")
+        col_main2, _ = st.columns([1, 1])
+        with col_main2:
+            with st.form("corporate_form", clear_on_submit=True):
+                corp_top1, corp_top2 = st.columns(2)
+                with corp_top1:
+                    legal_name = st.text_input("Legal name *", placeholder="Company Ltd", key="corp_legal_name")
+                    reg_number = st.text_input("Registration number", placeholder="Optional", key="corp_reg_number")
+                with corp_top2:
+                    trading_name = st.text_input("Trading name", placeholder="Optional", key="corp_trading_name")
+                    tin = st.text_input("TIN", placeholder="Optional", key="corp_tin")
+                corp_sector_id, corp_subsector_id = None, None
+                if _customers_available:
+                    corp_sectors_list = list_sectors()
+                    corp_subsectors_list = list_subsectors()
+                    if corp_sectors_list:
+                        corp_sector_names = ["(None)"] + [s["name"] for s in corp_sectors_list]
+                        corp_sel_sector = st.selectbox("Sector", corp_sector_names, key="corp_sector")
+                        corp_sector_id = next((s["id"] for s in corp_sectors_list if s["name"] == corp_sel_sector), None) if corp_sel_sector != "(None)" else None
+                        corp_subs = [ss for ss in corp_subsectors_list if corp_sector_id and ss["sector_id"] == corp_sector_id]
+                        corp_sub_names = ["(None)"] + [s["name"] for s in corp_subs]
+                        corp_sel_subsector = st.selectbox("Subsector", corp_sub_names, key="corp_subsector")
+                        corp_subsector_id = next((s["id"] for s in corp_subs if s["name"] == corp_sel_subsector), None) if corp_sel_subsector != "(None)" else None
+                with st.expander("Addresses (optional)"):
+                    addr_type = st.text_input("Address type", placeholder="e.g. registered, physical", key="corp_addr_type")
+                    line1 = st.text_input("Address line 1", key="corp_addr_line1")
+                    line2 = st.text_input("Address line 2", key="corp_addr_line2")
+                    city = st.text_input("City", key="corp_addr_city")
+                    region = st.text_input("Region", key="corp_addr_region")
+                    postal_code = st.text_input("Postal code", key="corp_addr_postal_code")
+                    country = st.text_input("Country", key="corp_addr_country")
+                    use_addr = st.checkbox("Include this address", value=False, key="corp_use_addr")
+                with st.expander("Contact person (optional)"):
+                    cp_name = st.text_input("Full name", key="corp_cp_name")
+                    cp_national_id = st.text_input("National ID", key="corp_cp_national_id")
+                    cp_designation = st.text_input("Designation", key="corp_cp_designation")
+                    cp_phone1 = st.text_input("Phone 1", key="corp_cp_phone1")
+                    cp_phone2 = st.text_input("Phone 2", key="corp_cp_phone2")
+                    cp_email = st.text_input("Email", key="corp_cp_email")
+                    cp_addr1 = st.text_input("Address line 1", key="corp_cp_addr1")
+                    cp_addr2 = st.text_input("Address line 2", key="corp_cp_addr2")
+                    cp_city = st.text_input("City", key="corp_cp_city")
+                    cp_country = st.text_input("Country", key="corp_cp_country")
+                    use_cp = st.checkbox("Include contact person", value=False, key="corp_use_cp")
+                with st.expander("Directors (optional)"):
+                    dir_name = st.text_input("Director full name", key="corp_dir_name")
+                    dir_national_id = st.text_input("Director national ID", key="corp_dir_national_id")
+                    dir_designation = st.text_input("Director designation", key="corp_dir_designation")
+                    dir_phone1 = st.text_input("Director phone 1", key="corp_dir_phone1")
+                    dir_phone2 = st.text_input("Director phone 2", key="corp_dir_phone2")
+                    dir_email = st.text_input("Director email", key="corp_dir_email")
+                    use_dir = st.checkbox("Include this director", value=False, key="corp_use_dir")
+                with st.expander("Shareholders (optional)"):
+                    sh_name = st.text_input("Shareholder full name", key="corp_sh_name")
+                    sh_national_id = st.text_input("Shareholder national ID", key="corp_sh_national_id")
+                    sh_designation = st.text_input("Shareholder designation", key="corp_sh_designation")
+                    sh_phone1 = st.text_input("Shareholder phone 1", key="corp_sh_phone1")
+                    sh_phone2 = st.text_input("Shareholder phone 2", key="corp_sh_phone2")
+                    sh_email = st.text_input("Shareholder email", key="corp_sh_email")
+                    sh_pct = st.number_input("Shareholding %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, key="corp_sh_pct")
+                    use_sh = st.checkbox("Include this shareholder", value=False, key="corp_use_sh")
+                submitted = st.form_submit_button("Create corporate")
+                if submitted and legal_name.strip():
+                    addresses = [{"address_type": addr_type or None, "line1": line1 or None, "line2": line2 or None, "city": city or None, "region": region or None, "postal_code": postal_code or None, "country": country or None}] if use_addr and line1.strip() else None
+                    contact_person = None
+                    if use_cp and cp_name.strip():
+                        contact_person = {"full_name": cp_name.strip(), "national_id": cp_national_id.strip() or None, "designation": cp_designation.strip() or None, "phone1": cp_phone1.strip() or None, "phone2": cp_phone2.strip() or None, "email": cp_email.strip() or None, "address_line1": cp_addr1.strip() or None, "address_line2": cp_addr2.strip() or None, "city": cp_city.strip() or None, "country": cp_country.strip() or None}
+                    directors = [{"full_name": dir_name.strip(), "national_id": dir_national_id.strip() or None, "designation": dir_designation.strip() or None, "phone1": dir_phone1.strip() or None, "phone2": dir_phone2.strip() or None, "email": dir_email.strip() or None, "address_line1": None, "address_line2": None, "city": None, "country": None}] if use_dir and dir_name.strip() else None
+                    shareholders = [{"full_name": sh_name.strip(), "national_id": sh_national_id.strip() or None, "designation": sh_designation.strip() or None, "phone1": sh_phone1.strip() or None, "phone2": sh_phone2.strip() or None, "email": sh_email.strip() or None, "address_line1": None, "address_line2": None, "city": None, "country": None, "shareholding_pct": sh_pct}] if use_sh and sh_name.strip() else None
+                    try:
+                        cid = create_corporate(
+                            legal_name=legal_name.strip(),
+                            trading_name=trading_name.strip() or None,
+                            reg_number=reg_number.strip() or None,
+                            tin=tin.strip() or None,
+                            addresses=addresses,
+                            contact_person=contact_person,
+                            directors=directors,
+                            shareholders=shareholders,
+                            sector_id=corp_sector_id,
+                            subsector_id=corp_subsector_id,
+                        )
+                        st.success(f"Corporate customer created. Customer ID: **{cid}**.")
+                    except Exception as e:
+                        st.error(f"Could not create customer: {e}")
+                        st.exception(e)
+                elif submitted and not legal_name.strip():
+                    st.warning("Please enter a legal name.")
 
     with tab3:
         st.subheader("View & manage customers")
-        status_filter = st.selectbox("Status", ["all", "active", "inactive"], key="cust_status_filter")
-        type_filter = st.selectbox("Type", ["all", "individual", "corporate"], key="cust_type_filter")
-        status = None if status_filter == "all" else status_filter
-        customer_type = None if type_filter == "all" else type_filter
-        try:
-            customers_list = list_customers(status=status, customer_type=customer_type)
-        except Exception as e:
-            st.error(f"Could not load customers: {e}")
-            customers_list = []
-        if not customers_list:
-            st.info("No customers found. Add one in the tabs above.")
-        else:
-            df = pd.DataFrame(customers_list)
-            df["display_name"] = df["id"].apply(lambda i: get_display_name(i))
-            st.dataframe(df[["id", "type", "status", "display_name", "created_at"]], use_container_width=True, hide_index=True)
-            st.divider()
-            view_id = st.number_input("View customer by ID", min_value=1, value=customers_list[0]["id"] if customers_list else 1, step=1, key="cust_view_id")
-            if st.button("Load customer", key="cust_load"):
-                st.session_state["cust_loaded_id"] = int(view_id)
-            loaded_id = st.session_state.get("cust_loaded_id")
-            if loaded_id is not None:
-                rec = get_customer(loaded_id)
-                if not rec:
-                    st.warning("Customer not found.")
-                    st.session_state.pop("cust_loaded_id", None)
-                else:
-                    st.subheader(f"Customer #{loaded_id}")
-                    st.json(rec)
-                    current_status = rec.get("status", "active")
-                    new_active = st.radio("Set status", ["active", "inactive"], index=0 if current_status == "active" else 1, key="cust_set_status")
-                    if st.button("Update status", key="cust_update_status"):
-                        set_active(loaded_id, new_active == "active")
-                        st.success(f"Status set to **{new_active}**.")
-                        st.session_state["cust_loaded_id"] = loaded_id
-                        st.rerun()
+        col_main3, _ = st.columns([1, 1])
+        with col_main3:
+            status_filter = st.selectbox("Status", ["all", "active", "inactive"], key="cust_status_filter")
+            type_filter = st.selectbox("Type", ["all", "individual", "corporate"], key="cust_type_filter")
+            status = None if status_filter == "all" else status_filter
+            customer_type = None if type_filter == "all" else type_filter
+            try:
+                customers_list = list_customers(status=status, customer_type=customer_type)
+            except Exception as e:
+                st.error(f"Could not load customers: {e}")
+                customers_list = []
+            if not customers_list:
+                st.info("No customers found. Add one in the tabs above.")
+            else:
+                df = pd.DataFrame(customers_list)
+                df["display_name"] = df["id"].apply(lambda i: get_display_name(i))
+                st.dataframe(df[["id", "type", "status", "display_name", "created_at"]], width="stretch", hide_index=True)
+                st.divider()
+                view_id = st.number_input("View customer by ID", min_value=1, value=customers_list[0]["id"] if customers_list else 1, step=1, key="cust_view_id")
+                if st.button("Load customer", key="cust_load"):
+                    st.session_state["cust_loaded_id"] = int(view_id)
+                loaded_id = st.session_state.get("cust_loaded_id")
+                if loaded_id is not None:
+                    rec = get_customer(loaded_id)
+                    if not rec:
+                        st.warning("Customer not found.")
+                        st.session_state.pop("cust_loaded_id", None)
+                    else:
+                        st.subheader(f"Customer #{loaded_id}")
+                        st.json(rec)
+                        current_status = rec.get("status", "active")
+                        new_active = st.radio("Set status", ["active", "inactive"], index=0 if current_status == "active" else 1, key="cust_set_status")
+                        if st.button("Update status", key="cust_update_status"):
+                            set_active(loaded_id, new_active == "active")
+                            st.success(f"Status set to **{new_active}**.")
+                            st.session_state["cust_loaded_id"] = loaded_id
+                            st.rerun()
 
     with tab4:
         st.subheader("Agents")
-        if not _agents_available:
-            st.error(f"Agents module is not available. ({_agents_error})")
-        else:
-            status_agent = st.selectbox("Filter by status", ["active", "inactive", "all"], key="agent_status_filter")
-            status_val = None if status_agent == "all" else status_agent
-            try:
-                agents_list = list_agents(status=status_val)
-            except Exception as e:
-                st.error(f"Could not load agents: {e}")
-                agents_list = []
-            if agents_list:
-                df_agents = pd.DataFrame(agents_list)
-                cols_show = ["id", "name", "id_number", "phone1", "email", "commission_rate_pct", "tax_clearance_expiry", "status"]
-                cols_show = [c for c in cols_show if c in df_agents.columns]
-                st.dataframe(df_agents[cols_show], use_container_width=True, hide_index=True)
+        col_main4, _ = st.columns([1, 1])
+        with col_main4:
+            if not _agents_available:
+                st.error(f"Agents module is not available. ({_agents_error})")
             else:
-                st.info("No agents found. Add one below.")
-            st.divider()
-            st.subheader("Add agent")
-            with st.form("add_agent_form", clear_on_submit=True):
-                col_a1, col_a2 = st.columns(2)
-                with col_a1:
-                    aname = st.text_input("Agent name *", key="agent_name")
-                    aid_number = st.text_input("ID number", placeholder="e.g. 111111111x11", key="agent_id_number")
-                    aaddr1 = st.text_input("Address line 1", key="agent_addr1")
-                    acity = st.text_input("City", key="agent_city")
-                    aphone1 = st.text_input("Phone 1", key="agent_phone1")
-                    aemail = st.text_input("Email", key="agent_email")
-                with col_a2:
-                    aaddr2 = st.text_input("Address line 2", key="agent_addr2")
-                    acountry = st.text_input("Country", key="agent_country")
-                    aphone2 = st.text_input("Phone 2", key="agent_phone2")
-                    acommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, format="%.2f", key="agent_commission")
-                    atin = st.text_input("TIN number", key="agent_tin")
-                    atax_expiry = st.date_input("Tax clearance expiry", value=None, key="agent_tax_expiry")
-                submitted_create_agent = st.form_submit_button("Create agent")
-                if submitted_create_agent and aname.strip():
-                    try:
-                        aid = create_agent(
-                            name=aname.strip(),
-                            id_number=aid_number.strip() or None,
-                            address_line1=aaddr1.strip() or None,
-                            address_line2=aaddr2.strip() or None,
-                            city=acity.strip() or None,
-                            country=acountry.strip() or None,
-                            phone1=aphone1.strip() or None,
-                            phone2=aphone2.strip() or None,
-                            email=aemail.strip() or None,
-                            commission_rate_pct=acommission if acommission else None,
-                            tin_number=atin.strip() or None,
-                            tax_clearance_expiry=atax_expiry,
-                        )
-                        st.success(f"Agent created. Agent ID: **{aid}**.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Could not create agent: {e}")
-                elif submitted_create_agent and not aname.strip():
-                    st.warning("Please enter agent name.")
-            st.divider()
-            st.subheader("Edit agent")
-            edit_agent_id = st.number_input("Agent ID to edit", min_value=1, value=1, step=1, key="edit_agent_id")
-            if st.button("Load agent", key="agent_load_btn"):
-                st.session_state["agent_edit_loaded_id"] = edit_agent_id
-            loaded_agent_id = st.session_state.get("agent_edit_loaded_id")
-            if loaded_agent_id is not None:
-                arec = get_agent(loaded_agent_id)
-                if not arec:
-                    st.warning("Agent not found.")
-                    st.session_state.pop("agent_edit_loaded_id", None)
+                status_agent = st.selectbox("Filter by status", ["active", "inactive", "all"], key="agent_status_filter")
+                status_val = None if status_agent == "all" else status_agent
+                try:
+                    agents_list = list_agents(status=status_val)
+                except Exception as e:
+                    st.error(f"Could not load agents: {e}")
+                    agents_list = []
+                if agents_list:
+                    df_agents = pd.DataFrame(agents_list)
+                    cols_show = ["id", "name", "id_number", "phone1", "email", "commission_rate_pct", "tax_clearance_expiry", "status"]
+                    cols_show = [c for c in cols_show if c in df_agents.columns]
+                    st.dataframe(df_agents[cols_show], width="stretch", hide_index=True)
                 else:
-                    with st.form("edit_agent_form"):
-                        ename = st.text_input("Agent name *", value=arec.get("name") or "", key="edit_agent_name")
-                        eid_number = st.text_input("ID number", value=arec.get("id_number") or "", key="edit_agent_id_number")
-                        eaddr1 = st.text_input("Address line 1", value=arec.get("address_line1") or "", key="edit_agent_addr1")
-                        eaddr2 = st.text_input("Address line 2", value=arec.get("address_line2") or "", key="edit_agent_addr2")
-                        ecity = st.text_input("City", value=arec.get("city") or "", key="edit_agent_city")
-                        ecountry = st.text_input("Country", value=arec.get("country") or "", key="edit_agent_country")
-                        ephone1 = st.text_input("Phone 1", value=arec.get("phone1") or "", key="edit_agent_phone1")
-                        ephone2 = st.text_input("Phone 2", value=arec.get("phone2") or "", key="edit_agent_phone2")
-                        eemail = st.text_input("Email", value=arec.get("email") or "", key="edit_agent_email")
-                        ecommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=float(arec.get("commission_rate_pct") or 0), step=0.5, format="%.2f", key="edit_agent_commission")
-                        etin = st.text_input("TIN number", value=arec.get("tin_number") or "", key="edit_agent_tin")
-                        etax_expiry = st.date_input("Tax clearance expiry", value=arec.get("tax_clearance_expiry"), key="edit_agent_tax_expiry")
-                        estatus = st.selectbox("Status", ["active", "inactive"], index=0 if (arec.get("status") or "active") == "active" else 1, key="edit_agent_status")
-                        submitted_update_agent = st.form_submit_button("Update agent")
-                        if submitted_update_agent and ename.strip():
-                            try:
-                                update_agent(
-                                    loaded_agent_id,
-                                    name=ename.strip(),
-                                    id_number=eid_number.strip() or None,
-                                    address_line1=eaddr1.strip() or None,
-                                    address_line2=eaddr2.strip() or None,
-                                    city=ecity.strip() or None,
-                                    country=ecountry.strip() or None,
-                                    phone1=ephone1.strip() or None,
-                                    phone2=ephone2.strip() or None,
-                                    email=eemail.strip() or None,
-                                    commission_rate_pct=ecommission if ecommission else None,
-                                    tin_number=etin.strip() or None,
-                                    tax_clearance_expiry=etax_expiry,
-                                    status=estatus,
-                                )
-                                st.success("Agent updated.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Could not update agent: {e}")
-                        elif submitted_update_agent and not ename.strip():
-                            st.warning("Please enter agent name.")
+                    st.info("No agents found. Add one below.")
+                st.divider()
+                st.subheader("Add agent")
+                with st.form("add_agent_form", clear_on_submit=True):
+                    col_a1, col_a2 = st.columns(2)
+                    with col_a1:
+                        aname = st.text_input("Agent name *", key="agent_name")
+                        aid_number = st.text_input("ID number", placeholder="e.g. 111111111x11", key="agent_id_number")
+                        aaddr1 = st.text_input("Address line 1", key="agent_addr1")
+                        acity = st.text_input("City", key="agent_city")
+                        aphone1 = st.text_input("Phone 1", key="agent_phone1")
+                        aemail = st.text_input("Email", key="agent_email")
+                    with col_a2:
+                        aaddr2 = st.text_input("Address line 2", key="agent_addr2")
+                        acountry = st.text_input("Country", key="agent_country")
+                        aphone2 = st.text_input("Phone 2", key="agent_phone2")
+                        acommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, format="%.2f", key="agent_commission")
+                        atin = st.text_input("TIN number", key="agent_tin")
+                        atax_expiry = st.date_input("Tax clearance expiry", value=None, key="agent_tax_expiry")
+                    submitted_create_agent = st.form_submit_button("Create agent")
+                    if submitted_create_agent and aname.strip():
+                        try:
+                            aid = create_agent(
+                                name=aname.strip(),
+                                id_number=aid_number.strip() or None,
+                                address_line1=aaddr1.strip() or None,
+                                address_line2=aaddr2.strip() or None,
+                                city=acity.strip() or None,
+                                country=acountry.strip() or None,
+                                phone1=aphone1.strip() or None,
+                                phone2=aphone2.strip() or None,
+                                email=aemail.strip() or None,
+                                commission_rate_pct=acommission if acommission else None,
+                                tin_number=atin.strip() or None,
+                                tax_clearance_expiry=atax_expiry,
+                            )
+                            st.success(f"Agent created. Agent ID: **{aid}**.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Could not create agent: {e}")
+                    elif submitted_create_agent and not aname.strip():
+                        st.warning("Please enter agent name.")
+                st.divider()
+                st.subheader("Edit agent")
+                edit_agent_id = st.number_input("Agent ID to edit", min_value=1, value=1, step=1, key="edit_agent_id")
+                if st.button("Load agent", key="agent_load_btn"):
+                    st.session_state["agent_edit_loaded_id"] = edit_agent_id
+                loaded_agent_id = st.session_state.get("agent_edit_loaded_id")
+                if loaded_agent_id is not None:
+                    arec = get_agent(loaded_agent_id)
+                    if not arec:
+                        st.warning("Agent not found.")
+                        st.session_state.pop("agent_edit_loaded_id", None)
+                    else:
+                        with st.form("edit_agent_form"):
+                            ename = st.text_input("Agent name *", value=arec.get("name") or "", key="edit_agent_name")
+                            eid_number = st.text_input("ID number", value=arec.get("id_number") or "", key="edit_agent_id_number")
+                            eaddr1 = st.text_input("Address line 1", value=arec.get("address_line1") or "", key="edit_agent_addr1")
+                            eaddr2 = st.text_input("Address line 2", value=arec.get("address_line2") or "", key="edit_agent_addr2")
+                            ecity = st.text_input("City", value=arec.get("city") or "", key="edit_agent_city")
+                            ecountry = st.text_input("Country", value=arec.get("country") or "", key="edit_agent_country")
+                            ephone1 = st.text_input("Phone 1", value=arec.get("phone1") or "", key="edit_agent_phone1")
+                            ephone2 = st.text_input("Phone 2", value=arec.get("phone2") or "", key="edit_agent_phone2")
+                            eemail = st.text_input("Email", value=arec.get("email") or "", key="edit_agent_email")
+                            ecommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=float(arec.get("commission_rate_pct") or 0), step=0.5, format="%.2f", key="edit_agent_commission")
+                            etin = st.text_input("TIN number", value=arec.get("tin_number") or "", key="edit_agent_tin")
+                            etax_expiry = st.date_input("Tax clearance expiry", value=arec.get("tax_clearance_expiry"), key="edit_agent_tax_expiry")
+                            estatus = st.selectbox("Status", ["active", "inactive"], index=0 if (arec.get("status") or "active") == "active" else 1, key="edit_agent_status")
+                            submitted_update_agent = st.form_submit_button("Update agent")
+                            if submitted_update_agent and ename.strip():
+                                try:
+                                    update_agent(
+                                        loaded_agent_id,
+                                        name=ename.strip(),
+                                        id_number=eid_number.strip() or None,
+                                        address_line1=eaddr1.strip() or None,
+                                        address_line2=eaddr2.strip() or None,
+                                        city=ecity.strip() or None,
+                                        country=ecountry.strip() or None,
+                                        phone1=ephone1.strip() or None,
+                                        phone2=ephone2.strip() or None,
+                                        email=eemail.strip() or None,
+                                        commission_rate_pct=ecommission if ecommission else None,
+                                        tin_number=etin.strip() or None,
+                                        tax_clearance_expiry=etax_expiry,
+                                        status=estatus,
+                                    )
+                                    st.success("Agent updated.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Could not update agent: {e}")
+                            elif submitted_update_agent and not ename.strip():
+                                st.warning("Please enter agent name.")
 
 
 def teller_ui():
@@ -2859,7 +2953,7 @@ def teller_ui():
                 if missing:
                     st.error(f"Missing columns: {', '.join(missing)}. Use the template.")
                 else:
-                    st.dataframe(df.head(20), use_container_width=True, hide_index=True)
+                    st.dataframe(df.head(20), width="stretch", hide_index=True)
                     if len(df) > 20:
                         st.caption(f"Showing first 20 of {len(df)} rows.")
                     if st.button("Process batch", type="primary", key="teller_batch_process"):
@@ -3052,7 +3146,7 @@ def reamortisation_ui():
                             df_preview = pr["schedule_df"]
                             st.dataframe(
                                 format_schedule_display(df_preview),
-                                use_container_width=True,
+                                width="stretch",
                                 hide_index=True,
                             )
                             if st.button("Commit modification", type="primary", key="reamod_commit"):
@@ -3125,7 +3219,7 @@ def reamortisation_ui():
                         st.caption(f"New instalment: **{rp['new_installment']:,.2f}**")
                         st.dataframe(
                             format_schedule_display(rp["schedule_df"]),
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                         )
                         if st.button("Commit recast", type="primary", key="recast_commit"):
@@ -3155,7 +3249,7 @@ def reamortisation_ui():
         else:
             df_ua = pd.DataFrame(rows)
             cols = [c for c in ["id", "loan_id", "amount", "currency", "value_date", "status", "created_at"] if c in df_ua.columns]
-            st.dataframe(df_ua[cols] if cols else df_ua, use_container_width=True, hide_index=True)
+            st.dataframe(df_ua[cols] if cols else df_ua, width="stretch", hide_index=True)
 
 
 def statements_ui():
@@ -3190,141 +3284,143 @@ def statements_ui():
     tab_loan, tab_gl = st.tabs(["Customer loan statement", "General ledger (later)"])
     with tab_loan:
         st.subheader("Customer loan statement")
-        st.caption(
-            "Search by customer name or Loan ID. Select loan and date range. "
-            "If no dates are specified, statement runs from start of loan to today. "
-            "Generated on a non-due date: interest for current period to date is included so total exposure is correct."
-        )
-
-        search = st.text_input(
-            "Search by customer name or Loan ID",
-            placeholder="e.g. Smith or 42",
-            key="stmt_search",
-        ).strip()
-
-        customers = list_customers() if _customers_available else []
-        preselect_cust_id = None
-        preselect_loan_id = None
-
-        if search:
-            try:
-                lid = int(search)
-                from loan_management import get_loan
-                loan = get_loan(lid)
-                if loan and loan.get("customer_id"):
-                    preselect_cust_id = loan["customer_id"]
-                    preselect_loan_id = lid
-            except ValueError:
-                pass
-            if preselect_loan_id is None:
-                search_lower = search.lower()
-                customers = [c for c in customers if search_lower in (get_display_name(c["id"]) or "").lower()]
-
-        if not customers and preselect_cust_id is None:
-            st.info("No customers found. Create a customer or enter a valid Loan ID.")
-        else:
-            cust_options = [(c["id"], get_display_name(c["id"]) or f"Customer #{c['id']}") for c in customers]
-            cust_labels = [t[1] for t in cust_options]
-            default_idx = 0
-            if preselect_cust_id is not None:
-                try:
-                    default_idx = next(i for i, t in enumerate(cust_options) if t[0] == preselect_cust_id)
-                except StopIteration:
-                    cust_options.insert(0, (preselect_cust_id, get_display_name(preselect_cust_id) or f"Customer #{preselect_cust_id}"))
-                    cust_labels.insert(0, cust_options[0][1])
-                    default_idx = 0
-            cust_sel = st.selectbox(
-                "Customer",
-                cust_labels,
-                index=default_idx,
-                key="stmt_cust",
+        col_stmt, _ = st.columns([1, 1])
+        with col_stmt:
+            st.caption(
+                "Search by customer name or Loan ID. Select loan and date range. "
+                "If no dates are specified, statement runs from start of loan to today. "
+                "Generated on a non-due date: interest for current period to date is included so total exposure is correct."
             )
-            cust_id = cust_options[cust_labels.index(cust_sel)][0]
 
-            from loan_management import get_loans_by_customer
-            loans = get_loans_by_customer(cust_id)
-            if not loans:
-                st.info("No loans for this customer.")
+            search = st.text_input(
+                "Search by customer name or Loan ID",
+                placeholder="e.g. Smith or 42",
+                key="stmt_search",
+            ).strip()
+
+            customers = list_customers() if _customers_available else []
+            preselect_cust_id = None
+            preselect_loan_id = None
+
+            if search:
+                try:
+                    lid = int(search)
+                    from loan_management import get_loan
+                    loan = get_loan(lid)
+                    if loan and loan.get("customer_id"):
+                        preselect_cust_id = loan["customer_id"]
+                        preselect_loan_id = lid
+                except ValueError:
+                    pass
+                if preselect_loan_id is None:
+                    search_lower = search.lower()
+                    customers = [c for c in customers if search_lower in (get_display_name(c["id"]) or "").lower()]
+
+            if not customers and preselect_cust_id is None:
+                st.info("No customers found. Create a customer or enter a valid Loan ID.")
             else:
-                loan_options = [(l["id"], f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('facility', 0):,.2f}") for l in loans]
-                loan_labels = [t[1] for t in loan_options]
-                default_loan_idx = 0
-                if preselect_loan_id is not None:
+                cust_options = [(c["id"], get_display_name(c["id"]) or f"Customer #{c['id']}") for c in customers]
+                cust_labels = [t[1] for t in cust_options]
+                default_idx = 0
+                if preselect_cust_id is not None:
                     try:
-                        default_loan_idx = next(i for i, t in enumerate(loan_options) if t[0] == preselect_loan_id)
+                        default_idx = next(i for i, t in enumerate(cust_options) if t[0] == preselect_cust_id)
                     except StopIteration:
-                        default_loan_idx = 0
-                loan_sel = st.selectbox(
-                    "Loan",
-                    loan_labels,
-                    index=default_loan_idx,
-                    key="stmt_loan",
+                        cust_options.insert(0, (preselect_cust_id, get_display_name(preselect_cust_id) or f"Customer #{preselect_cust_id}"))
+                        cust_labels.insert(0, cust_options[0][1])
+                        default_idx = 0
+                cust_sel = st.selectbox(
+                    "Customer",
+                    cust_labels,
+                    index=default_idx,
+                    key="stmt_cust",
                 )
-                loan_id = loan_options[loan_labels.index(loan_sel)][0]
+                cust_id = cust_options[cust_labels.index(cust_sel)][0]
 
-                from loan_management import get_loan
-                loan_info = get_loan(loan_id)
-                disbursement = loan_info.get("disbursement_date") or loan_info.get("start_date")
-                if hasattr(disbursement, "date"):
-                    disbursement = disbursement.date()
-                elif isinstance(disbursement, str):
-                    disbursement = datetime.fromisoformat(disbursement[:10]).date()
-                start_default = disbursement or datetime.now().date()
-                col_start, col_end = st.columns(2)
-                with col_start:
-                    start_date = st.date_input("Start date (optional)", value=start_default, key="stmt_start")
-                with col_end:
-                    end_date = st.date_input("End date (optional)", value=datetime.now().date(), key="stmt_end")
-                st.caption("Leave defaults for start of loan to today.")
+                from loan_management import get_loans_by_customer
+                loans = get_loans_by_customer(cust_id)
+                if not loans:
+                    st.info("No loans for this customer.")
+                else:
+                    loan_options = [(l["id"], f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('facility', 0):,.2f}") for l in loans]
+                    loan_labels = [t[1] for t in loan_options]
+                    default_loan_idx = 0
+                    if preselect_loan_id is not None:
+                        try:
+                            default_loan_idx = next(i for i, t in enumerate(loan_options) if t[0] == preselect_loan_id)
+                        except StopIteration:
+                            default_loan_idx = 0
+                    loan_sel = st.selectbox(
+                        "Loan",
+                        loan_labels,
+                        index=default_loan_idx,
+                        key="stmt_loan",
+                    )
+                    loan_id = loan_options[loan_labels.index(loan_sel)][0]
 
-                if st.button("Generate statement", type="primary", key="stmt_gen"):
-                    try:
-                        rows, meta = generate_customer_loan_statement(
-                            loan_id,
-                            start_date=start_date,
-                            end_date=end_date,
-                        )
-                        if not rows:
-                            st.info("No statement lines for this period.")
-                        else:
-                            df = pd.DataFrame(rows)
-                            start = meta.get("start_date")
-                            end = meta.get("end_date")
-                            cust_id = meta.get("customer_id")
-                            customer_name = get_display_name(cust_id) if cust_id is not None else "—"
-                            start_fmt = start.strftime("%d%b%Y") if hasattr(start, "strftime") else str(start)
-                            end_fmt = end.strftime("%d%b%Y") if hasattr(end, "strftime") else str(end)
-                            gen = meta.get("generated_at")
-                            generated_fmt = gen.strftime("%d %b %Y, %H:%M:%S") if gen and hasattr(gen, "strftime") else (str(gen) if gen else "")
+                    from loan_management import get_loan
+                    loan_info = get_loan(loan_id)
+                    disbursement = loan_info.get("disbursement_date") or loan_info.get("start_date")
+                    if hasattr(disbursement, "date"):
+                        disbursement = disbursement.date()
+                    elif isinstance(disbursement, str):
+                        disbursement = datetime.fromisoformat(disbursement[:10]).date()
+                    start_default = disbursement or datetime.now().date()
+                    col_start, col_end = st.columns(2)
+                    with col_start:
+                        start_date = st.date_input("Start date (optional)", value=start_default, key="stmt_start")
+                    with col_end:
+                        end_date = st.date_input("End date (optional)", value=datetime.now().date(), key="stmt_end")
+                    st.caption("Leave defaults for start of loan to today.")
 
-                            st.markdown(
-                                "<div style='margin-bottom: 1rem;'>"
-                                f"<strong style='font-size: 1.25rem;'>Loan Statement</strong><br>"
-                                f"<span style='color: #64748b;'>Customer: {customer_name} &nbsp;|&nbsp; Customer ID: {cust_id or '—'} &nbsp;|&nbsp; Loan ID: {loan_id}</span>"
-                                "</div>",
-                                unsafe_allow_html=True,
+                    if st.button("Generate statement", type="primary", key="stmt_gen"):
+                        try:
+                            rows, meta = generate_customer_loan_statement(
+                                loan_id,
+                                start_date=start_date,
+                                end_date=end_date,
                             )
-                            st.dataframe(df, use_container_width=True, hide_index=True)
-                            st.markdown(
-                                "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.9rem;'>"
-                                f"For the period from {start_fmt} to {end_fmt}<br>"
-                                f"<strong>Generated:</strong> {generated_fmt}"
-                                "</div>",
-                                unsafe_allow_html=True,
-                            )
-                            buf = BytesIO()
-                            df.to_csv(buf, index=False, date_format="%Y-%m-%d")
-                            buf.seek(0)
-                            st.download_button(
-                                "Download as CSV",
-                                data=buf,
-                                file_name=f"loan_statement_{loan_id}_{start_date}_{end_date}.csv",
-                                mime="text/csv",
-                                key="stmt_download",
-                            )
-                    except Exception as ex:
-                        st.error(str(ex))
-                        st.exception(ex)
+                            if not rows:
+                                st.info("No statement lines for this period.")
+                            else:
+                                df = pd.DataFrame(rows)
+                                start = meta.get("start_date")
+                                end = meta.get("end_date")
+                                cust_id = meta.get("customer_id")
+                                customer_name = get_display_name(cust_id) if cust_id is not None else "—"
+                                start_fmt = start.strftime("%d%b%Y") if hasattr(start, "strftime") else str(start)
+                                end_fmt = end.strftime("%d%b%Y") if hasattr(end, "strftime") else str(end)
+                                gen = meta.get("generated_at")
+                                generated_fmt = gen.strftime("%d %b %Y, %H:%M:%S") if gen and hasattr(gen, "strftime") else (str(gen) if gen else "")
+
+                                st.markdown(
+                                    "<div style='margin-bottom: 1rem;'>"
+                                    f"<strong style='font-size: 1.25rem;'>Loan Statement</strong><br>"
+                                    f"<span style='color: #64748b;'>Customer: {customer_name} &nbsp;|&nbsp; Customer ID: {cust_id or '—'} &nbsp;|&nbsp; Loan ID: {loan_id}</span>"
+                                    "</div>",
+                                    unsafe_allow_html=True,
+                                )
+                                st.dataframe(df, width="stretch", hide_index=True)
+                                st.markdown(
+                                    "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.9rem;'>"
+                                    f"For the period from {start_fmt} to {end_fmt}<br>"
+                                    f"<strong>Generated:</strong> {generated_fmt}"
+                                    "</div>",
+                                    unsafe_allow_html=True,
+                                )
+                                buf = BytesIO()
+                                df.to_csv(buf, index=False, date_format="%Y-%m-%d")
+                                buf.seek(0)
+                                st.download_button(
+                                    "Download as CSV",
+                                    data=buf,
+                                    file_name=f"loan_statement_{loan_id}_{start_date}_{end_date}.csv",
+                                    mime="text/csv",
+                                    key="stmt_download",
+                                )
+                        except Exception as ex:
+                            st.error(str(ex))
+                            st.exception(ex)
 
     with tab_gl:
         st.caption("General ledger and ledger account statements will be added here.")
@@ -3371,7 +3467,7 @@ def accounting_ui():
         if accounts_list:
             st.dataframe(
                 pd.DataFrame(accounts_list).sort_values("Code"),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         else:
@@ -3462,7 +3558,7 @@ def accounting_ui():
             if mapping_rows:
                 st.dataframe(
                     pd.DataFrame(mapping_rows),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
             else:
@@ -3538,7 +3634,7 @@ def accounting_ui():
         if fx_rates:
             st.dataframe(
                 pd.DataFrame(fx_rates),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         else:
@@ -3589,9 +3685,15 @@ def accounting_ui():
 
 
 def main():
-    _render_header()
     _get_global_loan_settings()  # ensure defaults exist
 
+    st.sidebar.markdown(
+        "<div style='font-size: 1rem; font-weight: 700; color: #1E3A8A; margin-bottom: 0.5rem;'>"
+        "Lincoln Capital (Pvt) Ltd</div>"
+        "<div style='font-size: 0.8rem; color: #64748B;'>Loan Management System</div>",
+        unsafe_allow_html=True,
+    )
+    st.sidebar.divider()
     st.sidebar.header("Navigation")
     # Display current system date and time for operator awareness.
     now = datetime.now()
