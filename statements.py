@@ -64,7 +64,7 @@ def generate_customer_loan_statement(
 
     Returns (rows, meta) where:
       - rows: list of dicts with keys = CUSTOMER_LOAN_STATEMENT_HEADINGS
-      - meta: loan_id, customer_id, start_date, end_date, loan_type, facility, currency
+      - meta: loan_id, customer_id, start_date, end_date, loan_type, principal, currency
 
     If start_date/end_date are None: start = loan disbursement/start, end = today (or as_of_date).
     "Total Outstanding Balance" shows the total loan exposure (principal + all interest buckets + fees)
@@ -93,7 +93,7 @@ def generate_customer_loan_statement(
         "start_date": start,
         "end_date": end,
         "loan_type": loan.get("loan_type"),
-        "facility": float(loan.get("facility") or 0),
+        "principal": float(loan.get("principal") or 0),
         "currency": (loan.get("metadata") or {}).get("currency") or "USD",
         "generated_at": datetime.now(),
     }
@@ -127,7 +127,7 @@ def generate_customer_loan_statement(
 
     # Disbursement line (any increase in Principal Not Due on transaction date)
     if disbursement and start <= disbursement <= end:
-        fac = float(loan.get("facility") or loan.get("principal") or 0)
+        fac = float(loan.get("principal") or loan.get("disbursed_amount") or 0)
         if fac > 0:
             row = _blank_row()
             row["Transaction Date"] = disbursement

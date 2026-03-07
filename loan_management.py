@@ -94,10 +94,10 @@ def save_loan(
     - Inserts one row into loan_schedules (version).
     - Inserts one row per period into schedule_lines (instalments).
 
-    details: facility, principal, term, annual_rate, monthly_rate (optional),
+    details: principal (total loan amount), disbursed_amount (net proceeds), term,
              drawdown_fee, arrangement_fee, admin_fee (optional),
              disbursement_date, start_date, end_date, first_repayment_date (optional),
-             maturity_date (optional), installment (optional), total_payment (optional),
+             end_date (optional), installment (optional), total_payment (optional),
              grace_type (optional), moratorium_months (optional), bullet_type (optional),
              scheme (optional), payment_timing (optional), metadata (optional).
 
@@ -118,37 +118,39 @@ def save_loan(
     if details.get("currency"):
         metadata["currency"] = details["currency"]
 
+    # Single date from UI: disbursement date. start_date is always set equal (column kept for future use).
+    disb_date = details.get("disbursement_date") or details.get("start_date")
+
     with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO loans (
-                    customer_id, loan_type, product_code, facility, principal, term,
+                    customer_id, loan_type, product_code, principal, disbursed_amount, term,
                     annual_rate, monthly_rate, drawdown_fee, arrangement_fee, admin_fee,
-                    disbursement_date, start_date, end_date, first_repayment_date, maturity_date,
+                    disbursement_date, start_date, end_date, first_repayment_date,
                     installment, total_payment, grace_type, moratorium_months, bullet_type, scheme,
                     payment_timing, metadata, status, agent_id, relationship_manager_id
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 ) RETURNING id
                 """,
                 (
                     customer_id,
                     loan_type_db,
                     product_code,
-                    float(details.get("facility", 0)),
-                    float(details.get("principal", 0)),
+                    float(details.get("principal", details.get("facility", 0))),
+                    float(details.get("disbursed_amount", details.get("principal", 0))),
                     int(details.get("term", 0)),
                     details.get("annual_rate") if details.get("annual_rate") is not None else None,
                     details.get("monthly_rate") if details.get("monthly_rate") is not None else None,
                     details.get("drawdown_fee"),
                     details.get("arrangement_fee"),
                     details.get("admin_fee"),
-                    _date_conv(details.get("disbursement_date") or details.get("start_date")),
-                    _date_conv(details.get("start_date")),
+                    _date_conv(disb_date),
+                    _date_conv(disb_date),
                     _date_conv(details.get("end_date")),
                     _date_conv(details.get("first_repayment_date")),
-                    _date_conv(details.get("maturity_date")),
                     float(details["installment"]) if details.get("installment") is not None else None,
                     float(details["total_payment"]) if details.get("total_payment") is not None else None,
                     details.get("grace_type"),
@@ -341,7 +343,7 @@ def get_loans_by_customer(customer_id: int) -> list[dict]:
     """Fetch all loans for a customer."""
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT id, loan_type, facility, principal, term, status, created_at FROM loans WHERE customer_id = %s ORDER BY created_at DESC", (customer_id,))
+            cur.execute("SELECT id, loan_type, principal, disbursed_amount, term, status, created_at FROM loans WHERE customer_id = %s ORDER BY created_at DESC", (customer_id,))
             return [dict(r) for r in cur.fetchall()]
 
 
@@ -520,8 +522,8 @@ def update_loan_details(loan_id: int, **kwargs: Any) -> None:
     """Update selected columns on loans. Keys must be valid column names."""
     if not kwargs:
         return
-    allowed = {"principal", "term", "annual_rate", "monthly_rate", "installment", "total_payment",
-               "end_date", "maturity_date", "first_repayment_date", "loan_type"}
+    allowed = {"principal", "disbursed_amount", "term", "annual_rate", "monthly_rate", "installment", "total_payment",
+               "end_date", "first_repayment_date", "loan_type"}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
         return
@@ -710,11 +712,9 @@ def allocate_repayment_waterfall(
     and updates daily state.
 
     When the active profile is Standard and there is remaining amount at
-    waterfall step 6 (principal_arrears), raises NeedOverpaymentDecision unless
-    overpayment_action is set:
-      - overpayment_action="unapplied": credit remainder to unapplied_funds.
-      - overpayment_action="recast": allocate remainder to principal_not_due
-        (caller should then run loan recast to regenerate schedule).
+    waterfall step 6 (principal_arrears), the overpayment is sent to
+    unapplied_funds by default. Caller may pass overpayment_action="recast"
+    to allocate the remainder to principal_not_due instead (then run loan recast).
     """
     if as_of is None:
         as_of = date.today()
@@ -805,11 +805,9 @@ def allocate_repayment_waterfall(
                         )
                         remaining = 0.0
                         break
-                    if overpayment_action is None:
-                        raise NeedOverpaymentDecision(
-                            repayment_id, loan_id, overpayment_at_step6, eff_date
-                        )
-                    if overpayment_action == "unapplied":
+                    # Default: send overpayment at step 6 to UnappliedFunds (suspense).
+                    # Caller may pass overpayment_action="recast" to allocate to principal instead.
+                    if overpayment_action is None or overpayment_action == "unapplied":
                         _credit_unapplied_funds(
                             conn, loan_id, repayment_id, overpayment_at_step6, eff_date
                         )
@@ -838,11 +836,8 @@ def allocate_repayment_waterfall(
                 if remaining > 1e-6 and remaining >= amount - 1e-6:
                     _credit_unapplied_funds(conn, loan_id, repayment_id, round(remaining, 2), eff_date)
                     remaining = 0.0
-                elif remaining > 1e-6 and overpayment_action is None:
-                    raise NeedOverpaymentDecision(
-                        repayment_id, loan_id, round(remaining, 2), eff_date
-                    )
-                elif remaining > 1e-6 and overpayment_action == "unapplied":
+                # Default: send remaining (overpayment) to UnappliedFunds.
+                elif remaining > 1e-6 and (overpayment_action is None or overpayment_action == "unapplied"):
                     _credit_unapplied_funds(conn, loan_id, repayment_id, round(remaining, 2), eff_date)
                     remaining = 0.0
                 elif remaining > 1e-6 and overpayment_action == "recast":

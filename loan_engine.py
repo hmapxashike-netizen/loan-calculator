@@ -223,52 +223,23 @@ class Loan:
         """
         Compute the regular interest accrual for calendar day d.
 
-        Primary behaviour (matching principle):
+        Primary behaviour (schedule-matching):
         - Find the schedule entry whose accrual period covers d: [period_start, due_date)
-        - Split that instalment's interest across calendar months in proportion to
-          the number of accrual days in each month.
-        - For the month containing d, divide that month's allocated interest by
-          the actual days in that calendar month to get the daily accrual.
+        - Daily accrual = schedule interest for that period / number of days in the period.
+        - Same amount every day in the period; sum over period equals schedule interest.
 
         Fallback behaviour (after last scheduled period):
         - If there is outstanding principal but no schedule entry covering d,
           accrue interest on the total outstanding principal using the regular
-          monthly rate, spread evenly across the calendar month:
-              daily_interest = outstanding_principal
-                               * regular_rate_per_month
-                               / days_in_calendar_month
-        This ensures interest continues to accrue until the loan is fully cleared.
+          monthly rate, spread evenly across the calendar month.
         """
         entry = self._find_schedule_entry_for_day(d)
         if entry is not None:
-            # Total days in the accrual period (A → B, day-count basis)
             total_days = (entry.due_date - entry.period_start).days
             if total_days <= 0:
                 return Decimal("0")
-
-            # Determine how many accrual days fall into each calendar month
-            month_day_counts: Dict[tuple[int, int], int] = {}
-            cursor = entry.period_start
-            while cursor < entry.due_date:
-                key = (cursor.year, cursor.month)
-                month_day_counts[key] = month_day_counts.get(key, 0) + 1
-                cursor += timedelta(days=1)
-
-            # Month of the current day
-            month_key = (d.year, d.month)
-            days_in_accrual_month = month_day_counts.get(month_key, 0)
-            if days_in_accrual_month == 0:
-                return Decimal("0")
-
-            # Portion of scheduled interest allocated to this calendar month
-            interest_for_month = entry.interest_component * Decimal(
-                days_in_accrual_month
-            ) / Decimal(total_days)
-
-            # Daily accrual in this calendar month
-            days_in_calendar_month = calendar.monthrange(d.year, d.month)[1]
-            daily_accrual = interest_for_month / Decimal(days_in_calendar_month)
-            return daily_accrual
+            # Flat daily accrual: schedule interest / days in scheduled period
+            return entry.interest_component / Decimal(total_days)
 
         # Fallback: after last scheduled period, accrue interest on principal
         if self.config.flat_interest:
@@ -297,7 +268,9 @@ class Loan:
         """
         On a due date:
         - Move scheduled principal from principal_not_due to principal_arrears.
-        - Post scheduled interest into interest_arrears, removing it from accrued.
+        - Post scheduled interest into interest_arrears (full schedule amount so arrears
+          match the schedule); reduce accrued only by what was actually accrued to avoid
+          double-counting. Daily rounding can make sum(accruals) < entry.interest_component.
         """
         due_entries = [s for s in self.schedule if s.due_date == d]
         for entry in due_entries:
@@ -306,12 +279,18 @@ class Loan:
             self.principal_not_due = as_money(self.principal_not_due - principal_to_move)
             self.principal_arrears = as_money(self.principal_arrears + principal_to_move)
 
-            # Interest: scheduled interest should equal the sum of daily accruals
-            interest_to_post = min(self.interest_accrued_balance, entry.interest_component)
-            self.interest_accrued_balance = as_money(
-                self.interest_accrued_balance - interest_to_post
+            # Interest: post full scheduled interest to arrears (schedule is source of truth).
+            # Remove from accrued only what we actually accrued for this period to avoid
+            # double-counting; rounding can make accrued < entry.interest_component.
+            amount_from_accrued = min(
+                self.interest_accrued_balance, entry.interest_component
             )
-            self.interest_arrears = as_money(self.interest_arrears + interest_to_post)
+            self.interest_accrued_balance = as_money(
+                self.interest_accrued_balance - amount_from_accrued
+            )
+            self.interest_arrears = as_money(
+                self.interest_arrears + entry.interest_component
+            )
 
     # ---------------------------
     # Default & penalty interest

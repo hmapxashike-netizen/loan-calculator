@@ -195,14 +195,17 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
         config = _loan_config_from_row(loan_row, sys_cfg)
         schedule_entries = _build_schedule_entries(loan_row, schedule_rows)
 
-        # Opening principal for the engine should be the total facility amount,
-        # not the net amount required. This ensures interest is charged on the
-        # full debt, including the portion that effectively covers fees.
-        principal = Decimal(str(loan_row.get("facility") or loan_row.get("principal") or 0))
+        # Opening principal for the engine is the total loan amount (principal column),
+        # not the disbursed amount. This ensures interest is charged on the full debt.
+        principal = Decimal(str(loan_row.get("principal") or loan_row.get("disbursed_amount") or 0))
         disb_date = loan_row.get("disbursement_date") or loan_row.get("start_date")
         if not isinstance(disb_date, date):
             # Defensive fallback; real loans should always have a disbursement/start date.
             disb_date = as_of_date
+
+        # Do not write daily state for dates before the loan existed.
+        if disb_date > as_of_date:
+            continue
 
         engine_loan = Loan(
             loan_id=str(loan_id_int),

@@ -43,8 +43,8 @@ def _parse_schedule_date(s: str | None) -> date | None:
 
 
 def _last_due_date_from_loan(loan: dict) -> date | None:
-    """Last due date from loan.end_date or loan.maturity_date or last schedule line."""
-    end = loan.get("end_date") or loan.get("maturity_date")
+    """Last due date from loan.end_date or last schedule line."""
+    end = loan.get("end_date")
     if end:
         return _date_conv(end)
     lines = get_schedule_lines(loan["id"])
@@ -92,11 +92,11 @@ def _build_modification_schedule(
     if not loan:
         raise ValueError(f"Loan {loan_id} not found.")
     balances = get_loan_daily_state_balances(loan_id, restructure_date)
-    principal_balance = float(loan.get("principal") or loan.get("facility") or 0)
+    principal_balance = float(loan.get("principal") or loan.get("disbursed_amount") or 0)
     if balances:
         principal_balance = balances.get("principal_not_due", 0) + balances.get("principal_arrears", 0)
     if principal_balance <= 0:
-        principal_balance = float(loan.get("facility") or 0)
+        principal_balance = float(loan.get("principal") or 0)
 
     if outstanding_interest_treatment == "capitalise" and balances:
         interest_total = (
@@ -147,15 +147,15 @@ def _build_modification_schedule(
             flat_rate=False,
         )
     elif new_loan_type == "bullet_loan":
-        maturity = new_params.get("maturity_date") or add_months(start_dt, term)
-        if hasattr(maturity, "date"):
-            maturity = datetime.combine(maturity.date(), datetime.min.time())
-        dates_list = repayment_dates(start_dt, maturity, term, use_anniversary=True) if term else []
+        end_dt = new_params.get("end_date") or add_months(start_dt, term)
+        if hasattr(end_dt, "date"):
+            end_dt = datetime.combine(end_dt.date(), datetime.min.time())
+        dates_list = repayment_dates(start_dt, end_dt, term, use_anniversary=True) if term else []
         df = get_bullet_schedule(
             total_facility=principal_balance,
             annual_rate=annual_rate,
             disbursement_date=start_dt,
-            maturity_date=maturity,
+            maturity_date=end_dt,
             bullet_type=new_params.get("bullet_type") or "with_interest",
             repayment_dates_list=dates_list,
             flat_rate=False,
