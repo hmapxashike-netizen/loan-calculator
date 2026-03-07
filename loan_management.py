@@ -86,6 +86,7 @@ def save_loan(
     details: dict[str, Any],
     schedule_df: pd.DataFrame,
     schedule_version: int = 1,
+    product_code: str | None = None,
 ) -> int:
     """
     Persist loan details and schedule to DB.
@@ -114,24 +115,27 @@ def save_loan(
         metadata["penalty_rate_pct"] = float(details["penalty_rate_pct"])
     if details.get("penalty_quotation"):
         metadata["penalty_quotation"] = details["penalty_quotation"]
+    if details.get("currency"):
+        metadata["currency"] = details["currency"]
 
     with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO loans (
-                    customer_id, loan_type, facility, principal, term,
+                    customer_id, loan_type, product_code, facility, principal, term,
                     annual_rate, monthly_rate, drawdown_fee, arrangement_fee, admin_fee,
                     disbursement_date, start_date, end_date, first_repayment_date, maturity_date,
                     installment, total_payment, grace_type, moratorium_months, bullet_type, scheme,
                     payment_timing, metadata, status, agent_id, relationship_manager_id
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 ) RETURNING id
                 """,
                 (
                     customer_id,
                     loan_type_db,
+                    product_code,
                     float(details.get("facility", 0)),
                     float(details.get("principal", 0)),
                     int(details.get("term", 0)),
@@ -933,6 +937,153 @@ def allocate_repayment_waterfall(
                 fees_charges_balance=new_fees_charges,
                 days_overdue=days_overdue,
             )
+
+
+# -----------------------------------------------------------------------------
+# Products
+# -----------------------------------------------------------------------------
+
+def list_products(active_only: bool = True) -> list[dict]:
+    """List products. Each dict: id, code, name, loan_type, is_active, created_at, updated_at."""
+    try:
+        with _connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                where = " WHERE is_active = TRUE" if active_only else ""
+                cur.execute(
+                    f"SELECT id, code, name, loan_type, is_active, created_at, updated_at FROM products{where} ORDER BY code"
+                )
+                return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def get_product(product_id: int) -> dict | None:
+    """Get product by id."""
+    try:
+        with _connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, code, name, loan_type, is_active, created_at, updated_at FROM products WHERE id = %s",
+                    (product_id,),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def get_product_by_code(code: str) -> dict | None:
+    """Get product by code."""
+    try:
+        with _connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, code, name, loan_type, is_active, created_at, updated_at FROM products WHERE code = %s",
+                    (code.strip(),),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def create_product(code: str, name: str, loan_type: str) -> int:
+    """Create a product. Returns product id."""
+    code = code.strip().upper()
+    name = name.strip()
+    lt = {"Consumer Loan": "consumer_loan", "Term Loan": "term_loan", "Bullet Loan": "bullet_loan", "Customised Repayments": "customised_repayments"}.get(
+        loan_type, loan_type.replace(" ", "_").lower()
+    )
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO products (code, name, loan_type, is_active) VALUES (%s, %s, %s, TRUE) RETURNING id",
+                (code, name, lt),
+            )
+            return cur.fetchone()[0]
+
+
+def update_product(product_id: int, *, name: str | None = None, loan_type: str | None = None, is_active: bool | None = None) -> None:
+    """Update product name, loan_type, and/or is_active."""
+    updates = []
+    args = []
+    if name is not None:
+        updates.append("name = %s")
+        args.append(name.strip())
+    if loan_type is not None:
+        lt = {"Consumer Loan": "consumer_loan", "Term Loan": "term_loan", "Bullet Loan": "bullet_loan", "Customised Repayments": "customised_repayments"}.get(
+            loan_type, loan_type.replace(" ", "_").lower()
+        )
+        updates.append("loan_type = %s")
+        args.append(lt)
+    if is_active is not None:
+        updates.append("is_active = %s")
+        args.append(is_active)
+    if not updates:
+        return
+    args.append(product_id)
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE products SET updated_at = NOW(), {', '.join(updates)} WHERE id = %s",
+                args,
+            )
+
+
+def delete_product(product_id: int) -> None:
+    """Delete a product and its config. Raises ValueError if any loans reference this product."""
+    CONFIG_KEY_PRODUCT_PREFIX = "product_config:"
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id, code FROM products WHERE id = %s", (product_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError("Product not found.")
+            code = row["code"]
+            cur.execute("SELECT COUNT(*) AS n FROM loans WHERE product_code = %s", (code,))
+            n = cur.fetchone()["n"] or 0
+            if n > 0:
+                raise ValueError(f"Cannot delete: {n} loan(s) use this product. Deactivate it instead.")
+            cur.execute("DELETE FROM config WHERE key = %s", (CONFIG_KEY_PRODUCT_PREFIX + code,))
+            cur.execute("DELETE FROM products WHERE id = %s", (product_id,))
+
+
+CONFIG_KEY_PRODUCT_PREFIX = "product_config:"
+
+
+def get_product_config_from_db(code: str) -> dict | None:
+    """Load product config JSON from config table."""
+    try:
+        key = CONFIG_KEY_PRODUCT_PREFIX + code.strip()
+        with _connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT value FROM config WHERE key = %s", (key,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return json.loads(row[0])
+    except Exception:
+        pass
+    return None
+
+
+def save_product_config_to_db(code: str, config: dict) -> bool:
+    """Save product config JSON."""
+    try:
+        key = CONFIG_KEY_PRODUCT_PREFIX + code.strip()
+        value_json = json.dumps(config)
+        with _connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO config (key, value, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                    """,
+                    (key, value_json),
+                )
+        return True
+    except Exception:
+        return False
 
 
 # -----------------------------------------------------------------------------

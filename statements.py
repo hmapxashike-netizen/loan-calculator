@@ -94,7 +94,7 @@ def generate_customer_loan_statement(
         "end_date": end,
         "loan_type": loan.get("loan_type"),
         "facility": float(loan.get("facility") or 0),
-        "currency": "USD",
+        "currency": (loan.get("metadata") or {}).get("currency") or "USD",
         "generated_at": datetime.now(),
     }
 

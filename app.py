@@ -73,6 +73,14 @@ try:
         NeedOverpaymentDecision,
         load_system_config_from_db,
         get_loan_daily_state_balances,
+        list_products,
+        get_product,
+        get_product_by_code,
+        create_product,
+        update_product,
+        delete_product,
+        get_product_config_from_db,
+        save_product_config_to_db,
     )
     _loan_management_available = True
 except Exception as e:
@@ -221,16 +229,14 @@ def _get_system_config() -> dict:
 
 
 def system_configurations_ui():
-    """System configurations page: Loan configurations (used by all loan modules)."""
+    """System configurations: Sectors, EOD, and Products. Loan/currency/waterfall/suspension are per product."""
     st.markdown(
         "<div style='background-color: #16A34A; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.1rem;'>System configurations</div>",
         unsafe_allow_html=True,
     )
     st.markdown("<br>", unsafe_allow_html=True)
     cfg = _get_system_config()
-    glob = _get_global_loan_settings()
 
-    # Current EOD settings (can be edited in this page)
     eod_cfg = cfg.get("eod_settings", {}) or {}
     eod_mode = eod_cfg.get("mode", "manual")
     eod_time = eod_cfg.get("automatic_time", "23:00")
@@ -245,387 +251,9 @@ def system_configurations_ui():
         k: bool(existing_tasks.get(k, default)) for k, default in eod_task_defaults.items()
     }
 
-    tab_loan, tab_currency, tab_sectors, tab_waterfall, tab_suspension, tab_eod = st.tabs(
-        [
-            "Loan configurations",
-            "Currency configurations",
-            "Sectors & subsectors",
-            "Payment waterfall",
-            "Suspension & curing",
-            "EOD configurations",
-        ]
+    tab_sectors, tab_eod, tab_products = st.tabs(
+        ["Sectors & subsectors", "EOD configurations", "Products"],
     )
-
-    # ---------------- Loan configurations tab ----------------
-    with tab_loan:
-        st.subheader("Loan configurations")
-        st.caption(
-            "These settings apply to all loan types (Consumer, Term, Bullet, Customised). "
-            "Loan calculators and capture use these as defaults."
-        )
-        im_options = ["Reducing balance", "Flat rate"]
-        it_options = ["Simple", "Compound"]
-        rb_options = ["Per annum", "Per month"]
-        interest_method = st.radio(
-            "Interest method",
-            im_options,
-            key="syscfg_interest_method",
-            index=im_options.index(glob.get("interest_method", "Reducing balance")) if glob.get("interest_method") in im_options else 0,
-        )
-        interest_type = st.radio(
-            "Interest type",
-            it_options,
-            key="syscfg_interest_type",
-            index=it_options.index(glob.get("interest_type", "Simple")) if glob.get("interest_type") in it_options else 0,
-        )
-        rate_basis = st.radio(
-            "Rate basis",
-            rb_options,
-            key="syscfg_rate_basis",
-            index=rb_options.index(glob.get("rate_basis", "Per month")) if glob.get("rate_basis") in rb_options else 1,
-        )
-        st.session_state["global_loan_settings"] = {
-            "interest_method": interest_method,
-            "interest_type": interest_type,
-            "rate_basis": rate_basis,
-        }
-        st.divider()
-        st.subheader("Compounding")
-        capitalization = st.radio(
-            "Capitalization of unpaid interest",
-            ["No", "Yes"],
-            key="syscfg_capitalization",
-            index=1 if cfg.get("capitalization_of_unpaid_interest") else 0,
-        )
-
-        st.divider()
-        with st.expander("Penalty interest", expanded=False):
-            st.subheader("Penalty interest")
-            st.caption("How penalty interest is quoted and computed.")
-            penalty_quotation = st.radio(
-                "Quotation of penalty interest rate",
-                ["Absolute Rate", "Margin"],
-                key="syscfg_penalty_quotation",
-                index=0 if cfg.get("penalty_interest_quotation") == "Absolute Rate" else 1,
-                help="Absolute Rate: penalty as a fixed rate. Margin: penalty as a margin above the regular interest rate.",
-            )
-            penalty_balance = st.radio(
-                "Balance for computation of penalty interest rate",
-                ["Arrears", "Balance"],
-                key="syscfg_penalty_balance",
-                index=0 if cfg.get("penalty_balance_basis") == "Arrears" else 1,
-                help="Arrears: penalty on outstanding arrears only. Balance: penalty on total balance outstanding.",
-            )
-            st.caption(
-                "Default penalty rates per loan type (interpreted per Quotation above: "
-                "Absolute = fixed rate %; Margin = margin % above regular rate)"
-            )
-            pr = cfg.get("penalty_rates", {})
-            p1, p2, p3, p4 = st.columns(4)
-            with p1:
-                penalty_consumer = st.number_input(
-                    "Consumer (%)",
-                    0.0,
-                    100.0,
-                    float(pr.get("consumer_loan", 2.0)),
-                    step=0.5,
-                    key="syscfg_penalty_consumer",
-                )
-            with p2:
-                penalty_term = st.number_input(
-                    "Term (%)",
-                    0.0,
-                    100.0,
-                    float(pr.get("term_loan", 2.0)),
-                    step=0.5,
-                    key="syscfg_penalty_term",
-                )
-            with p3:
-                penalty_bullet = st.number_input(
-                    "Bullet (%)",
-                    0.0,
-                    100.0,
-                    float(pr.get("bullet_loan", 2.0)),
-                    step=0.5,
-                    key="syscfg_penalty_bullet",
-                )
-            with p4:
-                penalty_customised = st.number_input(
-                    "Customised (%)",
-                    0.0,
-                    100.0,
-                    float(pr.get("customised_repayments", 2.0)),
-                    step=0.5,
-                    key="syscfg_penalty_customised",
-                )
-
-        st.divider()
-        with st.expander("Default rates & fees per loan type", expanded=False):
-            st.subheader("Default rates & fees per loan type")
-            st.caption("Used as defaults in Loan capture; user can override.")
-            dr = cfg.get("default_rates", {})
-            st.markdown("**Consumer Loan** – manage schemes (interest rate & admin fee per scheme):")
-            schemes = list(cfg.get("consumer_schemes", []))
-            updated_schemes = []
-            for idx, sch in enumerate(schemes):
-                c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-                with c1:
-                    st.caption(f"Scheme: **{sch.get('name', '')}**")
-                with c2:
-                    sch_rate = st.number_input(
-                        "Rate %",
-                        0.0,
-                        100.0,
-                        float(sch.get("interest_rate_pct", 7.0)),
-                        step=0.1,
-                        key=f"syscfg_sch_rate_{idx}",
-                    )
-                with c3:
-                    sch_admin = st.number_input(
-                        "Admin %",
-                        0.0,
-                        100.0,
-                        float(sch.get("admin_fee_pct", 5.0)),
-                        step=0.1,
-                        key=f"syscfg_sch_admin_{idx}",
-                    )
-                with c4:
-                    if st.button("Remove", key=f"syscfg_sch_remove_{idx}"):
-                        schemes.pop(idx)
-                        st.session_state["system_config"] = {**cfg, "consumer_schemes": schemes}
-                        st.rerun()
-                updated_schemes.append(
-                    {
-                        "name": sch.get("name", ""),
-                        "interest_rate_pct": sch_rate,
-                        "admin_fee_pct": sch_admin,
-                    }
-                )
-            new_sch_name = st.text_input(
-                "New scheme name", key="syscfg_new_scheme", placeholder="e.g. ABC"
-            )
-            nsr, nsa = st.columns(2)
-            with nsr:
-                new_sch_rate = st.number_input(
-                    "New scheme rate %",
-                    0.0,
-                    100.0,
-                    7.0,
-                    step=0.1,
-                    key="syscfg_new_sch_rate",
-                )
-            with nsa:
-                new_sch_admin = st.number_input(
-                    "New scheme admin %",
-                    0.0,
-                    100.0,
-                    5.0,
-                    step=0.1,
-                    key="syscfg_new_sch_admin",
-                )
-            if st.button("Add scheme", key="syscfg_add_scheme") and new_sch_name and new_sch_name.strip():
-                name = new_sch_name.strip().upper()
-                if not any(s.get("name") == name for s in schemes):
-                    schemes = [
-                        *updated_schemes,
-                        {
-                            "name": name,
-                            "interest_rate_pct": new_sch_rate,
-                            "admin_fee_pct": new_sch_admin,
-                        },
-                    ]
-                    st.session_state["system_config"] = {**cfg, "consumer_schemes": schemes}
-                    st.rerun()
-            consumer_addl = st.number_input(
-                "Consumer: default additional rate (%) for future start dates",
-                0.0,
-                100.0,
-                float(cfg.get("consumer_default_additional_rate_pct", 0)),
-                step=0.1,
-                key="syscfg_consumer_addl",
-            )
-            cr_def = dr.get("consumer_loan", {})
-            co1, co2 = st.columns(2)
-            with co1:
-                consumer_other_rate = st.number_input(
-                    "Consumer (Other): default interest %",
-                    0.0,
-                    100.0,
-                    float(cr_def.get("interest_pct", 7.0)),
-                    step=0.1,
-                    key="syscfg_consumer_other_rate",
-                )
-            with co2:
-                consumer_other_admin = st.number_input(
-                    "Consumer (Other): default admin %",
-                    0.0,
-                    100.0,
-                    float(cr_def.get("admin_fee_pct", 5.0)),
-                    step=0.1,
-                    key="syscfg_consumer_other_admin",
-                )
-
-            st.markdown("**Term Loan** – default interest & fees:")
-            tr = dr.get("term_loan", {})
-            t1, t2, t3 = st.columns(3)
-            with t1:
-                term_rate = st.number_input(
-                    "Term interest %",
-                    0.0,
-                    100.0,
-                    float(tr.get("interest_pct", 7.0)),
-                    step=0.1,
-                    key="syscfg_term_rate",
-                )
-            with t2:
-                term_drawdown = st.number_input(
-                    "Term drawdown %",
-                    0.0,
-                    100.0,
-                    float(tr.get("drawdown_pct", 2.5)),
-                    step=0.1,
-                    key="syscfg_term_drawdown",
-                )
-            with t3:
-                term_arr = st.number_input(
-                    "Term arrangement %",
-                    0.0,
-                    100.0,
-                    float(tr.get("arrangement_pct", 2.5)),
-                    step=0.1,
-                    key="syscfg_term_arr",
-                )
-
-            st.markdown("**Bullet Loan** – default interest & fees:")
-            br = dr.get("bullet_loan", {})
-            b1, b2, b3 = st.columns(3)
-            with b1:
-                bullet_rate = st.number_input(
-                    "Bullet interest %",
-                    0.0,
-                    100.0,
-                    float(br.get("interest_pct", 7.0)),
-                    step=0.1,
-                    key="syscfg_bullet_rate",
-                )
-            with b2:
-                bullet_drawdown = st.number_input(
-                    "Bullet drawdown %",
-                    0.0,
-                    100.0,
-                    float(br.get("drawdown_pct", 2.5)),
-                    step=0.1,
-                    key="syscfg_bullet_drawdown",
-                )
-            with b3:
-                bullet_arr = st.number_input(
-                    "Bullet arrangement %",
-                    0.0,
-                    100.0,
-                    float(br.get("arrangement_pct", 2.5)),
-                    step=0.1,
-                    key="syscfg_bullet_arr",
-                )
-
-            st.markdown("**Customised Repayments** – default interest & fees:")
-            cr = dr.get("customised_repayments", {})
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                cust_rate = st.number_input(
-                    "Customised interest %",
-                    0.0,
-                    100.0,
-                    float(cr.get("interest_pct", 7.0)),
-                    step=0.1,
-                    key="syscfg_cust_rate",
-                )
-            with c2:
-                cust_drawdown = st.number_input(
-                    "Customised drawdown %",
-                    0.0,
-                    100.0,
-                    float(cr.get("drawdown_pct", 2.5)),
-                    step=0.1,
-                    key="syscfg_cust_drawdown",
-                )
-            with c3:
-                cust_arr = st.number_input(
-                    "Customised arrangement %",
-                    0.0,
-                    100.0,
-                    float(cr.get("arrangement_pct", 2.5)),
-                    step=0.1,
-                    key="syscfg_cust_arr",
-                )
-
-    # ---------------- Currency configurations tab ----------------
-    with tab_currency:
-        st.subheader("Currency configurations")
-        st.caption(
-            "Define the base currency for the system, accepted currencies, and default currencies per loan type."
-        )
-        base_currency = st.text_input(
-            "Base currency (ISO code)",
-            value=str(cfg.get("base_currency", "USD")).upper(),
-            max_chars=8,
-            key="syscfg_base_currency",
-        ).strip().upper() or "USD"
-        accepted_default = cfg.get("accepted_currencies", [base_currency])
-        accepted_csv = st.text_input(
-            "Accepted currencies (comma-separated)",
-            value=",".join(accepted_default),
-            help="Example: USD,ZWL,ZAR. The base currency should be included.",
-            key="syscfg_accepted_currencies",
-        )
-        accepted_list = [
-            c.strip().upper() for c in accepted_csv.split(",") if c.strip()
-        ] or [base_currency]
-        if base_currency not in accepted_list:
-            accepted_list.insert(0, base_currency)
-
-        loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
-        consumer_default_ccy = st.selectbox(
-            "Default currency – Consumer loans",
-            accepted_list,
-            index=accepted_list.index(
-                loan_curr_cfg.get("consumer_loan", base_currency)
-            )
-            if loan_curr_cfg.get("consumer_loan", base_currency) in accepted_list
-            else 0,
-            key="syscfg_ccy_consumer",
-        )
-        term_default_ccy = st.selectbox(
-            "Default currency – Term loans",
-            accepted_list,
-            index=accepted_list.index(
-                loan_curr_cfg.get("term_loan", base_currency)
-            )
-            if loan_curr_cfg.get("term_loan", base_currency) in accepted_list
-            else 0,
-            key="syscfg_ccy_term",
-        )
-        bullet_default_ccy = st.selectbox(
-            "Default currency – Bullet loans",
-            accepted_list,
-            index=accepted_list.index(
-                loan_curr_cfg.get("bullet_loan", base_currency)
-            )
-            if loan_curr_cfg.get("bullet_loan", base_currency) in accepted_list
-            else 0,
-            key="syscfg_ccy_bullet",
-        )
-        cust_default_ccy = st.selectbox(
-            "Default currency – Customised repayments",
-            accepted_list,
-            index=accepted_list.index(
-                loan_curr_cfg.get("customised_repayments", base_currency)
-            )
-            if loan_curr_cfg.get("customised_repayments", base_currency)
-            in accepted_list
-            else 0,
-            key="syscfg_ccy_cust",
-        )
-        # (No penalty/loan-type rate configs here; see Loan configurations tab.)
 
     # ---------------- Sectors & subsectors tab ----------------
     with tab_sectors:
@@ -725,138 +353,228 @@ def system_configurations_ui():
             key="syscfg_eod_task_notify",
         )
 
-    # ---------------- Payment waterfall tab ----------------
-    with tab_waterfall:
-        st.subheader("Payment waterfall")
-        st.caption("Order in which payments are allocated.")
-        waterfall_options = ["Standard", "Borrower-friendly"]
-        waterfall_help = (
-            "**Standard:** prioritises fees and interest, then principal.\n\n"
-            "**Borrower-friendly:** prioritises principal first, then interest and fees.\n\n"
-            "You can configure the detailed order of buckets below."
-        )
-        current_wf = cfg.get("payment_waterfall", "Standard")
-        wf_index = 0 if current_wf.startswith("Standard") else 1
-        payment_waterfall = st.radio(
-            "Active waterfall profile",
-            waterfall_options,
-            key="syscfg_waterfall",
-            index=wf_index,
-            help=waterfall_help,
-        )
+    # ---------------- Products tab ----------------
+    with tab_products:
+        st.subheader("Products")
+        st.caption("Products own loan config, currency, waterfall, suspension & curing. Loan type (on product) drives amortisation. System references products by code.")
+        if not _loan_management_available:
+            st.error("Loan management module is required for Products.")
+        else:
+            products_list = list_products(active_only=False)
+            if products_list:
+                product_options = [(0, "(Select product to edit)")] + [(p["id"], f"{p['code']} – {p['name']} (ID: {p['id']})") for p in products_list]
+                option_labels = [t[1] for t in product_options]
+                option_ids = [t[0] for t in product_options]
 
-        buckets = cfg.get(
-            "waterfall_buckets",
-            [
-                "fees_charges_balance",
-                "penalty_interest_balance",
-                "default_interest_balance",
-                "interest_arrears_balance",
-                "interest_accrued_balance",
-                "principal_arrears",
-                "principal_not_due",
-            ],
-        )
-        profiles = cfg.get("waterfall_profiles", {})
-        std_order = profiles.get("standard", buckets)
-        bf_order = profiles.get("borrower_friendly", list(reversed(buckets)))
+                st.markdown("**Products**")
+                col_h1, col_h2, col_h3, col_h4, col_h5, col_h6 = st.columns([1.5, 2, 1.2, 1, 0.8, 0.8])
+                with col_h1: st.caption("**Code**")
+                with col_h2: st.caption("**Name**")
+                with col_h3: st.caption("**Loan type**")
+                with col_h4: st.caption("**Status**")
+                with col_h5: st.caption("**Edit**")
+                with col_h6: st.caption("**Delete**")
+                for p in products_list:
+                    c1, c2, c3, c4, c5, c6 = st.columns([1.5, 2, 1.2, 1, 0.8, 0.8])
+                    with c1: st.text(p.get("code", ""))
+                    with c2: st.text(p.get("name", ""))
+                    with c3: st.text(p.get("loan_type", ""))
+                    with c4: st.text("Active" if p.get("is_active", True) else "Inactive")
+                    with c5:
+                        if st.button("Edit", key=f"ptbl_edit_{p['id']}"):
+                            idx = next((i for i, (oid, _) in enumerate(product_options) if oid == p["id"]), 0)
+                            st.session_state["prod_edit_sel"] = idx
+                            st.rerun()
+                    with c6:
+                        if st.button("Delete", key=f"ptbl_del_{p['id']}"):
+                            try:
+                                delete_product(p["id"])
+                                st.success("Product deleted.")
+                                st.rerun()
+                            except ValueError as e:
+                                st.error(str(e))
+                                st.rerun()
+                with st.expander("Add product", expanded=False):
+                    p_code = st.text_input("Code", key="prod_add_code", max_chars=32, placeholder="e.g. TL-USD")
+                    p_name = st.text_input("Name", key="prod_add_name", placeholder="Display name")
+                    p_lt = st.selectbox("Loan type", ["term_loan", "consumer_loan", "bullet_loan", "customised_repayments"], key="prod_add_lt")
+                    if st.button("Create", key="prod_add_btn") and p_code and p_name:
+                        code_upper = p_code.strip().upper()
+                        if get_product_by_code(code_upper):
+                            st.error("Product code already exists.")
+                        else:
+                            try:
+                                create_product(code_upper, p_name.strip(), p_lt)
+                                st.success(f"Product **{code_upper}** created.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(str(e))
+                if "prod_edit_sel" not in st.session_state:
+                    st.session_state["prod_edit_sel"] = 0
+                if st.session_state.get("prod_edit_sel", 0) != 0:
+                    st.divider()
+                    st.markdown("**Edit product config**")
+                    sel_idx = st.selectbox(
+                        "Select product to edit config",
+                        range(len(option_labels)),
+                        format_func=lambda i: option_labels[i],
+                        key="prod_edit_sel",
+                    )
+                    edit_id = option_ids[sel_idx] if sel_idx is not None else 0
+                else:
+                    edit_id = 0
+                    st.caption("Click **Edit** on a product above to edit its config.")
+                if edit_id:
+                    prod = get_product(edit_id)
+                    if prod:
+                        p_cfg = get_product_config_from_db(prod["code"]) or {}
+                        pid = edit_id
+                        code_display = prod.get("code") or ""
+                        name_display = prod.get("name") or ""
+                        lt = prod.get("loan_type", "term_loan")
+                        with st.expander(f"**{code_display}** – Rename & status", expanded=True):
+                            col_rn, col_st = st.columns(2)
+                            with col_rn:
+                                new_name = st.text_input("Rename product", value=prod.get("name") or "", key="pedit_rename")
+                                if st.button("Save name", key="pedit_save_name") and new_name.strip():
+                                    update_product(edit_id, name=new_name.strip())
+                                    st.success("Name updated.")
+                                    st.rerun()
+                            with col_st:
+                                current_active = bool(prod.get("is_active", True))
+                                status_choice = st.radio("Status", ["Active", "Inactive"], index=0 if current_active else 1, key="pedit_status")
+                                if st.button("Update status", key="pedit_save_status"):
+                                    update_product(edit_id, is_active=(status_choice == "Active"))
+                                    st.success("Status updated.")
+                                    st.rerun()
+                        st.caption("Product config (overrides system config for loans using this product).")
+                        st.markdown(f"**Changes apply only to this product:** **{code_display}**")
+                        p_reg_tab, p_pen_tab, p_ccy_tab, p_wf_tab, p_sus_tab = st.tabs(["Regular interest", "Penalty", "Currency", "Waterfall", "Suspension & curing"])
+                        with p_reg_tab:
+                            glob_p = (p_cfg.get("global_loan_settings") or {}).copy()
+                            for k, v in (cfg.get("global_loan_settings") or {}).items():
+                                if k not in glob_p:
+                                    glob_p[k] = v
+                            im_opts, it_opts, rb_opts = ["Reducing balance", "Flat rate"], ["Simple", "Compound"], ["Per annum", "Per month"]
+                            c1, c2, c3 = st.columns(3)
+                            with c1:
+                                im = st.radio("Interest method", im_opts, index=im_opts.index(glob_p.get("interest_method", "Reducing balance")) if glob_p.get("interest_method") in im_opts else 0, key=f"pedit_im_{pid}")
+                            with c2:
+                                it = st.radio("Interest type", it_opts, index=it_opts.index(glob_p.get("interest_type", "Simple")) if glob_p.get("interest_type") in it_opts else 0, key=f"pedit_it_{pid}")
+                            with c3:
+                                rb = st.radio("Rate basis", rb_opts, index=rb_opts.index(glob_p.get("rate_basis", "Per month")) if glob_p.get("rate_basis") in rb_opts else 1, key=f"pedit_rb_{pid}")
+                            cap = st.radio("Capitalization", ["No", "Yes"], index=1 if p_cfg.get("capitalization_of_unpaid_interest", cfg.get("capitalization_of_unpaid_interest")) else 0, key=f"pedit_cap_{pid}")
+                            st.markdown("**Default rates (this product type)**")
+                            dr = p_cfg.get("default_rates") or cfg.get("default_rates") or {}
+                            row = dr.get(lt, {})
+                            if lt == "consumer_loan":
+                                cr_def = dr.get("consumer_loan", {})
+                                co1, co2 = st.columns(2)
+                                with co1: dr_interest = st.number_input("Interest %", 0.0, 100.0, float(cr_def.get("interest_pct", 7)), step=0.1, key=f"pedit_dr_int_{pid}")
+                                with co2: dr_admin = st.number_input("Admin %", 0.0, 100.0, float(cr_def.get("admin_fee_pct", 5)), step=0.1, key=f"pedit_dr_adm_{pid}")
+                            else:
+                                d1, d2, d3 = st.columns(3)
+                                with d1: dr_interest = st.number_input("Interest %", 0.0, 100.0, float(row.get("interest_pct", 7)), step=0.1, key=f"pedit_dr_int_{pid}")
+                                with d2: dr_drawdown = st.number_input("Drawdown %", 0.0, 100.0, float(row.get("drawdown_pct", 2.5)), step=0.1, key=f"pedit_dr_dd_{pid}")
+                                with d3: dr_arr = st.number_input("Arrangement %", 0.0, 100.0, float(row.get("arrangement_pct", 2.5)), step=0.1, key=f"pedit_dr_arr_{pid}")
+                            if st.button("Save Regular interest", key=f"pedit_save_reg_{pid}"):
+                                merge = dict(p_cfg)
+                                merge["global_loan_settings"] = {"interest_method": im, "interest_type": it, "rate_basis": rb}
+                                merge["capitalization_of_unpaid_interest"] = cap == "Yes"
+                                dr_merge = dict(merge.get("default_rates") or {})
+                                if lt == "consumer_loan":
+                                    dr_merge["consumer_loan"] = {"interest_pct": dr_interest, "admin_fee_pct": dr_admin}
+                                else:
+                                    dr_merge[lt] = {"interest_pct": dr_interest, "drawdown_pct": dr_drawdown, "arrangement_pct": dr_arr}
+                                merge["default_rates"] = dr_merge
+                                if save_product_config_to_db(prod["code"], merge):
+                                    st.success("Saved.")
+                                    st.rerun()
+                        with p_pen_tab:
+                            pr = p_cfg.get("penalty_rates") or cfg.get("penalty_rates") or {}
+                            pq = p_cfg.get("penalty_interest_quotation") or cfg.get("penalty_interest_quotation") or "Absolute Rate"
+                            pb = p_cfg.get("penalty_balance_basis") or cfg.get("penalty_balance_basis") or "Arrears"
+                            col_q, col_b, col_p = st.columns(3)
+                            with col_q:
+                                penalty_quotation_p = st.radio("Quotation", ["Absolute Rate", "Margin"], index=0 if pq == "Absolute Rate" else 1, key=f"pedit_pq_{pid}")
+                            with col_b:
+                                penalty_balance_p = st.radio("Balance for penalty interest", ["Arrears", "Balance"], index=0 if pb == "Arrears" else 1, key=f"pedit_pb_{pid}")
+                            with col_p:
+                                pen_value = st.number_input("Default penalty %", 0.0, 100.0, float(pr.get(lt, 2)), step=0.5, key=f"pedit_pen_{pid}")
+                            if st.button("Save Penalty", key=f"pedit_save_pen_{pid}"):
+                                merge = dict(p_cfg)
+                                merge["penalty_interest_quotation"] = penalty_quotation_p
+                                merge["penalty_balance_basis"] = penalty_balance_p
+                                merge["penalty_rates"] = {**(merge.get("penalty_rates") or {}), lt: pen_value}
+                                if save_product_config_to_db(prod["code"], merge):
+                                    st.success("Saved.")
+                                    st.rerun()
+                        with p_ccy_tab:
+                            base_p = p_cfg.get("base_currency") or cfg.get("base_currency", "USD")
+                            acc_p = p_cfg.get("accepted_currencies") or cfg.get("accepted_currencies", [base_p])
+                            if isinstance(acc_p, list):
+                                acc_p = ",".join(acc_p)
+                            def_ccy_map = p_cfg.get("loan_default_currencies") or cfg.get("loan_default_currencies") or {}
+                            def_ccy = def_ccy_map.get(prod.get("loan_type"), base_p)
+                            base_in = st.text_input("Base currency", value=base_p, max_chars=8, key=f"pedit_base_{pid}")
+                            acc_in = st.text_input("Accepted (comma)", value=acc_p if isinstance(acc_p, str) else ",".join(acc_p), key=f"pedit_acc_{pid}")
+                            list_acc = [c.strip().upper() for c in (acc_in or base_in or "USD").split(",") if c.strip()] or [base_in or "USD"]
+                            base_val = (base_in or "USD").strip().upper()
+                            if base_val and base_val not in list_acc:
+                                list_acc.insert(0, base_val)
+                            def_in = st.selectbox("Default currency (this product)", list_acc, index=list_acc.index(def_ccy) if def_ccy in list_acc else 0, key=f"pedit_defccy_{pid}")
+                            if st.button("Save Currency config", key=f"pedit_save_ccy_{pid}"):
+                                merge = dict(p_cfg)
+                                merge["base_currency"] = (base_in or "USD").strip().upper()
+                                merge["accepted_currencies"] = list_acc
+                                merge["loan_default_currencies"] = {**(merge.get("loan_default_currencies") or {}), prod["loan_type"]: def_in}
+                                if save_product_config_to_db(prod["code"], merge):
+                                    st.success("Saved.")
+                                    st.rerun()
+                        with p_wf_tab:
+                            wf = p_cfg.get("payment_waterfall") or cfg.get("payment_waterfall", "Standard")
+                            wf_choice = st.radio("Waterfall profile", ["Standard", "Borrower-friendly"], index=0 if wf.startswith("Standard") else 1, key=f"pedit_wf_{pid}")
+                            if st.button("Save Waterfall config", key=f"pedit_save_wf_{pid}"):
+                                merge = dict(p_cfg)
+                                merge["payment_waterfall"] = wf_choice
+                                if save_product_config_to_db(prod["code"], merge):
+                                    st.success("Saved.")
+                                    st.rerun()
+                        with p_sus_tab:
+                            sus = p_cfg.get("suspension_logic") or cfg.get("suspension_logic", "Manual")
+                            cur = p_cfg.get("curing_logic") or cfg.get("curing_logic", "Curing")
+                            sus_choice = st.radio("Suspension logic", ["Manual", "Automatic"], index=0 if sus == "Manual" else 1, key=f"pedit_sus_{pid}")
+                            cur_choice = st.radio("Curing logic", ["Curing", "Yo-Yoing"], index=0 if cur == "Curing" else 1, key=f"pedit_cur_{pid}")
+                            if st.button("Save Suspension & curing", key=f"pedit_save_sus_{pid}"):
+                                merge = dict(p_cfg)
+                                merge["suspension_logic"] = sus_choice
+                                merge["curing_logic"] = cur_choice
+                                if save_product_config_to_db(prod["code"], merge):
+                                    st.success("Saved.")
+                                    st.rerun()
+                    else:
+                        st.caption("No product with that ID.")
+            else:
+                st.info("No products yet. Add one below.")
+                with st.expander("Add product", expanded=True):
+                    p_code = st.text_input("Code", key="prod_add_code_empty", max_chars=32, placeholder="e.g. TL-USD")
+                    p_name = st.text_input("Name", key="prod_add_name_empty", placeholder="Display name")
+                    p_lt = st.selectbox("Loan type", ["term_loan", "consumer_loan", "bullet_loan", "customised_repayments"], key="prod_add_lt_empty")
+                    if st.button("Create", key="prod_add_btn_empty") and p_code and p_name:
+                        code_upper = p_code.strip().upper()
+                        if get_product_by_code(code_upper):
+                            st.error("Product code already exists.")
+                        else:
+                            try:
+                                create_product(code_upper, p_name.strip(), p_lt)
+                                st.success(f"Product **{code_upper}** created.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(str(e))
 
-        st.caption(
-            "Configure bucket order for each waterfall profile. "
-            "Buckets cannot be removed here; backend changes are required to change the set."
-        )
-        col_std, col_bf = st.columns(2)
-
-        # Standard profile ordering (fixed buckets, editable numeric priority per row)
-        with col_std:
-            st.markdown("**Standard waterfall order**")
-            order_index = {name: i for i, name in enumerate(std_order)}
-            std_priorities: dict[str, int] = {}
-            for i, b in enumerate(buckets):
-                default_prio = order_index.get(b, i)
-                std_priorities[b] = st.number_input(
-                    label=b,
-                    min_value=1,
-                    max_value=len(buckets),
-                    value=default_prio + 1,
-                    step=1,
-                    key=f"wf_std_{b}",
-                    help="Lower number = higher priority (paid earlier).",
-                )
-            # Sort buckets by priority, then name for stability
-            std_selected = [b for b, _ in sorted(std_priorities.items(), key=lambda x: (x[1], x[0]))]
-
-        # Borrower-friendly profile ordering
-        with col_bf:
-            st.markdown("**Borrower-friendly waterfall order**")
-            bf_order_index = {name: i for i, name in enumerate(bf_order)}
-            bf_priorities: dict[str, int] = {}
-            for i, b in enumerate(buckets):
-                default_prio = bf_order_index.get(b, i)
-                bf_priorities[b] = st.number_input(
-                    label=b,
-                    min_value=1,
-                    max_value=len(buckets),
-                    value=default_prio + 1,
-                    step=1,
-                    key=f"wf_bf_{b}",
-                    help="Lower number = higher priority (paid earlier).",
-                )
-            bf_selected = [b for b, _ in sorted(bf_priorities.items(), key=lambda x: (x[1], x[0]))]
-
-    # ---------------- Suspension & curing tab ----------------
-    with tab_suspension:
-        st.subheader("Suspension & curing")
-        st.caption("How suspension and curing are triggered.")
-        suspension_logic = st.radio(
-            "Suspension logic",
-            ["Manual", "Automatic"],
-            key="syscfg_suspension",
-            index=0 if cfg.get("suspension_logic") == "Manual" else 1,
-        )
-        curing_logic = st.radio(
-            "Curing logic",
-            ["Curing", "Yo-Yoing"],
-            key="syscfg_curing",
-            index=0 if cfg.get("curing_logic") == "Curing" else 1,
-            help="Curing: 3–6 month curing period. Yo-Yoing: immediate curing action.",
-        )
-
+    # Keep existing config from DB; only EOD is edited in this UI. Loan/currency/waterfall/suspension are per product.
     st.session_state["system_config"] = {
-        "waterfall_buckets": buckets,
-        "waterfall_profiles": {
-            "standard": std_selected,
-            "borrower_friendly": bf_selected,
-        },
-        "base_currency": base_currency,
-        "accepted_currencies": accepted_list,
-        "loan_default_currencies": {
-            "consumer_loan": consumer_default_ccy,
-            "term_loan": term_default_ccy,
-            "bullet_loan": bullet_default_ccy,
-            "customised_repayments": cust_default_ccy,
-        },
-        "penalty_interest_quotation": penalty_quotation,
-        "penalty_balance_basis": penalty_balance,
-        "penalty_rates": {
-            "consumer_loan": penalty_consumer,
-            "term_loan": penalty_term,
-            "bullet_loan": penalty_bullet,
-            "customised_repayments": penalty_customised,
-        },
-        "consumer_schemes": updated_schemes,
-        "consumer_default_additional_rate_pct": consumer_addl,
-        "default_rates": {
-            "consumer_loan": {"interest_pct": consumer_other_rate, "admin_fee_pct": consumer_other_admin},
-            "term_loan": {"interest_pct": term_rate, "drawdown_pct": term_drawdown, "arrangement_pct": term_arr},
-            "bullet_loan": {"interest_pct": bullet_rate, "drawdown_pct": bullet_drawdown, "arrangement_pct": bullet_arr},
-            "customised_repayments": {"interest_pct": cust_rate, "drawdown_pct": cust_drawdown, "arrangement_pct": cust_arr},
-        },
-        "payment_waterfall": payment_waterfall,
-        "suspension_logic": suspension_logic,
-        "curing_logic": curing_logic,
-        "capitalization_of_unpaid_interest": capitalization == "Yes",
-        # EOD settings: configured here, referenced by the End of day page.
+        **cfg,
         "eod_settings": {
             "mode": eod_mode,
             "automatic_time": eod_time,
@@ -901,7 +619,7 @@ def eod_ui():
     st.caption(
         f"Current EOD mode: **{mode.upper()}**"
         + (f" (scheduled around {automatic_time})" if mode == "automatic" else "")
-        + ". Configure this under **System configurations → Loan configurations → End of day (EOD) settings**."
+        + ". Configure this under **System configurations → EOD configurations**."
     )
 
     st.divider()
@@ -1765,11 +1483,11 @@ def capture_loan_ui():
     if "capture_loan_step" not in st.session_state:
         st.session_state["capture_loan_step"] = 0
     step = st.session_state["capture_loan_step"]
-    st.caption(f"**Step {step + 1} of 3** — 1. Customer & loan type · 2. Compute schedule · 3. Review & save")
+    st.caption(f"**Step {step + 1} of 3** — 1. Customer & product · 2. Compute schedule · 3. Review & save")
     st.markdown("<br>", unsafe_allow_html=True)
 
     if step == 0:
-        st.subheader("Select customer and loan type")
+        st.subheader("Select customer and product")
         customers_list = list_customers(status="active") or []
         if not customers_list:
             st.warning("No active customers. Add a customer first under **Customers**.")
@@ -1785,12 +1503,27 @@ def capture_loan_ui():
                 )
                 if choice is not None:
                     st.session_state["capture_customer_id"] = options[choice][0]
-                loan_type = st.selectbox(
-                    "Loan type",
-                    ["Consumer Loan", "Term Loan", "Bullet Loan", "Customised Repayments"],
-                    key="cap_loan_type",
+                product_opts = list_products(active_only=True) if _loan_management_available else []
+                if not product_opts:
+                    st.warning("No products. Create products under **System configurations → Products**.")
+                product_labels = [f"{p['code']} – {p['name']}" for p in product_opts]
+                lt_display = {"consumer_loan": "Consumer Loan", "term_loan": "Term Loan", "bullet_loan": "Bullet Loan", "customised_repayments": "Customised Repayments"}
+                prod_options = list(range(len(product_labels))) if product_labels else [0]
+                prod_format = (lambda i: product_labels[i]) if product_labels else (lambda i: "(No products)")
+                product_sel_idx = st.selectbox(
+                    "Product",
+                    prod_options,
+                    format_func=prod_format,
+                    key="cap_product_sel",
                 )
-                st.session_state["capture_loan_type"] = loan_type
+                if product_opts and product_sel_idx is not None and 0 <= product_sel_idx < len(product_opts):
+                    st.session_state["capture_product_code"] = product_opts[product_sel_idx]["code"]
+                    st.session_state["capture_loan_type"] = lt_display.get(product_opts[product_sel_idx]["loan_type"], product_opts[product_sel_idx]["loan_type"])
+                else:
+                    st.session_state["capture_product_code"] = None
+                    st.session_state["capture_loan_type"] = "Term Loan"
+                if product_opts and product_sel_idx is not None and 0 <= product_sel_idx < len(product_opts):
+                    st.caption(f"Loan type: **{lt_display.get(product_opts[product_sel_idx]['loan_type'], product_opts[product_sel_idx]['loan_type'])}** (from product)")
             with col_b:
                 if _users_for_rm_available:
                     users_rm = list_users_for_selection()
@@ -2395,7 +2128,7 @@ def capture_loan_ui():
         ltype = st.session_state.get("capture_loan_type")
         if not details or df_schedule is None or not cid or not ltype:
             if save_result is None:
-                st.info("Complete **1. Customer & loan type** and **2. Compute schedule** first.")
+                st.info("Complete **1. Customer & product** and **2. Compute schedule** first.")
             col_clr, col_b = st.columns(2)
             with col_clr:
                 if st.button("Clear and start over", key="cap_clear_t3_empty"):
@@ -2412,7 +2145,7 @@ def capture_loan_ui():
             sum_col1, sum_col2 = st.columns(2)
             with sum_col1:
                 st.markdown(f"**Customer:** {get_display_name(cid)} (ID {cid})")
-                st.markdown(f"**Loan type:** {ltype}")
+                st.markdown(f"**Product:** {st.session_state.get('capture_product_code') or '—'} · **Loan type:** {ltype}")
             with sum_col2:
                 st.markdown(f"**Principal:** {details.get('facility', 0):,.2f}")
                 st.markdown(f"**Net proceeds:** {details.get('principal', 0):,.2f} | **Term:** {details.get('term', 0)} months")
@@ -2430,7 +2163,7 @@ def capture_loan_ui():
                             "agent_id": st.session_state.get("capture_agent_id"),
                             "relationship_manager_id": st.session_state.get("capture_relationship_manager_id"),
                         }
-                        loan_id = save_loan_to_db(cid, ltype, details_with_agent, df_schedule)
+                        loan_id = save_loan_to_db(cid, ltype, details_with_agent, df_schedule, product_code=st.session_state.get("capture_product_code"))
                         st.session_state["capture_last_save_result"] = {"success": True, "loan_id": loan_id}
                         for k in ["capture_loan_details", "capture_loan_schedule_df"]:
                             st.session_state.pop(k, None)
