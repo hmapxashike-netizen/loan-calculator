@@ -1,3 +1,16 @@
+"""
+Check whether a given password matches the stored hash for an admin user.
+Run from project root:  python scripts/check_admin_password.py
+Edit email and password below.
+"""
+
+import os
+import sys
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import psycopg2
 import bcrypt
 from config import get_database_url
@@ -14,4 +27,3 @@ if row:
     print("Match:", bcrypt.checkpw(password.encode("utf-8"), row[0].encode("utf-8")))
 cur.close()
 conn.close()
-

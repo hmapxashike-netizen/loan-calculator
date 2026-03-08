@@ -1,10 +1,2 @@
-loan_id,customer_id,customer_name,product_code,loan_type,status,principal,disbursed_amount,term,annual_rate,disbursement_date,start_date,end_date,first_repayment_date,installment,loan_created_at
-1,2,Ekezal,CUSTOM-USD,customised_repayments,active,1086.96,1000.00,13,1.200000,2026-03-01,2026-03-01,2027-04-01,2027-04-01,,2026-03-01 16:33:35.805014+02:00
-2,1,test,CONSUMER-USD,consumer_loan,active,500.00,465.00,3,,2026-03-05,2026-03-05,2026-06-04,2026-04-05,190.53,2026-03-05 20:27:33.469950+02:00
-3,4,Musana traders,CONSUMER-USD,consumer_loan,active,500.00,475.00,6,,2026-03-01,2026-03-01,2026-08-31,2026-04-01,104.90,2026-03-05 20:32:07.784110+02:00
-4,4,Musana traders,TERM-USD,term_loan,active,1052.63,1000.00,24,1.200000,2026-03-05,2026-03-05,2028-03-05,2026-04-05,118.72,2026-03-05 20:34:53.709596+02:00
-5,5,Takura Musora,TERM-USD,term_loan,active,1000.00,1000.00,24,1.200000,2026-03-01,2026-03-01,2028-03-30,2026-04-30,200.20,2026-03-05 20:36:01.679047+02:00
-6,7,Upenyu Moyo,BULLET-USD,bullet_loan,active,1000.00,1000.00,3,1.200000,2026-03-01,,,,,2026-03-05 20:37:18.272065+02:00
-7,6,Windastic,CUSTOM-USD,customised_repayments,active,1052.63,1000.00,4,1.200000,2026-03-01,2026-03-01,2026-07-01,2026-06-01,,2026-03-05 20:38:39.028060+02:00
-8,7,Upenyu Moyo,TERM-USD,term_loan,active,1052.63,1000.00,6,1.200000,2025-10-08,2025-10-08,2026-04-30,2025-11-30,258.77,2026-03-06 20:02:45.012880+02:00
-9,7,Upenyu Moyo,TERM-USD,term_loan,active,1052.63,1000.00,12,1.200000,2025-11-01,2025-11-01,2026-10-31,2025-11-30,154.79,2026-03-07 18:38:37.045791+02:00
+loan_id,customer_id,customer_name,product_code,loan_type,status,principal,disbursed_amount,term,annual_rate,monthly_rate,loan_metadata,disbursement_date,start_date,end_date,first_repayment_date,installment,loan_created_at
+10,6,Windastic,TERM-USD,term_loan,active,10000.00,10000.00,12,1.200000,,"{'currency': 'USD', 'penalty_rate_pct': 5.0, 'penalty_quotation': 'Absolute Rate'}",2025-06-30,2025-06-30,2026-06-30,2025-07-31,1481.22,2026-03-08 17:59:09.598559+02:00

@@ -1,3 +1,16 @@
+"""
+One-off script to create or reset an admin user in the users table.
+Run from project root:  python scripts/bootstrap_admin.py
+Edit email, password, and full_name below before running.
+"""
+
+import os
+import sys
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import psycopg2
 import bcrypt
 from config import get_database_url

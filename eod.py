@@ -23,6 +23,7 @@ Security and scalability notes
   user account).
 """
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -32,12 +33,30 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from config import get_database_url
-from loan_engine import LoanConfig, ScheduleEntry, Loan, WaterfallType
+from loan_daily_engine import LoanConfig, ScheduleEntry, Loan
 from loan_management import (
+    get_allocation_totals_for_loan_date,
+    get_loan_daily_state_balances,
     get_schedule_lines,
     save_loan_daily_state,
     load_system_config_from_db,
+    get_product_config_from_db,
+    _get_waterfall_config,
 )
+
+# Treat balances below this as zero for "no arrears" and default/penalty zeroing (avoids float drift).
+ARREARS_ZERO_TOLERANCE = 1e-6
+
+
+def _effective_config_for_loan(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge product config over system config for this loan so balance/quotation/default penalty % come from product."""
+    effective_cfg = dict(sys_cfg)
+    product_code = loan_row.get("product_code")
+    if product_code:
+        p_cfg = get_product_config_from_db(product_code)
+        if p_cfg:
+            effective_cfg = {**sys_cfg, **p_cfg}
+    return effective_cfg
 
 
 def _get_conn():
@@ -63,17 +82,48 @@ def _fetch_active_loans(conn) -> List[Dict[str, Any]]:
         return [dict(r) for r in cur.fetchall()]
 
 
+def _get_loan_capture_rate_pct(loan_row: Dict[str, Any]) -> float:
+    """
+    Get penalty_rate_pct from loan metadata (loan capture). System relies purely on loan capture;
+    if null or zero, returns 0.0. Handles metadata as dict (JSONB), str (JSON text), and key variants.
+    """
+    raw = loan_row.get("metadata") or loan_row.get("Metadata")
+    if raw is None:
+        return 0.0
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return 0.0
+    if not isinstance(raw, dict):
+        return 0.0
+    pct = raw.get("penalty_rate_pct")
+    if pct is None:
+        pct = raw.get("Penalty_rate_pct")
+    if pct is None:
+        return 0.0
+    try:
+        return float(pct)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _loan_config_from_row(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> LoanConfig:
     """
-    Build a LoanConfig for the engine from a loan row and system configuration.
+    Build a LoanConfig for the engine from a loan row and (merged) configuration.
 
-    This is a pragmatic mapping:
-    - regular_rate_per_month: from loans.annual_rate (per annum) or monthly_rate.
-    - default/penalty absolute rates: from system-wide defaults per loan_type.
+    - regular_rate_per_month: from loans.annual_rate or monthly_rate.
+    - Default Rate % = Penalty Rate % = loan capture only (metadata.penalty_rate_pct). Null or zero → 0.
+    - At 5%: default_daily = 987.05*0.05/30 = 1.65, penalty_daily = 494.17*0.05/30 = 0.82.
     """
     loan_type = loan_row.get("loan_type") or "term_loan"
     default_rates = (sys_cfg.get("default_rates") or {}).get(loan_type, {}) or {}
-    penalty_rates = sys_cfg.get("penalty_rates") or {}
+
+    # Penalty/default rate from loan capture only; null or zero → 0 (no config fallback)
+    loan_capture_pct = _get_loan_capture_rate_pct(loan_row)
+    rate_pct = Decimal(str(loan_capture_pct)) / Decimal("100")
+    default_abs_monthly = rate_pct
+    penalty_pct = rate_pct
 
     # Regular rate per month
     monthly_rate = None
@@ -86,23 +136,14 @@ def _loan_config_from_row(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> 
         dr_interest = Decimal(str(default_rates.get("interest_pct", 0))) / Decimal("100")
         monthly_rate = dr_interest / Decimal("12")
 
-    # Default & penalty absolute monthly rates (simple mapping of %/month).
-    default_abs_monthly = Decimal(str(default_rates.get("interest_pct", 0))) / Decimal(
-        "100"
-    )
-    penalty_pct = Decimal(str(penalty_rates.get(loan_type, 0))) / Decimal("100")
-
-    # Grace period days and penalty basis
+    # Grace period days and penalty basis (from config: product or system).
     grace_days = 5  # sensible default; can be made configurable later per product
     penalty_on_principal_arrears_only = (
         (sys_cfg.get("penalty_balance_basis") or "Arrears") == "Arrears"
     )
 
-    waterfall_name = (sys_cfg.get("payment_waterfall") or "Standard").strip().lower()
-    if waterfall_name.startswith("borrower"):
-        waterfall_type = WaterfallType.BORROWER_FRIENDLY
-    else:
-        waterfall_type = WaterfallType.STANDARD
+    # Use same waterfall config as loan_management (normalized bucket order) so engine and allocation stay in sync
+    profile_key, waterfall_bucket_order = _get_waterfall_config(sys_cfg)
 
     flat_interest = (sys_cfg.get("interest_method") or "Reducing balance") == "Flat rate"
 
@@ -112,7 +153,7 @@ def _loan_config_from_row(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> 
         penalty_interest_absolute_rate_per_month=penalty_pct,
         grace_period_days=grace_days,
         penalty_on_principal_arrears_only=penalty_on_principal_arrears_only,
-        waterfall_type=waterfall_type,
+        waterfall_bucket_order=waterfall_bucket_order,
         flat_interest=flat_interest,
     )
 
@@ -175,6 +216,62 @@ class EODResult:
     tasks_run: Tuple[str, ...] = ()
 
 
+def get_engine_state_for_loan_date(loan_id: int, as_of_date: date) -> Dict[str, Any] | None:
+    """
+    Run the loan engine for one loan up to as_of_date and return the accrual-only state (no DB write).
+    Used by reallocate_repayment to restore state = engine - other receipts' allocations.
+    Returns dict with principal_not_due, principal_arrears, interest_accrued_balance, interest_arrears_balance,
+    default_interest_balance, penalty_interest_balance, fees_charges_balance, days_overdue, and daily fields.
+    """
+    sys_cfg = load_system_config_from_db() or {}
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM loans WHERE id = %s AND status = 'active'", (loan_id,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        loan_row = dict(row)
+    schedule_rows = get_schedule_lines(loan_id)
+    if not schedule_rows:
+        return None
+    effective_cfg = _effective_config_for_loan(loan_row, sys_cfg)
+    config = _loan_config_from_row(loan_row, effective_cfg)
+    schedule_entries = _build_schedule_entries(loan_row, schedule_rows)
+    principal = Decimal(str(loan_row.get("principal") or loan_row.get("disbursed_amount") or 0))
+    disb_date = loan_row.get("disbursement_date") or loan_row.get("start_date")
+    if not isinstance(disb_date, date):
+        disb_date = as_of_date
+    if disb_date > as_of_date:
+        return None
+    engine_loan = Loan(
+        loan_id=str(loan_id),
+        disbursement_date=disb_date,
+        original_principal=principal,
+        config=config,
+        schedule=schedule_entries,
+    )
+    current = disb_date
+    while current <= as_of_date:
+        engine_loan.process_day(current)
+        current += timedelta(days=1)
+    return {
+        "principal_not_due": float(engine_loan.principal_not_due),
+        "principal_arrears": float(engine_loan.principal_arrears),
+        "interest_accrued_balance": float(engine_loan.interest_accrued_balance),
+        "interest_arrears_balance": float(engine_loan.interest_arrears),
+        "default_interest_balance": float(engine_loan.default_interest_balance),
+        "penalty_interest_balance": float(engine_loan.penalty_interest_balance),
+        "fees_charges_balance": float(engine_loan.fees_charges_balance),
+        "days_overdue": engine_loan.days_overdue,
+        "regular_interest_daily": float(engine_loan.last_regular_interest_daily),
+        "default_interest_daily": float(engine_loan.last_default_interest_daily),
+        "penalty_interest_daily": float(engine_loan.last_penalty_interest_daily),
+        "regular_interest_period_to_date": float(engine_loan.regular_interest_period_to_date),
+        "penalty_interest_period_to_date": float(engine_loan.penalty_interest_period_to_date),
+        "default_interest_period_to_date": float(engine_loan.default_interest_period_to_date),
+    }
+
+
 def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
     """
     Core loan engine step: recompute loan buckets and interest into loan_daily_state.
@@ -192,7 +289,8 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
             # Skip loans without schedules; nothing to accrue yet.
             continue
 
-        config = _loan_config_from_row(loan_row, sys_cfg)
+        effective_cfg = _effective_config_for_loan(loan_row, sys_cfg)
+        config = _loan_config_from_row(loan_row, effective_cfg)
         schedule_entries = _build_schedule_entries(loan_row, schedule_rows)
 
         # Opening principal for the engine is the total loan amount (principal column),
@@ -215,26 +313,118 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
             schedule=schedule_entries,
         )
 
+        # Run engine to yesterday to get engine state at end of yesterday (for deltas)
+        yesterday = as_of_date - timedelta(days=1)
         current = disb_date
-        while current <= as_of_date:
+        while current <= yesterday:
             engine_loan.process_day(current)
             current += timedelta(days=1)
 
-        # Persist daily state snapshot for as_of_date.
+        # Capture engine state at end of yesterday (accrual-only, no allocations)
+        engine_yesterday = {
+            "principal_not_due": float(engine_loan.principal_not_due),
+            "principal_arrears": float(engine_loan.principal_arrears),
+            "interest_accrued_balance": float(engine_loan.interest_accrued_balance),
+            "interest_arrears": float(engine_loan.interest_arrears),
+            "default_interest_balance": float(engine_loan.default_interest_balance),
+            "penalty_interest_balance": float(engine_loan.penalty_interest_balance),
+            "fees_charges_balance": float(engine_loan.fees_charges_balance),
+        }
+
+        # Run one more day to get engine state at end of today
+        if as_of_date > yesterday:
+            engine_loan.process_day(as_of_date)
+
+        alloc = get_allocation_totals_for_loan_date(loan_id_int, as_of_date)
+        yesterday_saved = (
+            get_loan_daily_state_balances(loan_id_int, yesterday)
+            if yesterday >= disb_date else None
+        )
+
+        # Balance today = yesterday's balance + (engine today - engine yesterday) - allocations today.
+        # So: interest_arrears_balance = yesterday_balance + new_arrears_today - receipts allocated to interest arrears.
+        # Same for default interest, penalty interest, and all other buckets.
+        def _today_balance(
+            yesterday_key: str,
+            engine_today_val: float,
+            engine_yesterday_val: float,
+            alloc_key: str,
+        ) -> float:
+            delta = engine_today_val - engine_yesterday_val
+            if yesterday_saved is not None and yesterday_key in yesterday_saved:
+                return max(0.0, yesterday_saved[yesterday_key] + delta - alloc.get(alloc_key, 0.0))
+            return max(0.0, engine_today_val - alloc.get(alloc_key, 0.0))
+
+        principal_not_due = _today_balance("principal_not_due", float(engine_loan.principal_not_due), engine_yesterday["principal_not_due"], "alloc_principal_not_due")
+        principal_arrears = _today_balance("principal_arrears", float(engine_loan.principal_arrears), engine_yesterday["principal_arrears"], "alloc_principal_arrears")
+        interest_accrued_balance = _today_balance("interest_accrued_balance", float(engine_loan.interest_accrued_balance), engine_yesterday["interest_accrued_balance"], "alloc_interest_accrued")
+        interest_arrears_balance = _today_balance("interest_arrears_balance", float(engine_loan.interest_arrears), engine_yesterday["interest_arrears"], "alloc_interest_arrears")
+        default_interest_balance = _today_balance("default_interest_balance", float(engine_loan.default_interest_balance), engine_yesterday["default_interest_balance"], "alloc_default_interest")
+        penalty_interest_balance = _today_balance("penalty_interest_balance", float(engine_loan.penalty_interest_balance), engine_yesterday["penalty_interest_balance"], "alloc_penalty_interest")
+        fees_charges_balance = _today_balance("fees_charges_balance", float(engine_loan.fees_charges_balance), engine_yesterday["fees_charges_balance"], "alloc_fees_charges")
+
+        # Post-allocation "no arrears": principal and interest arrears are zero (with tolerance).
+        no_arrears = (
+            principal_arrears <= ARREARS_ZERO_TOLERANCE
+            and interest_arrears_balance <= ARREARS_ZERO_TOLERANCE
+        )
+
+        # Days overdue must be *consecutive* days in arrears from saved state, not the engine's
+        # internal counter (which keeps counting from a past due date and would "pop" to 32 when
+        # we stop forcing zero). So: when no arrears -> 0; when arrears -> yesterday_saved + 1 or 1.
+        if no_arrears:
+            days_overdue_save = 0
+        else:
+            if yesterday_saved is not None and "days_overdue" in yesterday_saved:
+                days_overdue_save = yesterday_saved["days_overdue"] + 1
+            else:
+                days_overdue_save = 1
+
+        # Grace period: only accrue default/penalty when *saved* days_overdue > grace_period_days.
+        # When no arrears or within grace, persist 0 for default/penalty daily and balances.
+        grace_days = config.grace_period_days
+        within_grace_or_current = no_arrears or (days_overdue_save <= grace_days)
+
+        if within_grace_or_current:
+            default_interest_daily_save = 0.0
+            penalty_interest_daily_save = 0.0
+            default_interest_balance_save = 0.0
+            penalty_interest_balance_save = 0.0
+            default_interest_period_to_date_save = max(
+                0.0,
+                float(engine_loan.default_interest_period_to_date)
+                - float(engine_loan.last_default_interest_daily),
+            )
+            penalty_interest_period_to_date_save = max(
+                0.0,
+                float(engine_loan.penalty_interest_period_to_date)
+                - float(engine_loan.last_penalty_interest_daily),
+            )
+        else:
+            default_interest_daily_save = float(engine_loan.last_default_interest_daily)
+            penalty_interest_daily_save = float(engine_loan.last_penalty_interest_daily)
+            default_interest_balance_save = default_interest_balance
+            penalty_interest_balance_save = penalty_interest_balance
+            default_interest_period_to_date_save = float(engine_loan.default_interest_period_to_date)
+            penalty_interest_period_to_date_save = float(engine_loan.penalty_interest_period_to_date)
+
         save_loan_daily_state(
             loan_id=loan_id_int,
             as_of_date=as_of_date,
             regular_interest_daily=float(engine_loan.last_regular_interest_daily),
-            principal_not_due=float(engine_loan.principal_not_due),
-            principal_arrears=float(engine_loan.principal_arrears),
-            interest_accrued_balance=float(engine_loan.interest_accrued_balance),
-            interest_arrears_balance=float(engine_loan.interest_arrears),
-            default_interest_daily=float(engine_loan.last_default_interest_daily),
-            default_interest_balance=float(engine_loan.default_interest_balance),
-            penalty_interest_daily=float(engine_loan.last_penalty_interest_daily),
-            penalty_interest_balance=float(engine_loan.penalty_interest_balance),
-            fees_charges_balance=float(engine_loan.fees_charges_balance),
-            days_overdue=engine_loan.days_overdue,
+            principal_not_due=principal_not_due,
+            principal_arrears=principal_arrears,
+            interest_accrued_balance=interest_accrued_balance,
+            interest_arrears_balance=interest_arrears_balance,
+            default_interest_daily=default_interest_daily_save,
+            default_interest_balance=default_interest_balance_save,
+            penalty_interest_daily=penalty_interest_daily_save,
+            penalty_interest_balance=penalty_interest_balance_save,
+            fees_charges_balance=fees_charges_balance,
+            days_overdue=days_overdue_save,
+            regular_interest_period_to_date=float(engine_loan.regular_interest_period_to_date),
+            penalty_interest_period_to_date=penalty_interest_period_to_date_save,
+            default_interest_period_to_date=default_interest_period_to_date_save,
         )
         processed += 1
 

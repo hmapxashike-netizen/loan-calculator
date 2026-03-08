@@ -72,7 +72,7 @@ try:
         get_amount_due_summary,
         get_schedule_lines,
         allocate_repayment_waterfall,
-        NeedOverpaymentDecision,
+        apply_unapplied_funds_recast,
         load_system_config_from_db,
         get_loan_daily_state_balances,
         list_products,
@@ -88,7 +88,6 @@ try:
 except Exception as e:
     _loan_management_available = False
     _loan_management_error = str(e)
-    NeedOverpaymentDecision = None
 
 
 # --- App state & global settings (UI) ---
@@ -1512,27 +1511,27 @@ def capture_loan_ui():
                 )
                 if choice is not None:
                     st.session_state["capture_customer_id"] = options[choice][0]
-                product_opts = list_products(active_only=True) if _loan_management_available else []
-                if not product_opts:
-                    st.warning("No products. Create products under **System configurations → Products**.")
-                product_labels = [f"{p['code']} – {p['name']}" for p in product_opts]
-                lt_display = {"consumer_loan": "Consumer Loan", "term_loan": "Term Loan", "bullet_loan": "Bullet Loan", "customised_repayments": "Customised Repayments"}
-                prod_options = list(range(len(product_labels))) if product_labels else [0]
-                prod_format = (lambda i: product_labels[i]) if product_labels else (lambda i: "(No products)")
-                product_sel_idx = st.selectbox(
-                    "Product",
-                    prod_options,
-                    format_func=prod_format,
-                    key="cap_product_sel",
-                )
-                if product_opts and product_sel_idx is not None and 0 <= product_sel_idx < len(product_opts):
-                    st.session_state["capture_product_code"] = product_opts[product_sel_idx]["code"]
-                    st.session_state["capture_loan_type"] = lt_display.get(product_opts[product_sel_idx]["loan_type"], product_opts[product_sel_idx]["loan_type"])
-                else:
-                    st.session_state["capture_product_code"] = None
-                    st.session_state["capture_loan_type"] = "Term Loan"
-                if product_opts and product_sel_idx is not None and 0 <= product_sel_idx < len(product_opts):
-                    st.caption(f"Loan type: **{lt_display.get(product_opts[product_sel_idx]['loan_type'], product_opts[product_sel_idx]['loan_type'])}** (from product)")
+                    product_opts = list_products(active_only=True) if _loan_management_available else []
+                    if not product_opts:
+                        st.warning("No products. Create products under **System configurations → Products**.")
+                    product_labels = [f"{p['code']} – {p['name']}" for p in product_opts]
+                    lt_display = {"consumer_loan": "Consumer Loan", "term_loan": "Term Loan", "bullet_loan": "Bullet Loan", "customised_repayments": "Customised Repayments"}
+                    prod_options = list(range(len(product_labels))) if product_labels else [0]
+                    prod_format = (lambda i: product_labels[i]) if product_labels else (lambda i: "(No products)")
+                    product_sel_idx = st.selectbox(
+                        "Product",
+                        prod_options,
+                        format_func=prod_format,
+                        key="cap_product_sel",
+                    )
+                    if product_opts and product_sel_idx is not None and 0 <= product_sel_idx < len(product_opts):
+                        st.session_state["capture_product_code"] = product_opts[product_sel_idx]["code"]
+                        st.session_state["capture_loan_type"] = lt_display.get(product_opts[product_sel_idx]["loan_type"], product_opts[product_sel_idx]["loan_type"])
+                    else:
+                        st.session_state["capture_product_code"] = None
+                        st.session_state["capture_loan_type"] = "Term Loan"
+                    if product_opts and product_sel_idx is not None and 0 <= product_sel_idx < len(product_opts):
+                        st.caption(f"Loan type: **{lt_display.get(product_opts[product_sel_idx]['loan_type'], product_opts[product_sel_idx]['loan_type'])}** (from product)")
             with col_b:
                 if _users_for_rm_available:
                     users_rm = list_users_for_selection()
@@ -1680,13 +1679,13 @@ def capture_loan_ui():
                 pen_col1, _ = st.columns([1, 1])
                 with pen_col1:
                     penalty_pct = st.number_input(
-                        "Penalty interest (%) – override default",
+                        "Penalty interest (%)",
                         0.0,
                         100.0,
                         float(def_penalty),
                         step=0.5,
                         key="cap_cl_penalty",
-                        help="Interpreted per System config: Absolute = fixed rate; Margin = above regular rate",
+                        help="Required. 0% is acceptable. System uses only this value for penalty/default interest.",
                     )
                 details, df_schedule = compute_consumer_schedule(
                     loan_required, loan_term, disbursement_date, base_rate, admin_fee, input_tf,
@@ -1775,13 +1774,13 @@ def capture_loan_ui():
                 tpen1, tpen2 = st.columns(2)
                 with tpen1:
                     penalty_pct = st.number_input(
-                        "Penalty interest (%) – override default",
+                        "Penalty interest (%)",
                         0.0,
                         100.0,
                         float(def_penalty),
                         step=0.5,
                         key="cap_term_penalty",
-                        help="Interpreted per System config",
+                        help="Required. 0% is acceptable. System uses only this value for penalty/default interest.",
                     )
                 with tpen2:
                     grace_type = st.radio(
@@ -1910,13 +1909,13 @@ def capture_loan_ui():
                 bpen1, _ = st.columns([1, 1])
                 with bpen1:
                     penalty_pct = st.number_input(
-                        "Penalty interest (%) – override default",
+                        "Penalty interest (%)",
                         0.0,
                         100.0,
                         float(def_penalty),
                         step=0.5,
                         key="cap_bullet_penalty",
-                        help="Interpreted per System config",
+                        help="Required. 0% is acceptable. System uses only this value for penalty/default interest.",
                     )
                 first_rep = None
                 use_anniversary = True
@@ -1995,7 +1994,7 @@ def capture_loan_ui():
                 drawdown_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="cap_cust_drawdown") / 100.0
                 arrangement_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct", 2.5)), step=0.1, key="cap_cust_arrangement") / 100.0
                 def_penalty = cfg.get("penalty_rates", {}).get("customised_repayments", 2.0)
-                penalty_pct = st.number_input("Penalty interest (%) – override default", 0.0, 100.0, float(def_penalty), step=0.5, key="cap_cust_penalty", help="Interpreted per System config")
+                penalty_pct = st.number_input("Penalty interest (%)", 0.0, 100.0, float(def_penalty), step=0.5, key="cap_cust_penalty", help="Required. 0% is acceptable. System uses only this value for penalty/default interest.")
                 total_fee = drawdown_pct + arrangement_pct
                 if input_tf:
                     total_facility = loan_required
@@ -2221,7 +2220,7 @@ def customers_ui():
                 with col2:
                     phone2 = st.text_input("Phone 2", placeholder="Optional", key="ind_phone2")
                     email2 = st.text_input("Email 2", placeholder="Optional", key="ind_email2")
-                    employer_details = st.text_area("Employer details", placeholder="Optional", key="ind_employer_details", height=80)
+                employer_details = st.text_area("Employer details", placeholder="Optional", key="ind_employer_details", height=80)
                 with st.expander("Addresses (optional)"):
                     addr_type = st.text_input("Address type", placeholder="e.g. physical, postal", key="ind_addr_type")
                     line1 = st.text_input("Address line 1", key="ind_addr_line1")
@@ -2447,57 +2446,57 @@ def customers_ui():
                             st.error(f"Could not create agent: {e}")
                     elif submitted_create_agent and not aname.strip():
                         st.warning("Please enter agent name.")
-                st.divider()
-                st.subheader("Edit agent")
-                edit_agent_id = st.number_input("Agent ID to edit", min_value=1, value=1, step=1, key="edit_agent_id")
-                if st.button("Load agent", key="agent_load_btn"):
-                    st.session_state["agent_edit_loaded_id"] = edit_agent_id
-                loaded_agent_id = st.session_state.get("agent_edit_loaded_id")
-                if loaded_agent_id is not None:
-                    arec = get_agent(loaded_agent_id)
-                    if not arec:
-                        st.warning("Agent not found.")
-                        st.session_state.pop("agent_edit_loaded_id", None)
-                    else:
-                        with st.form("edit_agent_form"):
-                            ename = st.text_input("Agent name *", value=arec.get("name") or "", key="edit_agent_name")
-                            eid_number = st.text_input("ID number", value=arec.get("id_number") or "", key="edit_agent_id_number")
-                            eaddr1 = st.text_input("Address line 1", value=arec.get("address_line1") or "", key="edit_agent_addr1")
-                            eaddr2 = st.text_input("Address line 2", value=arec.get("address_line2") or "", key="edit_agent_addr2")
-                            ecity = st.text_input("City", value=arec.get("city") or "", key="edit_agent_city")
-                            ecountry = st.text_input("Country", value=arec.get("country") or "", key="edit_agent_country")
-                            ephone1 = st.text_input("Phone 1", value=arec.get("phone1") or "", key="edit_agent_phone1")
-                            ephone2 = st.text_input("Phone 2", value=arec.get("phone2") or "", key="edit_agent_phone2")
-                            eemail = st.text_input("Email", value=arec.get("email") or "", key="edit_agent_email")
-                            ecommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=float(arec.get("commission_rate_pct") or 0), step=0.5, format="%.2f", key="edit_agent_commission")
-                            etin = st.text_input("TIN number", value=arec.get("tin_number") or "", key="edit_agent_tin")
-                            etax_expiry = st.date_input("Tax clearance expiry", value=arec.get("tax_clearance_expiry"), key="edit_agent_tax_expiry")
-                            estatus = st.selectbox("Status", ["active", "inactive"], index=0 if (arec.get("status") or "active") == "active" else 1, key="edit_agent_status")
-                            submitted_update_agent = st.form_submit_button("Update agent")
-                            if submitted_update_agent and ename.strip():
-                                try:
-                                    update_agent(
-                                        loaded_agent_id,
-                                        name=ename.strip(),
-                                        id_number=eid_number.strip() or None,
-                                        address_line1=eaddr1.strip() or None,
-                                        address_line2=eaddr2.strip() or None,
-                                        city=ecity.strip() or None,
-                                        country=ecountry.strip() or None,
-                                        phone1=ephone1.strip() or None,
-                                        phone2=ephone2.strip() or None,
-                                        email=eemail.strip() or None,
-                                        commission_rate_pct=ecommission if ecommission else None,
-                                        tin_number=etin.strip() or None,
-                                        tax_clearance_expiry=etax_expiry,
-                                        status=estatus,
-                                    )
-                                    st.success("Agent updated.")
-                                    st.rerun()
-                                except Exception as e:
-                                    st.error(f"Could not update agent: {e}")
-                            elif submitted_update_agent and not ename.strip():
-                                st.warning("Please enter agent name.")
+            st.divider()
+            st.subheader("Edit agent")
+            edit_agent_id = st.number_input("Agent ID to edit", min_value=1, value=1, step=1, key="edit_agent_id")
+            if st.button("Load agent", key="agent_load_btn"):
+                st.session_state["agent_edit_loaded_id"] = edit_agent_id
+            loaded_agent_id = st.session_state.get("agent_edit_loaded_id")
+            if loaded_agent_id is not None:
+                arec = get_agent(loaded_agent_id)
+                if not arec:
+                    st.warning("Agent not found.")
+                    st.session_state.pop("agent_edit_loaded_id", None)
+                else:
+                    with st.form("edit_agent_form"):
+                        ename = st.text_input("Agent name *", value=arec.get("name") or "", key="edit_agent_name")
+                        eid_number = st.text_input("ID number", value=arec.get("id_number") or "", key="edit_agent_id_number")
+                        eaddr1 = st.text_input("Address line 1", value=arec.get("address_line1") or "", key="edit_agent_addr1")
+                        eaddr2 = st.text_input("Address line 2", value=arec.get("address_line2") or "", key="edit_agent_addr2")
+                        ecity = st.text_input("City", value=arec.get("city") or "", key="edit_agent_city")
+                        ecountry = st.text_input("Country", value=arec.get("country") or "", key="edit_agent_country")
+                        ephone1 = st.text_input("Phone 1", value=arec.get("phone1") or "", key="edit_agent_phone1")
+                        ephone2 = st.text_input("Phone 2", value=arec.get("phone2") or "", key="edit_agent_phone2")
+                        eemail = st.text_input("Email", value=arec.get("email") or "", key="edit_agent_email")
+                        ecommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=float(arec.get("commission_rate_pct") or 0), step=0.5, format="%.2f", key="edit_agent_commission")
+                        etin = st.text_input("TIN number", value=arec.get("tin_number") or "", key="edit_agent_tin")
+                        etax_expiry = st.date_input("Tax clearance expiry", value=arec.get("tax_clearance_expiry"), key="edit_agent_tax_expiry")
+                        estatus = st.selectbox("Status", ["active", "inactive"], index=0 if (arec.get("status") or "active") == "active" else 1, key="edit_agent_status")
+                        submitted_update_agent = st.form_submit_button("Update agent")
+                        if submitted_update_agent and ename.strip():
+                            try:
+                                update_agent(
+                                    loaded_agent_id,
+                                    name=ename.strip(),
+                                    id_number=eid_number.strip() or None,
+                                    address_line1=eaddr1.strip() or None,
+                                    address_line2=eaddr2.strip() or None,
+                                    city=ecity.strip() or None,
+                                    country=ecountry.strip() or None,
+                                    phone1=ephone1.strip() or None,
+                                    phone2=ephone2.strip() or None,
+                                    email=eemail.strip() or None,
+                                    commission_rate_pct=ecommission if ecommission else None,
+                                    tin_number=etin.strip() or None,
+                                    tax_clearance_expiry=etax_expiry,
+                                    status=estatus,
+                                )
+                                st.success("Agent updated.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Could not update agent: {e}")
+                        elif submitted_update_agent and not ename.strip():
+                            st.warning("Please enter agent name.")
 
 
 def view_schedule_ui():
@@ -2671,62 +2670,10 @@ def teller_ui():
                                     )
                                     cfg = load_system_config_from_db() if _loan_management_available else {}
                                     allocate_repayment_waterfall(rid, system_config=cfg)
-                                    st.success(f"Repayment recorded. **Repayment ID: {rid}**")
+                                    st.success(f"Repayment recorded. **Repayment ID: {rid}**. Any overpayment was credited to Unapplied Funds.")
                                 except Exception as e:
-                                    if NeedOverpaymentDecision and isinstance(e, NeedOverpaymentDecision):
-                                        st.session_state["teller_overpayment"] = {
-                                            "repayment_id": e.repayment_id,
-                                            "loan_id": e.loan_id,
-                                            "amount_remaining": e.amount_remaining,
-                                            "effective_date": e.effective_date,
-                                        }
-                                        st.rerun()
-                                    else:
                                         st.error(f"Could not record repayment: {e}")
                                         st.exception(e)
-                            if st.session_state.get("teller_overpayment") and st.session_state["teller_overpayment"].get("loan_id") == loan_id:
-                                od = st.session_state["teller_overpayment"]
-                                st.warning(
-                                    f"**Overpayment detected** (Standard waterfall reached step 6). "
-                                    f"Amount **{od['amount_remaining']:,.2f}** remains. Choose how to apply:"
-                                )
-                                col_rec, col_unapp = st.columns(2)
-                                with col_rec:
-                                    if st.button("Loan Recast", key="teller_recast_btn"):
-                                        try:
-                                            from reamortisation import execute_loan_recast
-                                            allocate_repayment_waterfall(
-                                                od["repayment_id"],
-                                                overpayment_action="recast",
-                                                system_config=load_system_config_from_db(),
-                                            )
-                                            bal = get_loan_daily_state_balances(od["loan_id"], od["effective_date"])
-                                            new_principal = (bal["principal_not_due"] + bal["principal_arrears"]) if bal else 0
-                                            if new_principal > 0:
-                                                execute_loan_recast(
-                                                    od["loan_id"],
-                                                    od["effective_date"],
-                                                    new_principal,
-                                                    trigger_repayment_id=od["repayment_id"],
-                                                )
-                                            del st.session_state["teller_overpayment"]
-                                            st.success("Repayment allocated and loan recast completed. New instalment applied.")
-                                            st.rerun()
-                                        except Exception as ex:
-                                            st.error(str(ex))
-                                with col_unapp:
-                                    if st.button("Unapplied Funds Account", key="teller_unapplied_btn"):
-                                        try:
-                                            allocate_repayment_waterfall(
-                                                od["repayment_id"],
-                                                overpayment_action="unapplied",
-                                                system_config=load_system_config_from_db(),
-                                            )
-                                            del st.session_state["teller_overpayment"]
-                                            st.success("Repayment allocated. Overpayment credited to Unapplied Funds.")
-                                            st.rerun()
-                                        except Exception as ex:
-                                            st.error(str(ex))
 
     with tab_batch:
         st.subheader("Batch payments")
@@ -3047,7 +2994,7 @@ def reamortisation_ui():
 
     with tab_unapplied:
         st.subheader("Unapplied Funds (Suspense)")
-        st.caption("Overpayments credited to the Client Unapplied Funds Account. Apply on next due date or initiate a recast.")
+        st.caption("Overpayments credited here. Apply to the loan via recast (reclassify accrued→arrears, principal not due→arrears, then apply). Recast is only available after funds are in Unapplied.")
         rows = list_unapplied_funds(status="pending")
         if not rows:
             st.info("No pending unapplied funds.")
@@ -3055,6 +3002,97 @@ def reamortisation_ui():
             df_ua = pd.DataFrame(rows)
             cols = [c for c in ["id", "loan_id", "amount", "currency", "value_date", "status", "created_at"] if c in df_ua.columns]
             st.dataframe(df_ua[cols] if cols else df_ua, width="stretch", hide_index=True)
+            st.markdown("**Apply via recast** (applies this entry to the loan: accrued interest→interest arrears, then principal not due→principal arrears).")
+            for r in rows:
+                uf_id = r.get("id")
+                loan_id_ua = r.get("loan_id")
+                amt = r.get("amount", 0)
+                vd = r.get("value_date", "")
+                with st.container():
+                    c1, c2 = st.columns([3, 1])
+                    with c1:
+                        st.caption(f"Entry {uf_id}: Loan {loan_id_ua} · {amt:,.2f} · {vd}")
+                    with c2:
+                        if st.button("Apply via recast", key=f"unapplied_recast_{uf_id}"):
+                            try:
+                                apply_unapplied_funds_recast(uf_id)
+                                st.success(f"Unapplied entry {uf_id} applied to loan {loan_id_ua}.")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(str(ex))
+
+
+def _make_statement_pdf(df, customer_name, cust_id, loan_id, start_fmt, end_fmt, statement_title):
+    """Build PDF bytes for statement with header (customer, ID, period) and table. statement_title e.g. 'Loan Statement (Internal – Daily)' or 'Customer loan statement'."""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer
+    except ImportError:
+        return None
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    styles = getSampleStyleSheet()
+    story = []
+    story.append(Paragraph(statement_title, styles["Title"]))
+    story.append(Paragraph(f"<b>Customer:</b> {customer_name}", styles["Normal"]))
+    story.append(Paragraph(f"<b>Customer ID:</b> {cust_id or '—'}", styles["Normal"]))
+    story.append(Paragraph(f"<b>Loan ID:</b> {loan_id}", styles["Normal"]))
+    story.append(Paragraph(f"<b>Period covered:</b> {start_fmt} to {end_fmt}", styles["Normal"]))
+    story.append(Spacer(1, 16))
+    # Table: header row + data rows (stringify for reportlab)
+    df_str = df.fillna("").astype(str)
+    table_data = [df_str.columns.tolist()] + df_str.values.tolist()
+    t = Table(table_data, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+        ("TOPPADDING", (0, 0), (-1, 0), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+    ]))
+    story.append(t)
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _statement_table_html(df, display_headers: dict[str, str], center_columns: list[str] | None = None) -> str:
+    """Build a full-width HTML table from the statement dataframe. display_headers maps column name -> display label.
+    center_columns: optional list of column names to center (e.g. last 4 columns for customer statement)."""
+    import html
+    center_set = set(center_columns or [])
+    def cell(v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return ""
+        if isinstance(v, (int, float)):
+            try:
+                return f"{float(v):.2f}"
+            except (TypeError, ValueError):
+                return str(v)
+        return html.escape(str(v))
+    cols = df.columns.tolist()
+    headers = [display_headers.get(c, c) for c in cols]
+    th_parts = []
+    for i, h in enumerate(headers):
+        cname = cols[i] if i < len(cols) else None
+        cls = ' class="center"' if cname and cname in center_set else ""
+        th_parts.append(f"<th{cls}>{html.escape(h)}</th>")
+    th = "".join(th_parts)
+    rows = []
+    for _, r in df.iterrows():
+        td_parts = []
+        for i, c in enumerate(cols):
+            cls = ' class="center"' if c in center_set else ""
+            td_parts.append(f"<td{cls}>{cell(r.get(c))}</td>")
+        rows.append(f"<tr>{''.join(td_parts)}</tr>")
+    tbody = "\n".join(rows)
+    return f'<table class="stmt-table"><thead><tr>{th}</tr></thead><tbody>{tbody}</tbody></table>'
 
 
 def statements_ui():
@@ -3080,60 +3118,77 @@ def statements_ui():
     try:
         from statements import (
             generate_customer_loan_statement,
+            generate_customer_loan_statement_periodic,
+            generate_customer_facing_statement,
             CUSTOMER_LOAN_STATEMENT_HEADINGS,
+            PERIODIC_STATEMENT_HEADINGS,
+            CUSTOMER_FACING_STATEMENT_HEADINGS,
+            ALLOC_BUCKET_COLUMNS,
         )
     except ImportError as e:
         st.error(f"Statements module not available: {e}")
         return
 
+    # Short labels for allocation columns (display only)
+    _alloc_display = {
+        "Portion of Credit Allocated to Interest": "Credit to Interest",
+        "Credit Allocated to Fees": "Credit to Fees",
+        "Credit Allocated to Capital": "Credit to Principal",
+    }
+
     tab_loan, tab_gl = st.tabs(["Customer loan statement", "General ledger (later)"])
     with tab_loan:
         st.subheader("Customer loan statement")
-        col_stmt, _ = st.columns([1, 1])
-        with col_stmt:
-            st.caption(
-                "Search by customer name or Loan ID. Select loan and date range. "
-                "If no dates are specified, statement runs from start of loan to today. "
-                "Generated on a non-due date: interest for current period to date is included so total exposure is correct."
-            )
+        statement_type = st.radio(
+            "Statement type",
+            ["Internal (daily)", "Internal (periodic)", "Customer loan statement"],
+            index=0,
+            key="stmt_type",
+            horizontal=True,
+        )
+        st.caption(
+            "Search by customer or Loan ID. Select loan and dates. Internal: full detail for staff. "
+            "Customer statement: Due Date, Narration, Debits, Credits, Balance, Unapplied funds (no principal arrears; PDF/CSV/Print)."
+        )
+        search = st.text_input(
+            "Search by customer name or Loan ID",
+            placeholder="e.g. Smith or 42",
+            key="stmt_search",
+        ).strip()
 
-            search = st.text_input(
-                "Search by customer name or Loan ID",
-                placeholder="e.g. Smith or 42",
-                key="stmt_search",
-            ).strip()
+        customers = list_customers() if _customers_available else []
+        preselect_cust_id = None
+        preselect_loan_id = None
 
-            customers = list_customers() if _customers_available else []
-            preselect_cust_id = None
-            preselect_loan_id = None
+        if search:
+            try:
+                lid = int(search)
+                from loan_management import get_loan
+                loan = get_loan(lid)
+                if loan and loan.get("customer_id"):
+                    preselect_cust_id = loan["customer_id"]
+                    preselect_loan_id = lid
+            except ValueError:
+                pass
+            if preselect_loan_id is None:
+                search_lower = search.lower()
+                customers = [c for c in customers if search_lower in (get_display_name(c["id"]) or "").lower()]
 
-            if search:
+        if not customers and preselect_cust_id is None:
+            st.info("No customers found. Create a customer or enter a valid Loan ID.")
+        else:
+            cust_options = [(c["id"], get_display_name(c["id"]) or f"Customer #{c['id']}") for c in customers]
+            cust_labels = [t[1] for t in cust_options]
+            default_idx = 0
+            if preselect_cust_id is not None:
                 try:
-                    lid = int(search)
-                    from loan_management import get_loan
-                    loan = get_loan(lid)
-                    if loan and loan.get("customer_id"):
-                        preselect_cust_id = loan["customer_id"]
-                        preselect_loan_id = lid
-                except ValueError:
-                    pass
-                if preselect_loan_id is None:
-                    search_lower = search.lower()
-                    customers = [c for c in customers if search_lower in (get_display_name(c["id"]) or "").lower()]
-
-            if not customers and preselect_cust_id is None:
-                st.info("No customers found. Create a customer or enter a valid Loan ID.")
-            else:
-                cust_options = [(c["id"], get_display_name(c["id"]) or f"Customer #{c['id']}") for c in customers]
-                cust_labels = [t[1] for t in cust_options]
-                default_idx = 0
-                if preselect_cust_id is not None:
-                    try:
-                        default_idx = next(i for i, t in enumerate(cust_options) if t[0] == preselect_cust_id)
-                    except StopIteration:
-                        cust_options.insert(0, (preselect_cust_id, get_display_name(preselect_cust_id) or f"Customer #{preselect_cust_id}"))
-                        cust_labels.insert(0, cust_options[0][1])
-                        default_idx = 0
+                    default_idx = next(i for i, t in enumerate(cust_options) if t[0] == preselect_cust_id)
+                except StopIteration:
+                    cust_options.insert(0, (preselect_cust_id, get_display_name(preselect_cust_id) or f"Customer #{preselect_cust_id}"))
+                    cust_labels.insert(0, cust_options[0][1])
+                    default_idx = 0
+            fc1, fc2 = st.columns(2)
+            with fc1:
                 cust_sel = st.selectbox(
                     "Customer",
                     cust_labels,
@@ -3142,19 +3197,20 @@ def statements_ui():
                 )
                 cust_id = cust_options[cust_labels.index(cust_sel)][0]
 
-                from loan_management import get_loans_by_customer
-                loans = get_loans_by_customer(cust_id)
-                if not loans:
-                    st.info("No loans for this customer.")
-                else:
-                    loan_options = [(l["id"], f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('principal', 0):,.2f}") for l in loans]
-                    loan_labels = [t[1] for t in loan_options]
-                    default_loan_idx = 0
-                    if preselect_loan_id is not None:
-                        try:
-                            default_loan_idx = next(i for i, t in enumerate(loan_options) if t[0] == preselect_loan_id)
-                        except StopIteration:
-                            default_loan_idx = 0
+            from loan_management import get_loans_by_customer
+            loans = get_loans_by_customer(cust_id)
+            if not loans:
+                st.info("No loans for this customer.")
+            else:
+                loan_options = [(l["id"], f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('principal', 0):,.2f}") for l in loans]
+                loan_labels = [t[1] for t in loan_options]
+                default_loan_idx = 0
+                if preselect_loan_id is not None:
+                    try:
+                        default_loan_idx = next(i for i, t in enumerate(loan_options) if t[0] == preselect_loan_id)
+                    except StopIteration:
+                        default_loan_idx = 0
+                with fc2:
                     loan_sel = st.selectbox(
                         "Loan",
                         loan_labels,
@@ -3163,69 +3219,201 @@ def statements_ui():
                     )
                     loan_id = loan_options[loan_labels.index(loan_sel)][0]
 
-                    from loan_management import get_loan
-                    loan_info = get_loan(loan_id)
-                    disbursement = loan_info.get("disbursement_date") or loan_info.get("start_date")
-                    if hasattr(disbursement, "date"):
-                        disbursement = disbursement.date()
-                    elif isinstance(disbursement, str):
-                        disbursement = datetime.fromisoformat(disbursement[:10]).date()
-                    start_default = disbursement or datetime.now().date()
-                    col_start, col_end = st.columns(2)
-                    with col_start:
-                        start_date = st.date_input("Start date (optional)", value=start_default, key="stmt_start")
-                    with col_end:
-                        end_date = st.date_input("End date (optional)", value=datetime.now().date(), key="stmt_end")
-                    st.caption("Leave defaults for start of loan to today.")
+                from loan_management import get_loan
+                loan_info = get_loan(loan_id)
+                disbursement = loan_info.get("disbursement_date") or loan_info.get("start_date")
+                if hasattr(disbursement, "date"):
+                    disbursement = disbursement.date()
+                elif isinstance(disbursement, str):
+                    disbursement = datetime.fromisoformat(disbursement[:10]).date()
+                start_default = disbursement or datetime.now().date()
+                fd1, fd2 = st.columns(2)
+                with fd1:
+                    start_date = st.date_input("Start date (optional)", value=start_default, key="stmt_start")
+                with fd2:
+                    end_date = st.date_input("End date (optional)", value=datetime.now().date(), key="stmt_end")
+                st.caption("Leave defaults for start of loan to today.")
 
-                    if st.button("Generate statement", type="primary", key="stmt_gen"):
-                        try:
+                if st.button("Generate statement", type="primary", key="stmt_gen"):
+                    try:
+                        is_customer = statement_type == "Customer loan statement"
+                        is_internal_periodic = statement_type == "Internal (periodic)"
+                        is_internal_daily = statement_type == "Internal (daily)"
+                        if is_customer:
+                            rows, meta = generate_customer_facing_statement(
+                                loan_id,
+                                start_date=start_date,
+                                end_date=end_date,
+                            )
+                        elif is_internal_periodic:
+                            rows, meta = generate_customer_loan_statement_periodic(
+                                loan_id,
+                                start_date=start_date,
+                                end_date=end_date,
+                            )
+                        else:
                             rows, meta = generate_customer_loan_statement(
                                 loan_id,
                                 start_date=start_date,
                                 end_date=end_date,
                             )
-                            if not rows:
-                                st.info("No statement lines for this period.")
-                            else:
-                                df = pd.DataFrame(rows)
-                                start = meta.get("start_date")
-                                end = meta.get("end_date")
-                                cust_id = meta.get("customer_id")
-                                customer_name = get_display_name(cust_id) if cust_id is not None else "—"
-                                start_fmt = start.strftime("%d%b%Y") if hasattr(start, "strftime") else str(start)
-                                end_fmt = end.strftime("%d%b%Y") if hasattr(end, "strftime") else str(end)
-                                gen = meta.get("generated_at")
-                                generated_fmt = gen.strftime("%d %b %Y, %H:%M:%S") if gen and hasattr(gen, "strftime") else (str(gen) if gen else "")
+                        if not rows:
+                            st.info("No statement lines for this period.")
+                        else:
+                            df = pd.DataFrame(rows)
+                            start = meta.get("start_date")
+                            end = meta.get("end_date")
+                            cust_id = meta.get("customer_id")
+                            customer_name = get_display_name(cust_id) if cust_id is not None else "—"
+                            start_fmt = start.strftime("%d%b%Y") if hasattr(start, "strftime") else str(start)
+                            end_fmt = end.strftime("%d%b%Y") if hasattr(end, "strftime") else str(end)
+                            gen = meta.get("generated_at")
+                            generated_fmt = gen.strftime("%d %b %Y, %H:%M:%S") if gen and hasattr(gen, "strftime") else (str(gen) if gen else "")
 
-                                st.markdown(
-                                    "<div style='margin-bottom: 1rem;'>"
-                                    f"<strong style='font-size: 1.25rem;'>Loan Statement</strong><br>"
-                                    f"<span style='color: #64748b;'>Customer: {customer_name} &nbsp;|&nbsp; Customer ID: {cust_id or '—'} &nbsp;|&nbsp; Loan ID: {loan_id}</span>"
-                                    "</div>",
-                                    unsafe_allow_html=True,
-                                )
-                                st.dataframe(df, width="stretch", hide_index=True)
-                                st.markdown(
-                                    "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.9rem;'>"
-                                    f"For the period from {start_fmt} to {end_fmt}<br>"
-                                    f"<strong>Generated:</strong> {generated_fmt}"
-                                    "</div>",
-                                    unsafe_allow_html=True,
-                                )
-                                buf = BytesIO()
-                                df.to_csv(buf, index=False, date_format="%Y-%m-%d")
-                                buf.seek(0)
+                            if is_customer:
+                                statement_title = "Customer loan statement"
+                                numeric_cols = ["Debits", "Credits", "Balance", "Unapplied funds"]
+                            else:
+                                statement_title = "Loan Statement (Internal – Daily)" if is_internal_daily else "Loan Statement (Internal – Periodic)"
+                                numeric_cols = [
+                                    "Interest", "Penalty", "Default", "Principal", "Fees", "Credits",
+                                    "Portion of Credit Allocated to Interest", "Credit Allocated to Fees", "Credit Allocated to Capital",
+                                    "Total Outstanding Balance", "Arrears", "Unapplied funds",
+                                ]
+                            for c in numeric_cols:
+                                if c in df.columns:
+                                    df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+                            # Full-width statement: HTML table (no Streamlit dataframe width limits)
+                            display_headers = {**_alloc_display}
+                            alloc_cols_main = [c for c in ALLOC_BUCKET_COLUMNS if c in df.columns]
+                            closing_row = None
+                            if is_customer and len(df) > 0:
+                                last_narr = str(df.iloc[-1].get("Narration") or "")
+                                if "Total outstanding" in last_narr:
+                                    closing_row = df.iloc[-1]
+                                    stmt_df = df.iloc[:-1]
+                                else:
+                                    stmt_df = df
+                            elif is_internal_periodic:
+                                stmt_df = df
+                            else:
+                                stmt_df = df.drop(columns=alloc_cols_main, errors="ignore") if alloc_cols_main else df
+                            center_cols = ["Debits", "Credits", "Balance", "Unapplied funds"] if is_customer else None
+                            table_html = _statement_table_html(stmt_df, display_headers, center_columns=center_cols)
+                            closing_html = ""
+                            if is_customer and closing_row is not None:
+                                due_d = closing_row.get("Due Date")
+                                bal = closing_row.get("Balance")
+                                unapp = closing_row.get("Unapplied funds")
+                                due_fmt = due_d.strftime("%d %b %Y") if due_d and hasattr(due_d, "strftime") else str(due_d or "")
+                                try:
+                                    bal_fmt = f"{float(bal):,.2f}" if bal is not None else "0.00"
+                                    unapp_fmt = f"{float(unapp):,.2f}" if unapp is not None else "0.00"
+                                except (TypeError, ValueError):
+                                    bal_fmt = str(bal or "0.00")
+                                    unapp_fmt = str(unapp or "0.00")
+                                closing_html = f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}  &nbsp;|&nbsp;  <strong>Unapplied funds:</strong> {unapp_fmt}</div>"
+                            stmt_html = (
+                                "<style>"
+                                "main .block-container { max-width: 100% !important; padding-left: 1.5rem; padding-right: 1.5rem; } "
+                                "[data-testid='stSidebar'] { width: 16rem !important; } "
+                                ".stmt-view { width: 100%; max-width: 100%; overflow-x: auto; margin-top: 1rem; } "
+                                ".stmt-view .stmt-header { margin-bottom: 1rem; padding: 1rem 1.25rem; border: 1px solid #e2e8f0; border-radius: 6px; background: #f8fafc; font-size: 1rem; } "
+                                ".stmt-view .stmt-table { width: 100%; border-collapse: collapse; font-size: 0.95rem; background: #fff; } "
+                                ".stmt-view .stmt-table th, .stmt-view .stmt-table td { border: 1px solid #e2e8f0; padding: 0.5rem 0.6rem; text-align: left; } "
+                                ".stmt-view .stmt-table th { background: #f1f5f9; font-weight: 600; } "
+                                ".stmt-view .stmt-table td.num, .stmt-view .stmt-table th.num { text-align: right; } "
+                                ".stmt-view .stmt-table td.center, .stmt-view .stmt-table th.center { text-align: center; } "
+                                ".stmt-view .stmt-table tbody tr:nth-child(even) { background: #f8fafc; } "
+                                ".stmt-closing { margin-top: 1.5rem; text-align: center; font-size: 1rem; padding: 1rem; border-top: 1px solid #e2e8f0; color: #334155; } "
+                                "</style>"
+                                "<div class='stmt-view'>"
+                                "<div class='stmt-header'>"
+                                f"<strong style='font-size: 1.25rem; display: block; margin-bottom: 0.5rem;'>{statement_title}</strong>"
+                                f"<span style='display: block;'><strong>Customer:</strong> {customer_name}</span>"
+                                f"<span style='display: block;'><strong>Customer ID:</strong> {cust_id or '—'}</span>"
+                                f"<span style='display: block;'><strong>Loan ID:</strong> {loan_id}</span>"
+                                f"<span style='display: block; margin-top: 0.25rem;'><strong>Period covered:</strong> {start_fmt} to {end_fmt}</span>"
+                                "</div>"
+                                + table_html
+                                + closing_html
+                                + "</div>"
+                            )
+                            st.markdown(stmt_html, unsafe_allow_html=True)
+
+                            if is_internal_daily and alloc_cols_main:
+                                with st.expander("Show allocation buckets 1–5", expanded=False):
+                                    st.caption("Fees, Penalty interest, Default interest, Interest arrears, Principal arrears.")
+                                    ctx = [c for c in ["Value Date", "Transaction Date", "Narration", "Credits"] if c in df.columns]
+                                    show_cols = list(dict.fromkeys(ctx + alloc_cols_main))
+                                    df_alloc = df[show_cols]
+                                    st.markdown(
+                                        "<div class='stmt-view'>" + _statement_table_html(df_alloc, _alloc_display) + "</div>",
+                                        unsafe_allow_html=True,
+                                    )
+
+                            st.markdown(
+                                "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.9rem;'>"
+                                f"For the period from {start_fmt} to {end_fmt}<br>"
+                                f"<strong>Generated:</strong> {generated_fmt}"
+                                "</div>",
+                                unsafe_allow_html=True,
+                            )
+                            # CSV with header (comment lines at top) so all formats include header
+                            stmt_slug = "customer" if is_customer else ("internal_periodic" if is_internal_periodic else "internal_daily")
+                            csv_header_lines = [
+                                f"# {statement_title}",
+                                f"# Customer: {customer_name}",
+                                f"# Customer ID: {cust_id or '—'}",
+                                f"# Loan ID: {loan_id}",
+                                f"# Period covered: {start_fmt} to {end_fmt}",
+                                "#",
+                            ]
+                            buf = BytesIO()
+                            buf.write(("\n".join(csv_header_lines) + "\n").encode("utf-8"))
+                            df.to_csv(buf, index=False, date_format="%Y-%m-%d")
+                            buf.seek(0)
+                            col_csv, col_pdf, col_print = st.columns([1, 1, 1])
+                            with col_csv:
                                 st.download_button(
                                     "Download as CSV",
                                     data=buf,
-                                    file_name=f"loan_statement_{loan_id}_{start_date}_{end_date}.csv",
+                                    file_name=f"loan_statement_{stmt_slug}_{loan_id}_{start_date}_{end_date}.csv",
                                     mime="text/csv",
                                     key="stmt_download",
                                 )
-                        except Exception as ex:
-                            st.error(str(ex))
-                            st.exception(ex)
+                            with col_pdf:
+                                pdf_bytes = _make_statement_pdf(df, customer_name, cust_id, loan_id, start_fmt, end_fmt, statement_title)
+                                if pdf_bytes:
+                                    st.download_button(
+                                        "Download as PDF",
+                                        data=pdf_bytes,
+                                        file_name=f"loan_statement_{stmt_slug}_{loan_id}_{start_date}_{end_date}.pdf",
+                                        mime="application/pdf",
+                                        key="stmt_download_pdf",
+                                    )
+                                else:
+                                    st.caption("Install reportlab for PDF download.")
+                            with col_print:
+                                # Open browser print dialog (works via embedded iframe calling parent)
+                                st.components.v1.html(
+                                    """
+                                    <script>
+                                    function doPrint() {
+                                        try { (window.top || window.parent).print(); } catch (e) { window.print(); }
+                                    }
+                                    </script>
+                                    <button onclick="doPrint()" style="padding: 0.35rem 0.75rem; border-radius: 4px; border: 1px solid #ccc; background: #f0f0f0; color: #333; font-size: 0.9rem; cursor: pointer;">
+                                    Print
+                                    </button>
+                                    """,
+                                    height=40,
+                                )
+                            st.caption("CSV and PDF include the header. **Print** opens the browser print dialog; the header is included when printing.")
+                    except Exception as ex:
+                        st.error(str(ex))
+                        st.exception(ex)
 
     with tab_gl:
         st.caption("General ledger and ledger account statements will be added here.")

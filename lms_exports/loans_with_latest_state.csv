@@ -1,10 +1,2 @@
 loan_id,customer_name,product_code,loan_type,principal,disbursed_amount,status,as_of_date,principal_not_due,principal_arrears,interest_balance,penalty_interest_balance,total_exposure,days_overdue
-1,Ekezal,CUSTOM-USD,customised_repayments,1086.96,1000.00,active,,,,,,,
-2,test,CONSUMER-USD,consumer_loan,500.00,465.00,active,,,,,,,
-3,Musana traders,CONSUMER-USD,consumer_loan,500.00,475.00,active,,,,,,,
-4,Musana traders,TERM-USD,term_loan,1052.63,1000.00,active,,,,,,,
-5,Takura Musora,TERM-USD,term_loan,1000.00,1000.00,active,,,,,,,
-6,Upenyu Moyo,BULLET-USD,bullet_loan,1000.00,1000.00,active,,,,,,,
-7,Windastic,CUSTOM-USD,customised_repayments,1052.63,1000.00,active,,,,,,,
-8,Upenyu Moyo,TERM-USD,term_loan,1052.63,1000.00,active,2025-12-01,979.82,72.81,192.57,0.00,1245.20,2
-9,Upenyu Moyo,TERM-USD,term_loan,1052.63,1000.00,active,2025-12-01,999.60,53.03,108.45,0.00,1161.08,2
+10,Windastic,TERM-USD,term_loan,10000.00,10000.00,active,2025-10-20,8482.53,1069.59,2486.52,92.38,12317.75,51

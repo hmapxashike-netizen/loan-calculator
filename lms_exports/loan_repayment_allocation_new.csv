@@ -1,2 +1,0 @@
-repayment_id,loan_id,repayment_amount,payment_date,alloc_prin_total,alloc_int_total,alloc_fees_total,alloc_prin_not_due,alloc_prin_arrears,alloc_int_accrued,alloc_int_arrears,alloc_default_int,alloc_penalty_int,alloc_fees_charges
-2,9,160.00,2025-12-01,53.03,106.97,0.00,0.00,53.03,5.22,101.75,0.00,0.00,0.00

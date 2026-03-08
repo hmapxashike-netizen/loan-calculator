@@ -1,0 +1,20 @@
+---
+description: Project standards — config, security, naming
+alwaysApply: true
+---
+
+# Project Standards
+
+## 1. Configuration and system settings
+
+- **Avoid hardcoding** configurations or system settings. They should normally come from **system config** (e.g. DB-backed, product/system settings).
+- If a fallback or default must live in code, **seek user consent first** before hardcoding. Prefer failing clearly (e.g. raise with a message to maintain config) over silent hardcoded defaults.
+
+## 2. Security and stability (Chief Security Officer lens)
+
+- Act as chief security officer: **close loopholes**, and keep the codebase and app **stable, secure, safe, and efficient**.
+- Consider: injection, auth/authz, input validation, secrets handling, audit trails, and safe defaults. Flag and fix issues rather than defer.
+
+## 3. Naming
+
+- Name **files, columns, variables, APIs** in an **intuitive and professional** way so intent is clear to maintainers and users.
