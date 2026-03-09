@@ -350,17 +350,17 @@ def execute_loan_recast(
 
 
 def list_unapplied_funds(loan_id: int | None = None, status: str = "pending") -> list[dict]:
-    """List unapplied funds entries, optionally for one loan."""
+    """List unapplied funds entries (ledger-style: credits and debits), optionally for one loan."""
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             if loan_id is not None:
                 cur.execute(
-                    "SELECT * FROM unapplied_funds WHERE loan_id = %s AND status = %s ORDER BY value_date, id",
-                    (loan_id, status),
+                    "SELECT * FROM unapplied_funds WHERE loan_id = %s ORDER BY value_date, id",
+                    (loan_id,),
                 )
             else:
                 cur.execute(
-                    "SELECT * FROM unapplied_funds WHERE status = %s ORDER BY loan_id, value_date, id",
-                    (status,),
+                    "SELECT * FROM unapplied_funds ORDER BY loan_id, value_date, id",
+                    (),
                 )
             return [dict(r) for r in cur.fetchall()]

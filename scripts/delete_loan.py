@@ -37,7 +37,7 @@ def main():
             cur.execute("DELETE FROM loans WHERE id = %s", (loan_id,))
             deleted = cur.rowcount
         conn.commit()
-        print(f"Deleted loan {loan_id} and all related data (repayments, allocations, loan_daily_state, schedules, unapplied_funds, etc.).")
+        print(f"Deleted loan {loan_id} and all related data (repayments, allocations, loan_daily_state, schedules, unapplied_funds, unapplied_funds_ledger, etc.).")
     finally:
         conn.close()
 

@@ -67,6 +67,7 @@ try:
         save_loan as save_loan_to_db,
         record_repayment,
         record_repayments_batch,
+        reverse_repayment,
         get_loan,
         get_loans_by_customer,
         get_amount_due_summary,
@@ -75,6 +76,7 @@ try:
         apply_unapplied_funds_recast,
         load_system_config_from_db,
         get_loan_daily_state_balances,
+        get_repayments_with_allocations,
         list_products,
         get_product,
         get_product_by_code,
@@ -2591,7 +2593,7 @@ def teller_ui():
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab_single, tab_batch = st.tabs(["Single repayment", "Batch payments"])
+    tab_single, tab_batch, tab_reverse = st.tabs(["Single repayment", "Batch payments", "Reverse receipt"])
 
     with tab_single:
         st.subheader("Single repayment capture")
@@ -2759,6 +2761,96 @@ def teller_ui():
             except Exception as e:
                 st.error(f"Could not read file: {e}")
                 st.exception(e)
+
+    with tab_reverse:
+        st.subheader("Reverse receipt")
+        st.caption("Select a customer and loan, then enter a receipt ID or choose one from the list to reverse it.")
+
+        customers_list = list_customers(status="active") or []
+        if not customers_list:
+            st.info("No active customers. Add customers first.")
+        else:
+            options = [(c["id"], get_display_name(c["id"])) for c in customers_list]
+            labels = [f"{name} (ID {cid})" for cid, name in options]
+            idx = 0
+            if "teller_rev_customer_id" in st.session_state:
+                try:
+                    idx = next(i for i, (cid, _) in enumerate(options) if cid == st.session_state["teller_rev_customer_id"])
+                except StopIteration:
+                    pass
+            sel = st.selectbox("Select customer", labels, index=idx, key="teller_rev_cust_select")
+            cid = options[labels.index(sel)][0] if sel and labels else None
+            st.session_state["teller_rev_customer_id"] = cid
+
+            if cid:
+                loans_list = get_loans_by_customer(cid)
+                loans_active = [l for l in loans_list if l.get("status") == "active"]
+                if not loans_active:
+                    st.info("No active loans for this customer.")
+                else:
+                    loan_options = [
+                        (l["id"], f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('principal', 0):,.2f}")
+                        for l in loans_active
+                    ]
+                    loan_labels = [t[1] for t in loan_options]
+                    loan_sel = st.selectbox("Select loan", loan_labels, key="teller_rev_loan_select")
+                    loan_id = loan_options[loan_labels.index(loan_sel)][0] if loan_sel and loan_labels else None
+
+                    if loan_id:
+                        # Fetch recent receipts for this loan (last 12 months)
+                        today = datetime.today().date()
+                        start_date = today - timedelta(days=365)
+                        try:
+                            receipts = get_repayments_with_allocations(loan_id, start_date, today)
+                        except Exception:
+                            receipts = []
+
+                        col_id, col_list = st.columns(2)
+                        with col_id:
+                            manual_id = st.text_input("Receipt ID (optional)", key="teller_rev_manual_id")
+                        with col_list:
+                            if receipts:
+                                receipt_options = []
+                                for r in receipts:
+                                    rid = int(r.get("id"))
+                                    amt = float(r.get("amount") or 0)
+                                    vdate = r.get("value_date") or r.get("payment_date")
+                                    label = f"ID {rid} | {vdate} | Amount {amt:,.2f}"
+                                    receipt_options.append((rid, label))
+                                rec_labels = [t[1] for t in receipt_options]
+                                sel_label = st.selectbox(
+                                    "Or select from recent receipts",
+                                    rec_labels if rec_labels else ["(No receipts)"],
+                                    key="teller_rev_receipt_select",
+                                )
+                                selected_id = None
+                                if rec_labels and sel_label in rec_labels:
+                                    selected_id = receipt_options[rec_labels.index(sel_label)][0]
+                            else:
+                                st.info("No receipts found for this loan in the last 12 months.")
+                                selected_id = None
+
+                        if st.button("Reverse receipt", type="primary", key="teller_rev_button"):
+                            target_id = None
+                            if manual_id.strip():
+                                try:
+                                    target_id = int(manual_id.strip())
+                                except ValueError:
+                                    st.error("Receipt ID must be a number.")
+                            elif selected_id is not None:
+                                target_id = selected_id
+
+                            if not target_id:
+                                st.error("Enter a valid receipt ID or select a receipt from the list.")
+                            else:
+                                try:
+                                    new_id = reverse_repayment(target_id)
+                                    st.success(
+                                        f"Receipt {target_id} reversed successfully. "
+                                        f"Reversal entry created with ID {new_id}."
+                                    )
+                                except Exception as e:
+                                    st.error(f"Could not reverse receipt {target_id}: {e}")
 
 
 def reamortisation_ui():

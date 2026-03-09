@@ -10,7 +10,7 @@ Loan daily state: filtered by as_of_date; include END_DATE or later to see impac
 
 Loan tables covered (all):
   loans, loan_schedules, schedule_lines, loan_repayments, loan_repayment_allocation,
-  loan_daily_state, unapplied_funds, loan_modifications, loan_recasts, config.
+  loan_daily_state, unapplied_funds (ledger-style), allocation_audit_log, loan_modifications, loan_recasts, config.
 
 Rates per product: config table stores system_config and product_config:{code} as JSON.
   config.csv = raw config key/value/updated_at.
@@ -109,6 +109,11 @@ QUERIES = [
             lds.principal_arrears,
             lds.interest_accrued_balance,
             lds.interest_arrears_balance,
+            lds.default_interest_daily,
+            lds.default_interest_balance,
+            lds.penalty_interest_daily,
+            lds.penalty_interest_balance,
+            lds.fees_charges_balance,
             lds.total_exposure,
             lds.days_overdue
         FROM loan_daily_state lds
@@ -147,11 +152,13 @@ QUERIES = [
         "loan_repayment_allocation.csv",
         """
         SELECT
+            lra.id AS allocation_id,
             lr.id AS repayment_id,
             lr.loan_id,
             lr.amount AS repayment_amount,
             lr.payment_date,
             lr.value_date,
+            COALESCE(lra.event_type, '') AS event_type,
             COALESCE(lra.alloc_principal_total, 0) AS alloc_prin_total,
             COALESCE(lra.alloc_interest_total, 0) AS alloc_int_total,
             COALESCE(lra.alloc_fees_total, 0) AS alloc_fees_total,
@@ -161,11 +168,12 @@ QUERIES = [
             COALESCE(lra.alloc_interest_arrears, 0) AS alloc_int_arrears,
             COALESCE(lra.alloc_default_interest, 0) AS alloc_default_int,
             COALESCE(lra.alloc_penalty_interest, 0) AS alloc_penalty_int,
-            COALESCE(lra.alloc_fees_charges, 0) AS alloc_fees_charges
+            COALESCE(lra.alloc_fees_charges, 0) AS alloc_fees_charges,
+            lra.created_at AS allocation_created_at
         FROM loan_repayments lr
         LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
         WHERE COALESCE(lr.value_date, lr.payment_date) BETWEEN %s AND %s
-        ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lr.id DESC
+        ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lr.id DESC, lra.created_at ASC
         """,
         (START_DATE, END_DATE),
     ),
@@ -229,10 +237,22 @@ QUERIES = [
         "unapplied_funds.csv",
         """
         SELECT uf.id, uf.loan_id, uf.repayment_id, uf.amount, uf.currency,
-               uf.value_date, uf.status, uf.created_at, uf.applied_at, uf.notes
+               uf.value_date, uf.entry_type, uf.reference, uf.allocation_repayment_id,
+               uf.source_repayment_id, uf.source_unapplied_id, uf.created_at
         FROM unapplied_funds uf
         WHERE uf.value_date BETWEEN %s AND %s
         ORDER BY uf.loan_id, uf.value_date, uf.id
+        """,
+        (START_DATE, END_DATE),
+    ),
+    (
+        "allocation_audit_log.csv",
+        """
+        SELECT aal.id, aal.created_at, aal.event_type, aal.loan_id, aal.as_of_date,
+               aal.repayment_id, aal.original_repayment_id, aal.narration, aal.details
+        FROM allocation_audit_log aal
+        WHERE aal.as_of_date BETWEEN %s AND %s
+        ORDER BY aal.created_at
         """,
         (START_DATE, END_DATE),
     ),

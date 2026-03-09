@@ -37,11 +37,17 @@ from loan_daily_engine import LoanConfig, ScheduleEntry, Loan
 from loan_management import (
     get_allocation_totals_for_loan_date,
     get_loan_daily_state_balances,
+    get_loan_ids_with_reversed_receipts_on_date,
+    get_loans_with_unapplied_balance,
+    get_repayment_ids_for_loan_and_date,
     get_schedule_lines,
+    reallocate_repayment,
     save_loan_daily_state,
+    apply_unapplied_funds_to_arrears_eod,
     load_system_config_from_db,
     get_product_config_from_db,
     _get_waterfall_config,
+    _log_allocation_audit,
 )
 
 # Treat balances below this as zero for "no arrears" and default/penalty zeroing (avoids float drift).
@@ -401,12 +407,66 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
                 - float(engine_loan.last_penalty_interest_daily),
             )
         else:
-            default_interest_daily_save = float(engine_loan.last_default_interest_daily)
-            penalty_interest_daily_save = float(engine_loan.last_penalty_interest_daily)
-            default_interest_balance_save = default_interest_balance
-            penalty_interest_balance_save = penalty_interest_balance
-            default_interest_period_to_date_save = float(engine_loan.default_interest_period_to_date)
-            penalty_interest_period_to_date_save = float(engine_loan.penalty_interest_period_to_date)
+            # Use reconciled balances (billable arrears after allocations), not engine's
+            # accrual-only state. Engine runs from scratch without allocations, so its
+            # balances can be ~2x the saved ones when payments have reduced arrears.
+            # Formula: balance * (rate_per_month) / 30
+            rate = float(config.default_interest_absolute_rate_per_month)
+            penalty_rate = float(config.penalty_interest_absolute_rate_per_month)
+            default_interest_daily_save = (
+                interest_arrears_balance * rate / 30.0
+                if interest_arrears_balance > 0 and rate > 0
+                else 0.0
+            )
+            if config.penalty_on_principal_arrears_only:
+                penalty_basis = principal_arrears
+            else:
+                penalty_basis = principal_arrears + principal_not_due
+            penalty_interest_daily_save = (
+                penalty_basis * penalty_rate / 30.0
+                if penalty_basis > 0 and penalty_rate > 0
+                else 0.0
+            )
+            # Reconcile default/penalty balances using our daily amounts (not engine's)
+            if yesterday_saved is not None:
+                default_interest_balance_save = max(
+                    0.0,
+                    yesterday_saved.get("default_interest_balance", 0)
+                    + default_interest_daily_save
+                    - alloc.get("alloc_default_interest", 0.0),
+                )
+                penalty_interest_balance_save = max(
+                    0.0,
+                    yesterday_saved.get("penalty_interest_balance", 0)
+                    + penalty_interest_daily_save
+                    - alloc.get("alloc_penalty_interest", 0.0),
+                )
+            else:
+                default_interest_balance_save = max(
+                    0.0,
+                    default_interest_daily_save - alloc.get("alloc_default_interest", 0.0),
+                )
+                penalty_interest_balance_save = max(
+                    0.0,
+                    penalty_interest_daily_save - alloc.get("alloc_penalty_interest", 0.0),
+                )
+            # Period-to-date: sum of our daily amounts; reset on due date
+            due_today = any(e.due_date == as_of_date for e in schedule_entries)
+            if due_today:
+                default_interest_period_to_date_save = default_interest_daily_save
+                penalty_interest_period_to_date_save = penalty_interest_daily_save
+            elif yesterday_saved is not None:
+                default_interest_period_to_date_save = (
+                    yesterday_saved.get("default_interest_period_to_date", 0)
+                    + default_interest_daily_save
+                )
+                penalty_interest_period_to_date_save = (
+                    yesterday_saved.get("penalty_interest_period_to_date", 0)
+                    + penalty_interest_daily_save
+                )
+            else:
+                default_interest_period_to_date_save = default_interest_daily_save
+                penalty_interest_period_to_date_save = penalty_interest_daily_save
 
         save_loan_daily_state(
             loan_id=loan_id_int,
@@ -429,6 +489,45 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
         processed += 1
 
     return processed
+
+
+def _apply_unapplied_funds_to_arrears(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
+    """
+    For each loan with unapplied balance > 0 and arrears > 0, allocate unapplied
+    towards arrears (waterfall order). Creates allocation with event_type='unapplied_funds_allocation'.
+    Returns number of loans that had funds applied.
+    """
+    loan_ids = get_loans_with_unapplied_balance(as_of_date)
+    applied_count = 0
+    for loan_id in loan_ids:
+        amount = apply_unapplied_funds_to_arrears_eod(loan_id, as_of_date, sys_cfg)
+        if amount > 0:
+            applied_count += 1
+    return applied_count
+
+
+def _reallocate_receipts_after_reversals(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
+    """
+    For loans that had receipts reversed on as_of_date, reallocate any remaining
+    posted receipts on that loan/date so the waterfall is correct after reversals.
+    Returns the number of receipts reallocated.
+    """
+    loan_ids = get_loan_ids_with_reversed_receipts_on_date(as_of_date)
+    reallocated = 0
+    for loan_id in loan_ids:
+        posted_ids = get_repayment_ids_for_loan_and_date(loan_id, as_of_date)
+        for rid in posted_ids:
+            _log_allocation_audit(
+                "reallocate_after_reversal",
+                loan_id,
+                as_of_date,
+                repayment_id=rid,
+                narration="system auto rev",
+                details={"reason": "Receipt reallocated after reversal on same day"},
+            )
+            reallocate_repayment(rid, system_config=sys_cfg)
+            reallocated += 1
+    return reallocated
 
 
 def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
@@ -456,19 +555,30 @@ def _run_notification_batch(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     _ = (as_of_date, sys_cfg)
 
 
-def run_eod_for_date(as_of_date: date) -> EODResult:
+def run_eod_for_date(
+    as_of_date: date,
+    *,
+    skip_reallocate_after_reversals: bool = False,
+) -> EODResult:
     """
     Orchestrate EOD for a given calendar date.
 
     The exact *sequence* of steps is fixed in code for safety and auditability,
     but which high-level tasks are enabled is controlled by system configuration
     (system_config.eod_settings.tasks).
+
+    When skip_reallocate_after_reversals=True (e.g. when called from reallocate_repayment),
+    the reallocate step is skipped to avoid infinite recursion.
     """
     sys_cfg = load_system_config_from_db() or {}
     eod_settings = sys_cfg.get("eod_settings", {}) or {}
     tasks_cfg = (eod_settings.get("tasks") or {}) if isinstance(eod_settings, dict) else {}
 
     run_loan_engine = bool(tasks_cfg.get("run_loan_engine", True))
+    reallocate_after_reversals = (
+        bool(tasks_cfg.get("reallocate_after_reversals", True))
+        and not skip_reallocate_after_reversals
+    )
     post_accounting = bool(tasks_cfg.get("post_accounting_events", False))
     generate_statements = bool(tasks_cfg.get("generate_statements", False))
     send_notifications = bool(tasks_cfg.get("send_notifications", False))
@@ -481,6 +591,17 @@ def run_eod_for_date(as_of_date: date) -> EODResult:
     if run_loan_engine:
         loans_processed = _run_loan_engine_for_date(as_of_date, sys_cfg)
         tasks_run.append("loan_engine")
+
+    # 1b. Reallocate posted receipts on loans that had reversals this date (waterfall fix).
+    if run_loan_engine and reallocate_after_reversals:
+        _reallocate_receipts_after_reversals(as_of_date, sys_cfg)
+        tasks_run.append("reallocate_after_reversals")
+
+    # 1c. Apply unapplied funds towards arrears (waterfall order) for loans with arrears.
+    apply_unapplied = bool(tasks_cfg.get("apply_unapplied_to_arrears", True))
+    if run_loan_engine and apply_unapplied:
+        _apply_unapplied_funds_to_arrears(as_of_date, sys_cfg)
+        tasks_run.append("apply_unapplied_to_arrears")
 
     # 2. Accounting postings that depend on updated buckets.
     if post_accounting:

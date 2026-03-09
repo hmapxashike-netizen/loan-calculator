@@ -43,7 +43,7 @@ def main():
     cur = conn.cursor()
 
     sql = """
-        SELECT id, loan_id, repayment_id, amount, currency, value_date, status, created_at, applied_at, notes
+        SELECT id, loan_id, repayment_id, amount, currency, value_date, entry_type, reference, created_at
         FROM unapplied_funds
         WHERE 1=1
     """
@@ -51,9 +51,12 @@ def main():
     if args.loan is not None:
         sql += " AND loan_id = %s"
         params.append(args.loan)
-    if not getattr(args, "all", False):
-        sql += " AND status = %s"
-        params.append(args.status or "pending")
+    if not getattr(args, "all", False) and args.status and args.status != "all":
+        if args.status == "pending":
+            sql += " AND amount > 0"
+        else:
+            sql += " AND entry_type = %s"
+            params.append(args.status)
     if getattr(args, "from_date", None):
         sql += " AND value_date >= %s"
         params.append(_parse_date(args.from_date))
@@ -73,7 +76,7 @@ def main():
     print(f"Unapplied funds ({len(rows)} row(s))")
     print("-" * 80)
     for r in rows:
-        print(f"  id={r['id']}  loan_id={r['loan_id']}  repayment_id={r['repayment_id']}  amount={r['amount']}  value_date={r['value_date']}  status={r['status']}")
+        print(f"  id={r['id']}  loan_id={r['loan_id']}  repayment_id={r['repayment_id']}  amount={r['amount']}  value_date={r['value_date']}  entry_type={r.get('entry_type','')}")
     print("-" * 80)
     total = sum(float(r.get("amount") or 0) for r in rows)
     print(f"Total amount: {total:.2f}")

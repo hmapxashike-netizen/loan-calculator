@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -205,20 +205,10 @@ def apply_allocations_for_loan_date(
                         alloc_principal_not_due, alloc_principal_arrears,
                         alloc_interest_accrued, alloc_interest_arrears,
                         alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
-                        alloc_principal_total, alloc_interest_total, alloc_fees_total
+                        alloc_principal_total, alloc_interest_total, alloc_fees_total,
+                        event_type
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (repayment_id) DO UPDATE SET
-                        alloc_principal_not_due = EXCLUDED.alloc_principal_not_due,
-                        alloc_principal_arrears = EXCLUDED.alloc_principal_arrears,
-                        alloc_interest_accrued = EXCLUDED.alloc_interest_accrued,
-                        alloc_interest_arrears = EXCLUDED.alloc_interest_arrears,
-                        alloc_default_interest = EXCLUDED.alloc_default_interest,
-                        alloc_penalty_interest = EXCLUDED.alloc_penalty_interest,
-                        alloc_fees_charges = EXCLUDED.alloc_fees_charges,
-                        alloc_principal_total = EXCLUDED.alloc_principal_total,
-                        alloc_interest_total = EXCLUDED.alloc_interest_total,
-                        alloc_fees_total = EXCLUDED.alloc_fees_total
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         repayment_id,
@@ -226,6 +216,7 @@ def apply_allocations_for_loan_date(
                         alloc_interest_accrued, alloc_interest_arrears,
                         alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
                         alloc_principal_total, alloc_interest_total, alloc_fees_total,
+                        "new_allocation",
                     ),
                 )
                 if unapplied > 1e-6:
@@ -281,6 +272,46 @@ def _connection():
         raise
     finally:
         conn.close()
+
+
+def _log_allocation_audit(
+    event_type: str,
+    loan_id: int,
+    as_of_date: date,
+    *,
+    repayment_id: int | None = None,
+    original_repayment_id: int | None = None,
+    narration: str | None = None,
+    details: dict | None = None,
+    conn: Any = None,
+) -> None:
+    """Write to allocation_audit_log for reversal add-back and system reallocation. No-op if table missing."""
+    try:
+        def _do_insert(c: Any) -> None:
+            with c.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO allocation_audit_log
+                    (event_type, loan_id, as_of_date, repayment_id, original_repayment_id, narration, details)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        event_type,
+                        loan_id,
+                        as_of_date,
+                        repayment_id,
+                        original_repayment_id,
+                        narration,
+                        Json(details) if details else None,
+                    ),
+                )
+        if conn is not None:
+            _do_insert(conn)
+        else:
+            with _connection() as c:
+                _do_insert(c)
+    except Exception:
+        pass  # Table may not exist; do not fail the main operation
 
 
 def _date_conv(v: Any) -> date | None:
@@ -462,6 +493,19 @@ def reverse_repayment(
     - Removes pending unapplied_funds for this repayment.
     - Reversal row has negative amount and status 'reversed'; original is marked 'reversed'.
     """
+    # Ensure original has allocation before we reverse (so reversal row gets unallocation_parent_reversed)
+    alloc_row = _get_allocation_sum_for_repayment(original_repayment_id)
+    if not alloc_row:
+        with _connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, amount FROM loan_repayments WHERE id = %s",
+                    (original_repayment_id,),
+                )
+                r = cur.fetchone()
+        if r and float(r.get("amount") or 0) > 0:
+            allocate_repayment_waterfall(original_repayment_id)
+
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -481,20 +525,23 @@ def reverse_repayment(
                 eff_date = eff_date.date()
 
             # Undo allocation so state is correct for successive receipts: add back to daily state.
-            cur.execute(
-                """
-                SELECT alloc_principal_not_due, alloc_principal_arrears,
-                       alloc_interest_accrued, alloc_interest_arrears,
-                       alloc_default_interest, alloc_penalty_interest, alloc_fees_charges
-                FROM loan_repayment_allocation
-                WHERE repayment_id = %s
-                """,
-                (original_repayment_id,),
-            )
-            alloc_row = cur.fetchone()
+            alloc_row = _get_allocation_sum_for_repayment(original_repayment_id, conn)
             if alloc_row:
                 def _f(v):
                     return float(v or 0)
+                _log_allocation_audit(
+                    "reversal_add_back",
+                    loan_id,
+                    eff_date,
+                    original_repayment_id=original_repayment_id,
+                    narration="Reversal of receipt allocation",
+                    details={
+                        "alloc_principal_arrears": _f(alloc_row["alloc_principal_arrears"]),
+                        "alloc_interest_arrears": _f(alloc_row["alloc_interest_arrears"]),
+                        "alloc_penalty_interest": _f(alloc_row["alloc_penalty_interest"]),
+                    },
+                    conn=conn,
+                )
                 cur.execute(
                     """
                     UPDATE loan_daily_state
@@ -531,16 +578,115 @@ def reverse_repayment(
                     """,
                     (loan_id, eff_date),
                 )
+            # Reverse unapplied credits: insert debit rows (ledger-style, no DELETE)
             cur.execute(
-                "DELETE FROM unapplied_funds WHERE repayment_id = %s AND status = 'pending'",
+                """
+                SELECT id, amount FROM unapplied_funds
+                WHERE repayment_id = %s AND amount > 0
+                """,
                 (original_repayment_id,),
             )
+            for uf_row in cur.fetchall():
+                amt = -float(uf_row["amount"] or 0)
+                cur.execute(
+                    """
+                    INSERT INTO unapplied_funds (loan_id, amount, value_date, entry_type, reference, source_repayment_id, currency)
+                    VALUES (%s, %s, %s, 'debit', 'Reversal of receipt', %s, 'USD')
+                    """,
+                    (loan_id, amt, eff_date, original_repayment_id),
+                )
+
+            # Reversal cascade: reverse any allocations that consumed this receipt's overpayment
+            # (EOD apply-to-arrears with source_repayment_id = original)
+            cur.execute(
+                """
+                SELECT lra.id, lra.repayment_id, lra.alloc_principal_not_due, lra.alloc_principal_arrears,
+                       lra.alloc_interest_accrued, lra.alloc_interest_arrears,
+                       lra.alloc_default_interest, lra.alloc_penalty_interest, lra.alloc_fees_charges,
+                       lr.value_date AS alloc_value_date
+                FROM loan_repayment_allocation lra
+                JOIN loan_repayments lr ON lr.id = lra.repayment_id
+                WHERE lra.source_repayment_id = %s AND lra.event_type = 'unapplied_funds_allocation'
+                """,
+                (original_repayment_id,),
+            )
+            for alloc in cur.fetchall():
+                def _f(v):
+                    return float(v or 0)
+                apr = _f(alloc["alloc_principal_not_due"])
+                apa = _f(alloc["alloc_principal_arrears"])
+                aia = _f(alloc["alloc_interest_accrued"])
+                aiar = _f(alloc["alloc_interest_arrears"])
+                adi = _f(alloc["alloc_default_interest"])
+                api = _f(alloc["alloc_penalty_interest"])
+                afc = _f(alloc["alloc_fees_charges"])
+                alloc_date = alloc["alloc_value_date"]
+                if hasattr(alloc_date, "date"):
+                    alloc_date = alloc_date.date() if callable(getattr(alloc_date, "date")) else alloc_date
+                # Add back arrears to loan_daily_state
+                cur.execute(
+                    """
+                    UPDATE loan_daily_state
+                    SET principal_not_due = principal_not_due + %s, principal_arrears = principal_arrears + %s,
+                        interest_accrued_balance = interest_accrued_balance + %s,
+                        interest_arrears_balance = interest_arrears_balance + %s,
+                        default_interest_balance = default_interest_balance + %s,
+                        penalty_interest_balance = penalty_interest_balance + %s,
+                        fees_charges_balance = fees_charges_balance + %s
+                    WHERE loan_id = %s AND as_of_date = %s
+                    """,
+                    (apr, apa, aia, aiar, adi, api, afc, loan_id, alloc_date),
+                )
+                cur.execute(
+                    """
+                    UPDATE loan_daily_state SET total_exposure = principal_not_due + principal_arrears
+                        + interest_accrued_balance + interest_arrears_balance
+                        + default_interest_balance + penalty_interest_balance + fees_charges_balance
+                    WHERE loan_id = %s AND as_of_date = %s
+                    """,
+                    (loan_id, alloc_date),
+                )
+                # Insert negative allocation row (unallocation_parent_reversed)
+                cur.execute(
+                    """
+                    INSERT INTO loan_repayment_allocation (
+                        repayment_id, alloc_principal_not_due, alloc_principal_arrears,
+                        alloc_interest_accrued, alloc_interest_arrears,
+                        alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
+                        alloc_principal_total, alloc_interest_total, alloc_fees_total,
+                        event_type, source_repayment_id
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'unallocation_parent_reversed', %s)
+                    """,
+                    (
+                        alloc["repayment_id"], -apr, -apa, -aia, -aiar, -adi, -api, -afc,
+                        -(apr + apa), -(aia + aiar + adi + api), -afc,
+                        original_repayment_id,
+                    ),
+                )
+                # Offset the unapplied debit we created when applying (insert credit to "unconsume")
+                amount_applied = apr + apa + aia + aiar + adi + api + afc
+                cur.execute(
+                    """
+                    INSERT INTO unapplied_funds (loan_id, amount, value_date, entry_type, reference, source_repayment_id, currency)
+                    VALUES (%s, %s, %s, 'credit', 'Reversal of allocation (parent receipt reversed)', %s, 'USD')
+                    """,
+                    (loan_id, amount_applied, alloc_date, original_repayment_id),
+                )
 
             sdate = system_date
             if sdate is None:
                 sdate = datetime.now()
             elif isinstance(sdate, str):
                 sdate = datetime.fromisoformat(sdate.replace("Z", "+00:00"))
+
+            # Prefix references with "r" so reversal is clearly linked to original (e.g. r16, rREC-001)
+            orig_ref = row.get("reference") or str(original_repayment_id)
+            orig_cust_ref = row.get("customer_reference") or str(original_repayment_id)
+            orig_co_ref = row.get("company_reference") or str(original_repayment_id)
+            rev_ref = ("r" + orig_ref) if orig_ref else None
+            rev_cust_ref = ("r" + orig_cust_ref) if orig_cust_ref else None
+            rev_co_ref = ("r" + orig_co_ref) if orig_co_ref else None
 
             cur.execute(
                 """
@@ -562,15 +708,68 @@ def reverse_repayment(
                     row["period_number"],
                     -float(row["amount"]),
                     row["payment_date"],
-                    row["reference"],
-                    row["customer_reference"],
-                    row["company_reference"],
+                    rev_ref,
+                    rev_cust_ref,
+                    rev_co_ref,
                     row.get("value_date") or row["payment_date"],
                     sdate,
                     original_repayment_id,
                 ),
             )
-            new_id = cur.fetchone()[0]
+            # RealDictCursor returns a dict; fetch id by column name.
+            row_new = cur.fetchone()
+            new_id = int(row_new["id"]) if row_new and "id" in row_new else None
+
+            # For reconciliation/GL, persist an explicit negative allocation row for the reversal,
+            # mirroring the original allocation but with opposite sign.
+            if alloc_row and new_id is not None:
+                def _f(v):
+                    return float(v or 0)
+
+                rev_alloc_prin_not_due = -_f(alloc_row["alloc_principal_not_due"])
+                rev_alloc_prin_arrears = -_f(alloc_row["alloc_principal_arrears"])
+                rev_alloc_int_accrued = -_f(alloc_row["alloc_interest_accrued"])
+                rev_alloc_int_arrears = -_f(alloc_row["alloc_interest_arrears"])
+                rev_alloc_def = -_f(alloc_row["alloc_default_interest"])
+                rev_alloc_pen = -_f(alloc_row["alloc_penalty_interest"])
+                rev_alloc_fees = -_f(alloc_row["alloc_fees_charges"])
+
+                rev_alloc_prin_total = rev_alloc_prin_not_due + rev_alloc_prin_arrears
+                rev_alloc_int_total = (
+                    rev_alloc_int_accrued
+                    + rev_alloc_int_arrears
+                    + rev_alloc_def
+                    + rev_alloc_pen
+                )
+                rev_alloc_fees_total = rev_alloc_fees
+
+                cur.execute(
+                    """
+                    INSERT INTO loan_repayment_allocation (
+                        repayment_id,
+                        alloc_principal_not_due, alloc_principal_arrears,
+                        alloc_interest_accrued, alloc_interest_arrears,
+                        alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
+                        alloc_principal_total, alloc_interest_total, alloc_fees_total,
+                        event_type
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        new_id,
+                        rev_alloc_prin_not_due,
+                        rev_alloc_prin_arrears,
+                        rev_alloc_int_accrued,
+                        rev_alloc_int_arrears,
+                        rev_alloc_def,
+                        rev_alloc_pen,
+                        rev_alloc_fees,
+                        rev_alloc_prin_total,
+                        rev_alloc_int_total,
+                        rev_alloc_fees_total,
+                        "unallocation_parent_reversed",
+                    ),
+                )
 
             cur.execute(
                 "UPDATE loan_repayments SET status = 'reversed' WHERE id = %s",
@@ -739,6 +938,80 @@ def get_repayment_ids_for_value_date(value_date: date) -> list[int]:
             return [int(r[0]) for r in cur.fetchall()]
 
 
+def get_loan_ids_with_reversed_receipts_on_date(value_date: date) -> list[int]:
+    """
+    Loan IDs that have at least one reversed receipt on the given value_date.
+    Used by EOD to identify loans needing reallocation of other same-day receipts
+    so the waterfall is preserved after reversals.
+    """
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT loan_id FROM loan_repayments
+                WHERE status = 'reversed'
+                  AND (COALESCE(value_date, payment_date))::date = %s::date
+                ORDER BY loan_id
+                """,
+                (value_date,),
+            )
+            return [int(r[0]) for r in cur.fetchall()]
+
+
+def get_repayment_ids_for_loan_and_date(loan_id: int, value_date: date) -> list[int]:
+    """Posted repayment IDs for a specific loan on the given value_date. Order by id."""
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id FROM loan_repayments
+                WHERE loan_id = %s
+                  AND status = 'posted'
+                  AND (COALESCE(value_date, payment_date))::date = %s::date
+                ORDER BY id
+                """,
+                (loan_id, value_date),
+            )
+            return [int(r[0]) for r in cur.fetchall()]
+
+
+def _get_allocation_sum_for_repayment(repayment_id: int, conn=None) -> dict | None:
+    """
+    Sum all allocation rows for a repayment (append-only model).
+    Returns dict with alloc_principal_not_due, alloc_principal_arrears, etc., or None if no rows.
+    """
+    def _run(c):
+        with c.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) AS cnt,
+                    COALESCE(SUM(alloc_principal_not_due), 0)   AS alloc_principal_not_due,
+                    COALESCE(SUM(alloc_principal_arrears), 0)   AS alloc_principal_arrears,
+                    COALESCE(SUM(alloc_interest_accrued), 0)    AS alloc_interest_accrued,
+                    COALESCE(SUM(alloc_interest_arrears), 0)     AS alloc_interest_arrears,
+                    COALESCE(SUM(alloc_default_interest), 0)    AS alloc_default_interest,
+                    COALESCE(SUM(alloc_penalty_interest), 0)     AS alloc_penalty_interest,
+                    COALESCE(SUM(alloc_fees_charges), 0)        AS alloc_fees_charges
+                FROM loan_repayment_allocation
+                WHERE repayment_id = %s
+                """,
+                (repayment_id,),
+            )
+            return cur.fetchone()
+
+    if conn is not None:
+        row = _run(conn)
+    else:
+        with _connection() as c:
+            row = _run(c)
+    if not row or int(row.get("cnt", 0) or 0) == 0:
+        return None
+    out = dict(row)
+    out.pop("cnt", None)
+    return out
+
+
 def get_allocation_totals_for_loan_date(
     loan_id: int,
     value_date: date,
@@ -767,7 +1040,7 @@ def get_allocation_totals_for_loan_date(
                 FROM loan_repayments lr
                 JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
                 WHERE lr.loan_id = %s
-                  AND lr.status = 'posted'
+                  AND lr.status IN ('posted', 'reversed')
                   AND (COALESCE(lr.value_date, lr.payment_date))::date = %s::date
             """
             params: list = [loan_id, value_date]
@@ -790,27 +1063,34 @@ def get_allocation_totals_for_loan_date(
 
 
 def get_repayments_with_allocations(
-    loan_id: int, start_date: date, end_date: date
+    loan_id: int,
+    start_date: date,
+    end_date: date,
+    *,
+    include_reversed: bool = False,
 ) -> list[dict]:
-    """Repayments with value_date in range (posted only) and their allocation breakdown (totals and per-bucket 1-5)."""
+    """Repayments with value_date in range and their allocation breakdown (totals and per-bucket 1-5).
+    By default returns posted only. Set include_reversed=True to include reversed receipts (negative amount)."""
+    status_filter = "lr.status IN ('posted', 'reversed')" if include_reversed else "lr.status = 'posted'"
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                """
+                f"""
                 SELECT lr.id, lr.amount, lr.payment_date, lr.value_date, lr.customer_reference,
-                       COALESCE(lra.alloc_interest_total, 0) AS alloc_interest_total,
-                       COALESCE(lra.alloc_fees_total, 0) AS alloc_fees_total,
-                       COALESCE(lra.alloc_principal_total, 0) AS alloc_principal_total,
-                       COALESCE(lra.alloc_fees_charges, 0) AS alloc_fees_charges,
-                       COALESCE(lra.alloc_penalty_interest, 0) AS alloc_penalty_interest,
-                       COALESCE(lra.alloc_default_interest, 0) AS alloc_default_interest,
-                       COALESCE(lra.alloc_interest_arrears, 0) AS alloc_interest_arrears,
-                       COALESCE(lra.alloc_principal_arrears, 0) AS alloc_principal_arrears
+                       COALESCE(SUM(lra.alloc_interest_total), 0) AS alloc_interest_total,
+                       COALESCE(SUM(lra.alloc_fees_total), 0) AS alloc_fees_total,
+                       COALESCE(SUM(lra.alloc_principal_total), 0) AS alloc_principal_total,
+                       COALESCE(SUM(lra.alloc_fees_charges), 0) AS alloc_fees_charges,
+                       COALESCE(SUM(lra.alloc_penalty_interest), 0) AS alloc_penalty_interest,
+                       COALESCE(SUM(lra.alloc_default_interest), 0) AS alloc_default_interest,
+                       COALESCE(SUM(lra.alloc_interest_arrears), 0) AS alloc_interest_arrears,
+                       COALESCE(SUM(lra.alloc_principal_arrears), 0) AS alloc_principal_arrears
                 FROM loan_repayments lr
                 LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
-                WHERE lr.loan_id = %s AND lr.status = 'posted'
+                WHERE lr.loan_id = %s AND {status_filter}
                   AND COALESCE(lr.value_date, lr.payment_date) >= %s
                   AND COALESCE(lr.value_date, lr.payment_date) <= %s
+                GROUP BY lr.id, lr.amount, lr.payment_date, lr.value_date, lr.customer_reference
                 ORDER BY COALESCE(lr.value_date, lr.payment_date), lr.id
                 """,
                 (loan_id, start_date, end_date),
@@ -818,15 +1098,20 @@ def get_repayments_with_allocations(
             return [dict(r) for r in cur.fetchall()]
 
 
+def get_unapplied_ledger_balance(loan_id: int, as_of_date: date) -> float:
+    """Balance = SUM(amount) for loan_id, value_date <= as_of_date (ledger-style single table)."""
+    return get_unapplied_balance(loan_id, as_of_date)
+
+
 def get_unapplied_balance(loan_id: int, as_of_date: date) -> float:
-    """Sum of pending unapplied_funds for the loan with value_date <= as_of_date."""
+    """Balance = SUM(amount) for the loan with value_date <= as_of_date (ledger-style)."""
     with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT COALESCE(SUM(amount), 0)
                 FROM unapplied_funds
-                WHERE loan_id = %s AND status = 'pending' AND value_date <= %s
+                WHERE loan_id = %s AND value_date <= %s
                 """,
                 (loan_id, as_of_date),
             )
@@ -834,9 +1119,264 @@ def get_unapplied_balance(loan_id: int, as_of_date: date) -> float:
             return float(row[0] or 0)
 
 
+def get_loans_with_unapplied_balance(as_of_date: date) -> list[int]:
+    """Loan IDs with unapplied balance > 0 as of the given date (ledger-style)."""
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT loan_id
+                FROM unapplied_funds
+                WHERE value_date <= %s
+                GROUP BY loan_id
+                HAVING COALESCE(SUM(amount), 0) > 0
+                ORDER BY loan_id
+                """,
+                (as_of_date,),
+            )
+            return [int(r[0]) for r in cur.fetchall()]
+
+
+def apply_unapplied_funds_to_arrears_eod(
+    loan_id: int,
+    as_of_date: date,
+    sys_cfg: dict,
+) -> float:
+    """
+    Apply pending unapplied funds towards arrears (waterfall order) for a loan.
+    Only runs if unapplied > 0 and any arrears > 0 (interest_arrears, penalty, default, principal_arrears).
+    Constraints: allocate no more than unapplied balance, no more than each bucket balance.
+    Creates a system repayment and allocation with event_type='unapplied_funds_allocation'.
+    Returns amount applied (0 if none).
+    """
+    unapplied = get_unapplied_balance(loan_id, as_of_date)
+    if unapplied <= 1e-6:
+        return 0.0
+
+    state = get_loan_daily_state_balances(loan_id, as_of_date)
+    if not state:
+        return 0.0
+
+    # Arrears buckets only (waterfall order, excluding interest_accrued and principal_not_due for standard)
+    interest_arrears = float(state.get("interest_arrears_balance") or 0)
+    penalty_balance = float(state.get("penalty_interest_balance") or 0)
+    default_balance = float(state.get("default_interest_balance") or 0)
+    principal_arrears = float(state.get("principal_arrears") or 0)
+    fees_balance = float(state.get("fees_charges_balance") or 0)
+
+    arrears_total = interest_arrears + penalty_balance + default_balance + principal_arrears + fees_balance
+    if arrears_total <= 1e-6:
+        return 0.0
+
+    profile_key, bucket_order = _get_waterfall_config(sys_cfg)
+    # Standard profile skips interest_accrued_balance and principal_not_due
+    skip = STANDARD_SKIP_BUCKETS if profile_key == "standard" else ()
+
+    alloc: dict[str, float] = {alloc_key: 0.0 for _b, (alloc_key, _sk) in BUCKET_TO_ALLOC.items()}
+    remaining = min(unapplied, arrears_total)
+
+    for bucket_name in bucket_order:
+        if bucket_name not in BUCKET_TO_ALLOC or bucket_name in skip:
+            continue
+        alloc_key, state_key = BUCKET_TO_ALLOC[bucket_name]
+        bucket_balance = max(0.0, float(state.get(state_key, 0) or 0))
+        to_alloc = min(remaining, bucket_balance)
+        alloc[alloc_key] = to_alloc
+        remaining -= to_alloc
+        if remaining <= 1e-6:
+            remaining = 0.0
+            break
+
+    amount_applied = (
+        alloc.get("alloc_principal_not_due", 0) + alloc.get("alloc_principal_arrears", 0)
+        + alloc.get("alloc_interest_accrued", 0) + alloc.get("alloc_interest_arrears", 0)
+        + alloc.get("alloc_default_interest", 0) + alloc.get("alloc_penalty_interest", 0)
+        + alloc.get("alloc_fees_charges", 0)
+    )
+    if amount_applied <= 1e-6:
+        return 0.0
+
+    amount_applied = round(amount_applied, 2)
+    alloc_principal_not_due = alloc.get("alloc_principal_not_due", 0.0)
+    alloc_principal_arrears = alloc.get("alloc_principal_arrears", 0.0)
+    alloc_interest_accrued = alloc.get("alloc_interest_accrued", 0.0)
+    alloc_interest_arrears = alloc.get("alloc_interest_arrears", 0.0)
+    alloc_default_interest = alloc.get("alloc_default_interest", 0.0)
+    alloc_penalty_interest = alloc.get("alloc_penalty_interest", 0.0)
+    alloc_fees_charges = alloc.get("alloc_fees_charges", 0.0)
+    alloc_principal_total = alloc_principal_not_due + alloc_principal_arrears
+    alloc_interest_total = (
+        alloc_interest_accrued + alloc_interest_arrears
+        + alloc_default_interest + alloc_penalty_interest
+    )
+    alloc_fees_total = alloc_fees_charges
+
+    # Consume FIFO by source; create one debit + allocation per source for lineage
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, amount, repayment_id FROM unapplied_funds
+                WHERE loan_id = %s AND amount > 0 AND value_date <= %s
+                ORDER BY value_date, id
+                """,
+                (loan_id, as_of_date),
+            )
+            credit_rows = cur.fetchall()
+
+        # Build consumption per source (FIFO)
+        remaining_to_consume = amount_applied
+        consumptions: list[tuple[int | None, float]] = []  # (source_repayment_id, amount)
+        for row in credit_rows:
+            if remaining_to_consume <= 1e-6:
+                break
+            uf_amount = float(row["amount"] or 0)
+            consume = min(uf_amount, remaining_to_consume)
+            consume = round(consume, 2)
+            if consume <= 0:
+                continue
+            src_rep = row.get("repayment_id")
+            consumptions.append((int(src_rep) if src_rep is not None else None, consume))
+            remaining_to_consume -= consume
+
+        # Create system repayment
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO loan_repayments (
+                    loan_id, schedule_line_id, period_number, amount, payment_date,
+                    reference, customer_reference, company_reference, value_date, system_date, status
+                )
+                VALUES (%s, NULL, NULL, %s, %s, %s, %s, %s, %s, NOW(), 'posted')
+                RETURNING id
+                """,
+                (
+                    loan_id,
+                    amount_applied,
+                    as_of_date,
+                    "Unapplied funds allocation",
+                    "Unapplied funds allocation",
+                    "Unapplied funds allocation",
+                    as_of_date,
+                ),
+            )
+            eod_repayment_id = cur.fetchone()[0]
+
+        # Per-source: debit row + allocation row (waterfall split)
+        bucket_balances: dict[str, float] = {
+            "principal_not_due": float(state.get("principal_not_due") or 0),
+            "principal_arrears": principal_arrears,
+            "interest_accrued_balance": float(state.get("interest_accrued_balance") or 0),
+            "interest_arrears_balance": interest_arrears,
+            "default_interest_balance": default_balance,
+            "penalty_interest_balance": penalty_balance,
+            "fees_charges_balance": fees_balance,
+        }
+        profile_key, bucket_order = _get_waterfall_config(sys_cfg)
+        skip = STANDARD_SKIP_BUCKETS if profile_key == "standard" else ()
+
+        for src_repayment_id, consumed in consumptions:
+            remaining = consumed
+            src_alloc: dict[str, float] = {k: 0.0 for k in BUCKET_TO_ALLOC}
+
+            for bucket_name in bucket_order:
+                if bucket_name not in BUCKET_TO_ALLOC or bucket_name in skip:
+                    continue
+                alloc_key, state_key = BUCKET_TO_ALLOC[bucket_name]
+                bucket_balance = max(0.0, bucket_balances.get(state_key, 0))
+                to_alloc = min(remaining, bucket_balance)
+                src_alloc[alloc_key] = to_alloc
+                remaining -= to_alloc
+                bucket_balances[state_key] = bucket_balance - to_alloc
+                if remaining <= 1e-6:
+                    break
+
+            apr = src_alloc.get("alloc_principal_not_due", 0.0)
+            apa = src_alloc.get("alloc_principal_arrears", 0.0)
+            aia = src_alloc.get("alloc_interest_accrued", 0.0)
+            aiar = src_alloc.get("alloc_interest_arrears", 0.0)
+            adi = src_alloc.get("alloc_default_interest", 0.0)
+            api = src_alloc.get("alloc_penalty_interest", 0.0)
+            afc = src_alloc.get("alloc_fees_charges", 0.0)
+            apr_total = apr + apa
+            aint_total = aia + aiar + adi + api
+            afees_total = afc
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO unapplied_funds (loan_id, amount, value_date, entry_type, reference, allocation_repayment_id, source_repayment_id, currency)
+                    VALUES (%s, %s, %s, 'debit', 'Applied to arrears (EOD)', %s, %s, 'USD')
+                    """,
+                    (loan_id, -consumed, as_of_date, eod_repayment_id, src_repayment_id),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO loan_repayment_allocation (
+                        repayment_id, alloc_principal_not_due, alloc_principal_arrears,
+                        alloc_interest_accrued, alloc_interest_arrears,
+                        alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
+                        alloc_principal_total, alloc_interest_total, alloc_fees_total,
+                        event_type, source_repayment_id
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'unapplied_funds_allocation', %s)
+                    """,
+                    (eod_repayment_id, apr, apa, aia, aiar, adi, api, afc, apr_total, aint_total, afees_total, src_repayment_id),
+                )
+
+        # Update loan_daily_state once (total reduction)
+        new_principal_not_due = max(0.0, float(state.get("principal_not_due") or 0) - alloc_principal_not_due)
+        new_principal_arrears = max(0.0, principal_arrears - alloc_principal_arrears)
+        new_interest_accrued = max(0.0, float(state.get("interest_accrued_balance") or 0) - alloc_interest_accrued)
+        new_interest_arrears = max(0.0, interest_arrears - alloc_interest_arrears)
+        new_default_interest = max(0.0, default_balance - alloc_default_interest)
+        new_penalty_interest = max(0.0, penalty_balance - alloc_penalty_interest)
+        new_fees_charges = max(0.0, fees_balance - alloc_fees_charges)
+
+        from eod import get_engine_state_for_loan_date
+        engine_state = get_engine_state_for_loan_date(loan_id, as_of_date)
+        if engine_state:
+            reg_daily = float(engine_state.get("regular_interest_daily") or 0)
+            def_daily = float(engine_state.get("default_interest_daily") or 0)
+            pen_daily = float(engine_state.get("penalty_interest_daily") or 0)
+            reg_period = float(engine_state.get("regular_interest_period_to_date") or 0)
+            def_period = float(engine_state.get("default_interest_period_to_date") or 0)
+            pen_period = float(engine_state.get("penalty_interest_period_to_date") or 0)
+        else:
+            reg_daily = def_daily = pen_daily = 0.0
+            reg_period = def_period = pen_period = 0.0
+
+        arrears_after = new_interest_arrears + new_default_interest + new_penalty_interest + new_principal_arrears
+        days_overdue = int(state.get("days_overdue") or 0)
+        if arrears_after <= 1e-6:
+            days_overdue = 0
+
+        save_loan_daily_state(
+            loan_id=loan_id,
+            as_of_date=as_of_date,
+            regular_interest_daily=reg_daily,
+            principal_not_due=new_principal_not_due,
+            principal_arrears=new_principal_arrears,
+            interest_accrued_balance=new_interest_accrued,
+            interest_arrears_balance=new_interest_arrears,
+            default_interest_daily=def_daily,
+            default_interest_balance=new_default_interest,
+            penalty_interest_daily=pen_daily,
+            penalty_interest_balance=new_penalty_interest,
+            fees_charges_balance=new_fees_charges,
+            days_overdue=days_overdue,
+            regular_interest_period_to_date=reg_period,
+            penalty_interest_period_to_date=pen_period,
+            default_interest_period_to_date=def_period,
+            conn=conn,
+        )
+
+    return amount_applied
+
+
 def get_unapplied_entries(loan_id: int, through_date: date) -> list[tuple[date, float]]:
     """
-    All pending unapplied_funds for the loan with value_date <= through_date.
+    All unapplied_funds entries for the loan with value_date <= through_date (ledger-style).
     Returns list of (value_date, amount) for in-memory aggregation (e.g. unapplied at any date).
     """
     with _connection() as conn:
@@ -845,8 +1385,8 @@ def get_unapplied_entries(loan_id: int, through_date: date) -> list[tuple[date, 
                 """
                 SELECT value_date, amount
                 FROM unapplied_funds
-                WHERE loan_id = %s AND status = 'pending' AND value_date <= %s
-                ORDER BY value_date
+                WHERE loan_id = %s AND value_date <= %s
+                ORDER BY value_date, id
                 """,
                 (loan_id, through_date),
             )
@@ -861,13 +1401,13 @@ def get_unapplied_entries(loan_id: int, through_date: date) -> list[tuple[date, 
 
 
 def get_unapplied_repayment_ids(loan_id: int, as_of_date: date) -> set[int]:
-    """Repayment IDs that have a pending unapplied_funds row for this loan with value_date <= as_of_date."""
+    """Repayment IDs that created unapplied credits for this loan with value_date <= as_of_date."""
     with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT repayment_id FROM unapplied_funds
-                WHERE loan_id = %s AND status = 'pending' AND value_date <= %s
+                WHERE loan_id = %s AND value_date <= %s AND amount > 0 AND repayment_id IS NOT NULL
                 """,
                 (loan_id, as_of_date),
             )
@@ -1103,7 +1643,7 @@ def apply_unapplied_funds_recast(
     as_of: date | None = None,
 ) -> None:
     """
-    Apply pending unapplied funds to the loan via recast logic (separate from allocation).
+    Apply unapplied funds to the loan via recast logic (separate from allocation).
     Reclassifies accrued interest → interest arrears and principal not due → principal arrears
     (up to the unapplied amount), then applies the payment to those buckets. Call only after
     funds have been credited to Unapplied (e.g. from Unapplied tab).
@@ -1112,7 +1652,7 @@ def apply_unapplied_funds_recast(
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT id, loan_id, amount, value_date, status
+                SELECT id, loan_id, amount, value_date, repayment_id
                 FROM unapplied_funds
                 WHERE id = %s
                 """,
@@ -1121,14 +1661,22 @@ def apply_unapplied_funds_recast(
             row = cur.fetchone()
             if not row:
                 raise ValueError(f"Unapplied funds entry {unapplied_funds_id} not found.")
-            if (row["status"] or "").lower() != "pending":
-                raise ValueError(f"Unapplied funds entry {unapplied_funds_id} is not pending (status={row['status']}).")
+            if float(row.get("amount") or 0) <= 0:
+                raise ValueError(f"Unapplied funds entry {unapplied_funds_id} has no positive balance (already consumed or debit).")
+            # Prevent double-apply: check if debit already exists for this credit
+            cur.execute(
+                "SELECT 1 FROM unapplied_funds WHERE source_unapplied_id = %s LIMIT 1",
+                (unapplied_funds_id,),
+            )
+            if cur.fetchone():
+                raise ValueError(f"Unapplied funds entry {unapplied_funds_id} was already applied via recast.")
             loan_id = int(row["loan_id"])
             amount = float(row["amount"])
             value_date = row["value_date"]
             if hasattr(value_date, "date"):
                 value_date = value_date.date()
             eff_date = as_of or value_date
+            source_repayment_id = int(row["repayment_id"]) if row.get("repayment_id") is not None else None
 
             cur.execute(
                 """
@@ -1201,13 +1749,13 @@ def apply_unapplied_funds_recast(
                 default_interest_period_to_date=acc_period[2],
             )
 
+            # Insert debit row (ledger-style, no UPDATE)
             cur.execute(
                 """
-                UPDATE unapplied_funds
-                SET status = 'applied', applied_at = NOW(), notes = COALESCE(notes, '') || ' Applied via recast.'
-                WHERE id = %s
+                INSERT INTO unapplied_funds (loan_id, amount, value_date, entry_type, reference, source_repayment_id, source_unapplied_id, currency)
+                VALUES (%s, %s, %s, 'debit', 'Applied via recast', %s, %s, 'USD')
                 """,
-                (unapplied_funds_id,),
+                (loan_id, -amount, eff_date, source_repayment_id, unapplied_funds_id),
             )
 
 
@@ -1219,12 +1767,12 @@ def _credit_unapplied_funds(
     value_date: date,
     currency: str = "USD",
 ) -> None:
-    """Insert a row into unapplied_funds (suspense) for overpayment."""
+    """Insert a credit row into unapplied_funds (ledger-style, append-only)."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO unapplied_funds (loan_id, repayment_id, amount, currency, value_date, status)
-            VALUES (%s, %s, %s, %s, %s, 'pending')
+            INSERT INTO unapplied_funds (loan_id, repayment_id, amount, currency, value_date, entry_type, reference)
+            VALUES (%s, %s, %s, %s, %s, 'credit', 'Overpayment')
             """,
             (loan_id, repayment_id, amount, currency, value_date),
         )
@@ -1234,11 +1782,15 @@ def reallocate_repayment(
     repayment_id: int,
     *,
     system_config: dict | None = None,
+    use_yesterday_state: bool = False,
 ) -> None:
     """
     Correct an already-saved receipt: reverse its allocation and unapplied credits,
     then re-run allocation (e.g. after fixing waterfall config or logic).
     Allocation is done at save receipt, not at EOD.
+
+    When use_yesterday_state=True, uses loan_daily_state from the day before as
+    state_before (avoids engine divergence when engine has wrong arrears).
     """
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1259,17 +1811,7 @@ def reallocate_repayment(
             if hasattr(eff_date, "date"):
                 eff_date = eff_date.date()
 
-            cur.execute(
-                """
-                SELECT alloc_principal_not_due, alloc_principal_arrears,
-                       alloc_interest_accrued, alloc_interest_arrears,
-                       alloc_default_interest, alloc_penalty_interest, alloc_fees_charges
-                FROM loan_repayment_allocation
-                WHERE repayment_id = %s
-                """,
-                (repayment_id,),
-            )
-            alloc_row = cur.fetchone()
+            alloc_row = _get_allocation_sum_for_repayment(repayment_id, conn)
             if not alloc_row:
                 # No prior allocation; ensure state exists then allocate
                 conn.commit()
@@ -1278,58 +1820,109 @@ def reallocate_repayment(
                 allocate_repayment_waterfall(repayment_id, system_config=system_config)
                 return
 
+            # Insert debit rows to offset prior unapplied credits (ledger-style)
             cur.execute(
-                "DELETE FROM unapplied_funds WHERE repayment_id = %s AND status = 'pending'",
+                """
+                SELECT id, amount FROM unapplied_funds
+                WHERE repayment_id = %s AND amount > 0
+                """,
                 (repayment_id,),
             )
+            for uf_row in cur.fetchall():
+                amt = -float(uf_row["amount"] or 0)
+                cur.execute(
+                    """
+                    INSERT INTO unapplied_funds (loan_id, amount, value_date, entry_type, reference, source_repayment_id, currency)
+                    VALUES (%s, %s, %s, 'debit', 'Reallocate (remove prior unapplied)', %s, 'USD')
+                    """,
+                    (loan_id, amt, eff_date, repayment_id),
+                )
 
-    # Restore state to engine minus *other* receipts' allocations (not add-back: add-back was wrong
-    # when bucket had been capped to 0, giving 0+160=160 instead of engine.interest_arrears=101.75).
-    from eod import get_engine_state_for_loan_date
-    engine_state = get_engine_state_for_loan_date(loan_id, eff_date)
-    if not engine_state:
+    # First leg: insert unallocation_waterfall_correction (negative amounts)
+    def _f2(v):
+        return float(v or 0)
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO loan_repayment_allocation (
+                    repayment_id,
+                    alloc_principal_not_due, alloc_principal_arrears,
+                    alloc_interest_accrued, alloc_interest_arrears,
+                    alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
+                    alloc_principal_total, alloc_interest_total, alloc_fees_total,
+                    event_type
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    repayment_id,
+                    -_f2(alloc_row["alloc_principal_not_due"]),
+                    -_f2(alloc_row["alloc_principal_arrears"]),
+                    -_f2(alloc_row["alloc_interest_accrued"]),
+                    -_f2(alloc_row["alloc_interest_arrears"]),
+                    -_f2(alloc_row["alloc_default_interest"]),
+                    -_f2(alloc_row["alloc_penalty_interest"]),
+                    -_f2(alloc_row["alloc_fees_charges"]),
+                    -_f2(alloc_row["alloc_principal_not_due"]) - _f2(alloc_row["alloc_principal_arrears"]),
+                    -(_f2(alloc_row["alloc_interest_accrued"]) + _f2(alloc_row["alloc_interest_arrears"])
+                      + _f2(alloc_row["alloc_default_interest"]) + _f2(alloc_row["alloc_penalty_interest"])),
+                    -_f2(alloc_row["alloc_fees_charges"]),
+                    "unallocation_waterfall_correction",
+                ),
+            )
+
+    # State before this receipt: run EOD to refresh, or use yesterday when engine diverges
+    from datetime import timedelta
+    from eod import run_eod_for_date, get_engine_state_for_loan_date
+    if use_yesterday_state:
+        yesterday = eff_date - timedelta(days=1)
+        state_before_receipt_raw = get_loan_daily_state_balances(loan_id, yesterday)
+        if not state_before_receipt_raw:
+            run_eod_for_date(yesterday, skip_reallocate_after_reversals=True)
+            state_before_receipt_raw = get_loan_daily_state_balances(loan_id, yesterday)
+        run_eod_for_date(eff_date, skip_reallocate_after_reversals=True)  # ensure row exists
+    else:
+        run_eod_for_date(eff_date, skip_reallocate_after_reversals=True)
+        state_before_receipt_raw = get_loan_daily_state_balances(loan_id, eff_date)
+    if not state_before_receipt_raw:
         raise ValueError(
-            f"Cannot get engine state for loan_id={loan_id} on {eff_date} (no schedule or loan not active). "
-            "Run EOD up to that date first."
+            f"No loan_daily_state for loan_id={loan_id} on {eff_date} after EOD. Cannot reallocate."
         )
-    other_alloc = get_allocation_totals_for_loan_date(loan_id, eff_date, exclude_repayment_id=repayment_id)
-    def _sub(a: float, b: float) -> float:
-        return max(0.0, a - b)
-    # Build restored balances and persist so EOD/queries see engine - others; then allocate using
-    # the same in-memory state so we don't depend on a second connection seeing this row.
-    restored = {
-        "principal_not_due": _sub(engine_state["principal_not_due"], other_alloc.get("alloc_principal_not_due", 0.0)),
-        "principal_arrears": _sub(engine_state["principal_arrears"], other_alloc.get("alloc_principal_arrears", 0.0)),
-        "interest_accrued_balance": _sub(engine_state["interest_accrued_balance"], other_alloc.get("alloc_interest_accrued", 0.0)),
-        "interest_arrears_balance": _sub(engine_state["interest_arrears_balance"], other_alloc.get("alloc_interest_arrears", 0.0)),
-        "default_interest_balance": _sub(engine_state["default_interest_balance"], other_alloc.get("alloc_default_interest", 0.0)),
-        "penalty_interest_balance": _sub(engine_state["penalty_interest_balance"], other_alloc.get("alloc_penalty_interest", 0.0)),
-        "fees_charges_balance": _sub(engine_state["fees_charges_balance"], other_alloc.get("alloc_fees_charges", 0.0)),
-        "days_overdue": engine_state["days_overdue"],
+    state_before_receipt = {
+        "principal_not_due": float(state_before_receipt_raw.get("principal_not_due", 0) or 0),
+        "principal_arrears": float(state_before_receipt_raw.get("principal_arrears", 0) or 0),
+        "interest_accrued_balance": float(state_before_receipt_raw.get("interest_accrued_balance", 0) or 0),
+        "interest_arrears_balance": float(state_before_receipt_raw.get("interest_arrears_balance", 0) or 0),
+        "default_interest_balance": float(state_before_receipt_raw.get("default_interest_balance", 0) or 0),
+        "penalty_interest_balance": float(state_before_receipt_raw.get("penalty_interest_balance", 0) or 0),
+        "fees_charges_balance": float(state_before_receipt_raw.get("fees_charges_balance", 0) or 0),
+        "days_overdue": int(state_before_receipt_raw.get("days_overdue", 0) or 0),
     }
-    save_loan_daily_state(
-        loan_id=loan_id,
-        as_of_date=eff_date,
-        regular_interest_daily=engine_state["regular_interest_daily"],
-        principal_not_due=restored["principal_not_due"],
-        principal_arrears=restored["principal_arrears"],
-        interest_accrued_balance=restored["interest_accrued_balance"],
-        interest_arrears_balance=restored["interest_arrears_balance"],
-        default_interest_daily=engine_state["default_interest_daily"],
-        default_interest_balance=restored["default_interest_balance"],
-        penalty_interest_daily=engine_state["penalty_interest_daily"],
-        penalty_interest_balance=restored["penalty_interest_balance"],
-        fees_charges_balance=restored["fees_charges_balance"],
-        days_overdue=restored["days_overdue"],
-        regular_interest_period_to_date=engine_state.get("regular_interest_period_to_date", 0.0),
-        penalty_interest_period_to_date=engine_state.get("penalty_interest_period_to_date", 0.0),
-        default_interest_period_to_date=engine_state.get("default_interest_period_to_date", 0.0),
-    )
+
+    # Accrual fields come from engine (unchanged by allocation)
+    engine_state = get_engine_state_for_loan_date(loan_id, eff_date)
+    if engine_state:
+        state_before_receipt["regular_interest_daily"] = engine_state.get("regular_interest_daily", 0)
+        state_before_receipt["default_interest_daily"] = engine_state.get("default_interest_daily", 0)
+        state_before_receipt["penalty_interest_daily"] = engine_state.get("penalty_interest_daily", 0)
+        state_before_receipt["regular_interest_period_to_date"] = engine_state.get("regular_interest_period_to_date", 0)
+        state_before_receipt["penalty_interest_period_to_date"] = engine_state.get("penalty_interest_period_to_date", 0)
+        state_before_receipt["default_interest_period_to_date"] = engine_state.get("default_interest_period_to_date", 0)
+    else:
+        state_before_receipt["regular_interest_daily"] = 0.0
+        state_before_receipt["default_interest_daily"] = 0.0
+        state_before_receipt["penalty_interest_daily"] = 0.0
+        state_before_receipt["regular_interest_period_to_date"] = 0.0
+        state_before_receipt["penalty_interest_period_to_date"] = 0.0
+        state_before_receipt["default_interest_period_to_date"] = 0.0
+
     allocate_repayment_waterfall(
         repayment_id,
         system_config=system_config,
-        preloaded_balances=restored,
-        )
+        preloaded_balances=state_before_receipt,
+        event_type="reallocation_waterfall_correction",
+    )
 
 
 def allocate_repayment_waterfall(
@@ -1338,6 +1931,7 @@ def allocate_repayment_waterfall(
     as_of: date | None = None,
     system_config: dict | None = None,
     preloaded_balances: dict | None = None,
+    event_type: str = "new_allocation",
 ) -> None:
     """
     Allocate a repayment across loan buckets using the configured waterfall
@@ -1398,22 +1992,28 @@ def allocate_repayment_waterfall(
                 }
                 days_overdue = int(preloaded_balances.get("days_overdue", 0) or 0)
             else:
-                cur.execute(
-                    """
-                    SELECT as_of_date,
-                           principal_not_due, principal_arrears, interest_accrued_balance,
-                           interest_arrears_balance, default_interest_balance,
-                           penalty_interest_balance, fees_charges_balance, days_overdue
-                    FROM loan_daily_state
-                    WHERE loan_id = %s AND as_of_date <= %s
-                    ORDER BY as_of_date DESC LIMIT 1
-                    """,
-                    (loan_id, eff_date),
-                )
-                st_row = cur.fetchone()
-                if st_row is None:
-                    from eod import run_eod_for_date
-                    run_eod_for_date(eff_date)
+                # Prefer engine state minus other receipts = true state before this receipt.
+                # Avoids allocating to stale/wrong-date loan_daily_state (e.g. arrears from prior day).
+                from eod import get_engine_state_for_loan_date
+                engine_state = get_engine_state_for_loan_date(loan_id, eff_date)
+                other_alloc = get_allocation_totals_for_loan_date(loan_id, eff_date, exclude_repayment_id=repayment_id)
+
+                if engine_state:
+                    def _sub(a, b):
+                        return max(0.0, float(a or 0) - float(b or 0))
+                    balances = {
+                        "principal_not_due": _sub(engine_state.get("principal_not_due"), other_alloc.get("alloc_principal_not_due")),
+                        "principal_arrears": _sub(engine_state.get("principal_arrears"), other_alloc.get("alloc_principal_arrears")),
+                        "interest_accrued_balance": _sub(engine_state.get("interest_accrued_balance"), other_alloc.get("alloc_interest_accrued")),
+                        "interest_arrears_balance": _sub(engine_state.get("interest_arrears_balance"), other_alloc.get("alloc_interest_arrears")),
+                        "default_interest_balance": _sub(engine_state.get("default_interest_balance"), other_alloc.get("alloc_default_interest")),
+                        "penalty_interest_balance": _sub(engine_state.get("penalty_interest_balance"), other_alloc.get("alloc_penalty_interest")),
+                        "fees_charges_balance": _sub(engine_state.get("fees_charges_balance"), other_alloc.get("alloc_fees_charges")),
+                    }
+                    state_as_of = eff_date
+                    days_overdue = int(engine_state.get("days_overdue", 0) or 0)
+                else:
+                    # Fallback: loan_daily_state
                     cur.execute(
                         """
                         SELECT as_of_date,
@@ -1427,20 +2027,36 @@ def allocate_repayment_waterfall(
                         (loan_id, eff_date),
                     )
                     st_row = cur.fetchone()
-                state_as_of = st_row.get("as_of_date") if st_row else None
-                balances = {
-                    "principal_not_due": 0.0,
-                    "principal_arrears": 0.0,
-                    "interest_accrued_balance": 0.0,
-                    "interest_arrears_balance": 0.0,
-                    "default_interest_balance": 0.0,
-                    "penalty_interest_balance": 0.0,
-                    "fees_charges_balance": 0.0,
-                }
-                if st_row:
-                    for k in balances:
-                        balances[k] = float(st_row.get(k, 0) or 0)
-                days_overdue = int(st_row["days_overdue"]) if st_row else 0
+                    if st_row is None:
+                        from eod import run_eod_for_date
+                        run_eod_for_date(eff_date)
+                        cur.execute(
+                            """
+                            SELECT as_of_date,
+                                   principal_not_due, principal_arrears, interest_accrued_balance,
+                                   interest_arrears_balance, default_interest_balance,
+                                   penalty_interest_balance, fees_charges_balance, days_overdue
+                            FROM loan_daily_state
+                            WHERE loan_id = %s AND as_of_date <= %s
+                            ORDER BY as_of_date DESC LIMIT 1
+                            """,
+                            (loan_id, eff_date),
+                        )
+                        st_row = cur.fetchone()
+                    state_as_of = st_row.get("as_of_date") if st_row else None
+                    balances = {
+                        "principal_not_due": 0.0,
+                        "principal_arrears": 0.0,
+                        "interest_accrued_balance": 0.0,
+                        "interest_arrears_balance": 0.0,
+                        "default_interest_balance": 0.0,
+                        "penalty_interest_balance": 0.0,
+                        "fees_charges_balance": 0.0,
+                    }
+                    if st_row:
+                        for k in balances:
+                            balances[k] = float(st_row.get(k, 0) or 0)
+                    days_overdue = int(st_row["days_overdue"]) if st_row else 0
 
             alloc, unapplied = compute_waterfall_allocation(
                 amount, balances, bucket_order, profile_key,
@@ -1480,20 +2096,10 @@ def allocate_repayment_waterfall(
                     alloc_principal_not_due, alloc_principal_arrears,
                     alloc_interest_accrued, alloc_interest_arrears,
                     alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
-                    alloc_principal_total, alloc_interest_total, alloc_fees_total
+                    alloc_principal_total, alloc_interest_total, alloc_fees_total,
+                    event_type
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (repayment_id) DO UPDATE SET
-                    alloc_principal_not_due = EXCLUDED.alloc_principal_not_due,
-                    alloc_principal_arrears = EXCLUDED.alloc_principal_arrears,
-                    alloc_interest_accrued = EXCLUDED.alloc_interest_accrued,
-                    alloc_interest_arrears = EXCLUDED.alloc_interest_arrears,
-                    alloc_default_interest = EXCLUDED.alloc_default_interest,
-                    alloc_penalty_interest = EXCLUDED.alloc_penalty_interest,
-                    alloc_fees_charges = EXCLUDED.alloc_fees_charges,
-                    alloc_principal_total = EXCLUDED.alloc_principal_total,
-                    alloc_interest_total = EXCLUDED.alloc_interest_total,
-                    alloc_fees_total = EXCLUDED.alloc_fees_total
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     repayment_id,
@@ -1507,6 +2113,7 @@ def allocate_repayment_waterfall(
                     alloc_principal_total,
                     alloc_interest_total,
                     alloc_fees_total,
+                    event_type,
                 ),
             )
 
@@ -1518,16 +2125,26 @@ def allocate_repayment_waterfall(
             new_penalty_interest = max(0.0, balances["penalty_interest_balance"] - alloc_penalty_interest)
             new_fees_charges = max(0.0, balances["fees_charges_balance"] - alloc_fees_charges)
 
-            # Preserve accruals for eff_date: use engine state so we never overwrite to zero
+            # Preserve accruals for eff_date. Regular interest always from engine.
+            # Default/penalty daily: only accrue when in arrears; use post-allocation balances.
             from eod import get_engine_state_for_loan_date
             engine_state = get_engine_state_for_loan_date(loan_id, eff_date)
             if engine_state:
                 reg_daily = engine_state.get("regular_interest_daily", 0) or 0
-                def_daily = engine_state.get("default_interest_daily", 0) or 0
-                pen_daily = engine_state.get("penalty_interest_daily", 0) or 0
                 reg_period = engine_state.get("regular_interest_period_to_date", 0) or 0
                 pen_period = engine_state.get("penalty_interest_period_to_date", 0) or 0
                 def_period = engine_state.get("default_interest_period_to_date", 0) or 0
+                # Default/penalty daily: 0 when no arrears; else scale engine's rate by our balances
+                arrears_total = new_interest_arrears + new_default_interest + new_penalty_interest + new_principal_arrears
+                if arrears_total <= 1e-6 or days_overdue <= 0:
+                    def_daily = pen_daily = 0.0
+                else:
+                    eng_int_arr = float(engine_state.get("interest_arrears_balance", 0) or 0)
+                    eng_def = float(engine_state.get("default_interest_daily", 0) or 0)
+                    def_daily = (new_interest_arrears * eng_def / eng_int_arr) if eng_int_arr > 1e-6 else 0.0
+                    eng_prin_arr = float(engine_state.get("principal_arrears", 0) or 0)
+                    eng_pen = float(engine_state.get("penalty_interest_daily", 0) or 0)
+                    pen_daily = (new_principal_arrears * eng_pen / eng_prin_arr) if eng_prin_arr > 1e-6 else 0.0
             else:
                 reg_daily = def_daily = pen_daily = 0.0
                 reg_period = pen_period = def_period = 0.0

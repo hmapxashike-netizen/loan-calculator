@@ -72,14 +72,15 @@ PERIODIC_NUMERIC_HEADINGS = [
 ]
 
 # Customer-facing statement: simplified view from internal periodic. One line per periodic entry.
-# Shows interest (→ interest arrears on due date), penalty, default, disbursement, fees + credits. No principal arrears.
-# Receipts = one line per receipt (total amount); narration from source (e.g. customer reference or "Receipt").
+# Shows interest (→ interest arrears on due date), penalty, default, disbursement, fees + credits.
+# Arrears = principal arrears. Receipts = one line per receipt; narration from source (e.g. customer reference or "Receipt").
 CUSTOMER_FACING_STATEMENT_HEADINGS = [
     "Due Date",
     "Narration",
     "Debits",
     "Credits",
     "Balance",
+    "Arrears",
     "Unapplied funds",
 ]
 
@@ -168,7 +169,7 @@ def generate_customer_loan_statement(
     }
 
     daily_states = get_loan_daily_state_range(loan_id, start, end)
-    repayments = get_repayments_with_allocations(loan_id, start, end)
+    repayments = get_repayments_with_allocations(loan_id, start, end, include_reversed=True)
 
     # Single query for unapplied: entries (value_date, amount) then aggregate in memory
     try:
@@ -223,6 +224,7 @@ def generate_customer_loan_statement(
         }
 
     rows: list[dict[str, Any]] = []
+    processed_repayment_ids: set[int] = set()
     sum_interest_shown = 0.0
 
     # Disbursement line (any increase in Principal Not Due on transaction date)
@@ -294,17 +296,16 @@ def generate_customer_loan_statement(
         prev_state["principal_not_due"] = float(ds.get("principal_not_due") or 0)
         prev_state["fees_charges_balance"] = fees_bal
 
-    # Credits: each receipt on its value date (one row per receipt for reconciliation)
+    # Credits (and reversals): each receipt on its value date (one row per receipt for reconciliation)
     for vd in sorted(repayments_by_date.keys()):
         for r in repayments_by_date[vd]:
             amount = float(r.get("amount") or 0)
-            if amount <= 0:
-                continue
             row = _blank_row()
             row["Transaction Date"] = _date_conv(r.get("payment_date")) or vd
             row["Value Date"] = vd
-            row["Narration"] = (r.get("customer_reference") or "Receipt").strip() or "Receipt"
-            row["Credits"] = round(amount, 2)
+            ref = (r.get("customer_reference") or "").strip() or "Receipt"
+            row["Narration"] = f"Reversal of {ref}" if amount < 0 else ref
+            row["Credits"] = round(amount, 2)  # positive = payment, negative = reversal
             alloc_int = float(r.get("alloc_interest_total") or 0)
             alloc_fees = float(r.get("alloc_fees_total") or 0)
             alloc_cap = float(r.get("alloc_principal_total") or 0)
@@ -330,10 +331,7 @@ def generate_customer_loan_statement(
                     tot = bal["principal_not_due"] + bal["principal_arrears"] + total_int + bal["fees_charges_balance"]
             if tot is not None:
                 row["Total Outstanding Balance"] = round(tot, 2)
-            if (alloc_int + alloc_fees + alloc_cap) < 0.01 and amount > 0:
-                row["Unapplied funds"] = round(amount, 2)
-            else:
-                row["Unapplied funds"] = _unapplied_at(vd)
+            row["Unapplied funds"] = round(_unapplied_at(vd), 2)
             rows.append(row)
 
     # Sort rows by value date then transaction date then narration
@@ -456,7 +454,7 @@ def generate_customer_loan_statement_periodic(
         prev_due = due_d
 
     daily_states = get_loan_daily_state_range(loan_id, start, end)
-    repayments = get_repayments_with_allocations(loan_id, start, end)
+    repayments = get_repayments_with_allocations(loan_id, start, end, include_reversed=True)
     try:
         unapplied_entries = get_unapplied_entries(loan_id, end)
     except Exception:
@@ -490,6 +488,7 @@ def generate_customer_loan_statement_periodic(
         )
 
     rows: list[dict[str, Any]] = []
+    processed_repayment_ids: set[int] = set()
     fac = float(loan.get("principal") or loan.get("disbursed_amount") or 0)
 
     if disbursement and start <= disbursement <= end and fac > 0:
@@ -555,12 +554,11 @@ def generate_customer_loan_statement_periodic(
             if not vd or vd <= period_start_d or vd > due_d:
                 continue
             amount = float(r.get("amount") or 0)
-            if amount <= 0:
-                continue
             rec_row = _blank_row_periodic()
             rec_row["Due Date"] = vd
-            rec_row["Narration"] = (r.get("customer_reference") or "Receipt").strip() or "Receipt"
-            rec_row["Credits"] = round(amount, 2)
+            ref = (r.get("customer_reference") or "").strip() or "Receipt"
+            rec_row["Narration"] = f"Reversal of {ref}" if amount < 0 else ref
+            rec_row["Credits"] = round(amount, 2)  # positive = payment, negative = reversal
             rec_row["Portion of Credit Allocated to Interest"] = round(float(r.get("alloc_interest_total") or 0), 2)
             rec_row["Credit Allocated to Fees"] = round(float(r.get("alloc_fees_total") or 0), 2)
             rec_row["Credit Allocated to Capital"] = round(float(r.get("alloc_principal_total") or 0), 2)
@@ -573,6 +571,42 @@ def generate_customer_loan_statement_periodic(
                 rec_row["Arrears"] = 0
             rec_row["Unapplied funds"] = _unapplied_at(vd)
             rows.append(rec_row)
+            if r.get("id") is not None:
+                try:
+                    processed_repayment_ids.add(int(r["id"]))
+                except (TypeError, ValueError):
+                    pass
+
+    # Any receipts not falling into a schedule period but within [start, end] should still appear as credits
+    for r in repayments:
+        rid = r.get("id")
+        try:
+            rid_int = int(rid) if rid is not None else None
+        except (TypeError, ValueError):
+            rid_int = None
+        if rid_int is not None and rid_int in processed_repayment_ids:
+            continue
+        vd = _date_conv(r.get("value_date") or r.get("payment_date"))
+        if not vd or vd < start or vd > end:
+            continue
+        amount = float(r.get("amount") or 0)
+        rec_row = _blank_row_periodic()
+        rec_row["Due Date"] = vd
+        ref = (r.get("customer_reference") or "").strip() or "Receipt"
+        rec_row["Narration"] = f"Reversal of {ref}" if amount < 0 else ref
+        rec_row["Credits"] = round(amount, 2)
+        rec_row["Portion of Credit Allocated to Interest"] = round(float(r.get("alloc_interest_total") or 0), 2)
+        rec_row["Credit Allocated to Fees"] = round(float(r.get("alloc_fees_total") or 0), 2)
+        rec_row["Credit Allocated to Capital"] = round(float(r.get("alloc_principal_total") or 0), 2)
+        bal = _state_at(vd)
+        if bal:
+            rec_row["Total Outstanding Balance"] = round(_total_outstanding(bal), 2)
+            rec_row["Arrears"] = round(float(bal.get("principal_arrears") or 0), 2)
+        else:
+            rec_row["Total Outstanding Balance"] = 0
+            rec_row["Arrears"] = 0
+        rec_row["Unapplied funds"] = _unapplied_at(vd)
+        rows.append(rec_row)
 
     # Current period interest: from stored period-to-date at end (one read, no summing)
     last_due_in_range = due_entries[-1][0] if due_entries else None
@@ -627,8 +661,8 @@ def generate_customer_facing_statement(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     Generate a customer-facing loan statement from the internal periodic statement.
-    Debits: interest, penalty, default, disbursement (principal only on disbursement row), fees. No principal arrears.
-    Credits and Balance, Unapplied funds. Arrears column omitted (principal arrears not shown to customer).
+    Debits: interest, penalty, default, disbursement (principal only on disbursement row), fees.
+    Credits, Balance, Arrears (principal arrears), Unapplied funds.
     """
     rows_periodic, meta = generate_customer_loan_statement_periodic(
         loan_id,
@@ -641,39 +675,74 @@ def generate_customer_facing_statement(
     out: list[dict[str, Any]] = []
     for r in rows_periodic:
         narration = (r.get("Narration") or "").strip()
-        # Use "Interest accrued" for interest rows (due date / current period) instead of "Interest & Principal" etc.
-        if (
-            float(r.get("Interest") or 0) > 0
-            and narration != "Disbursement"
-            and not narration.startswith("Total outstanding balance")
-        ):
-            narration = "Interest accrued"
-        # Debits: only interest, penalty, default, fees. Principal only for Disbursement row (not scheduled principal / principal arrears).
-        if narration == "Disbursement":
-            debits = float(r.get("Principal") or 0)
-        else:
-            debits = (
-                float(r.get("Interest") or 0)
-                + float(r.get("Penalty") or 0)
-                + float(r.get("Default") or 0)
-                + float(r.get("Fees") or 0)
-            )
         credits = float(r.get("Credits") or 0)
         balance = r.get("Total Outstanding Balance")
         balance = round(float(balance), 2) if balance is not None else 0.0
+        arrears = r.get("Arrears")
+        arrears = round(float(arrears), 2) if arrears is not None else 0.0
         unapplied = r.get("Unapplied funds")
         unapplied = round(float(unapplied), 2) if unapplied is not None else 0.0
-        # Skip redundant rows (debits=0 and credits=0); keep closing balance row
-        if debits == 0 and credits == 0 and not narration.startswith("Total outstanding balance"):
-            continue
-        out.append({
-            "Due Date": r.get("Due Date"),
-            "Narration": narration or "",
-            "Debits": round(debits, 2),
-            "Credits": round(credits, 2),
-            "Balance": balance,
-            "Unapplied funds": unapplied,
-        })
+
+        if narration == "Disbursement":
+            out.append({
+                "Due Date": r.get("Due Date"),
+                "Narration": "Disbursement",
+                "Debits": round(float(r.get("Principal") or 0), 2),
+                "Credits": 0.0,
+                "Balance": balance,
+                "Arrears": arrears,
+                "Unapplied funds": unapplied,
+            })
+        elif narration.startswith("Total outstanding balance"):
+            out.append({
+                "Due Date": r.get("Due Date"),
+                "Narration": narration or "",
+                "Debits": 0.0,
+                "Credits": round(credits, 2),
+                "Balance": balance,
+                "Arrears": arrears,
+                "Unapplied funds": unapplied,
+            })
+        elif credits != 0:
+            # Receipt or reversal
+            out.append({
+                "Due Date": r.get("Due Date"),
+                "Narration": narration or "Receipt",
+                "Debits": 0.0,
+                "Credits": round(credits, 2),
+                "Balance": balance,
+                "Arrears": arrears,
+                "Unapplied funds": unapplied,
+            })
+        else:
+            # Interest/penalty/default/fees row: emit separate entries for each non-zero component
+            interest = float(r.get("Interest") or 0)
+            penalty = float(r.get("Penalty") or 0)
+            default = float(r.get("Default") or 0)
+            fees = float(r.get("Fees") or 0)
+            total_debits = interest + penalty + default + fees
+            if abs(total_debits) > 0.01:
+                out.append({
+                    "Due Date": r.get("Due Date"),
+                    "Narration": "Interest & Charges",
+                    "Debits": round(total_debits, 2),
+                    "Credits": 0.0,
+                    "Balance": balance,
+                    "Arrears": arrears,
+                    "Unapplied funds": unapplied,
+                })
+
+    # Ensure "Total outstanding balance as at ..." line is always last in customer-facing view
+    closing_index = None
+    for idx, row in enumerate(out):
+        narr = (row.get("Narration") or "")
+        if narr.startswith("Total outstanding balance as at"):
+            closing_index = idx
+            break
+    if closing_index is not None and closing_index != len(out) - 1:
+        closing_row = out.pop(closing_index)
+        out.append(closing_row)
+
     return out, meta
 
 

@@ -42,6 +42,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("repayment_id", type=int, help="Repayment ID to reallocate")
     parser.add_argument("--verbose", "-v", action="store_true", help="Show waterfall config and allocation")
+    parser.add_argument("--use-yesterday", action="store_true", help="Use yesterday's state (fixes engine divergence)")
     args = parser.parse_args()
     repayment_id = args.repayment_id
     verbose = args.verbose
@@ -98,7 +99,7 @@ def main():
         print("  (no row)")
 
     print("Running reallocate_repayment(...)")
-    reallocate_repayment(repayment_id)
+    reallocate_repayment(repayment_id, use_yesterday_state=getattr(args, "use_yesterday", False))
     print("Done.")
 
     after = _get_daily_state(loan_id, eff_date)

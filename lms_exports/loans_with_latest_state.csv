@@ -1,2 +1,2 @@
 loan_id,customer_name,product_code,loan_type,principal,disbursed_amount,status,as_of_date,principal_not_due,principal_arrears,interest_balance,penalty_interest_balance,total_exposure,days_overdue
-10,Windastic,TERM-USD,term_loan,10000.00,10000.00,active,2025-10-20,8482.53,1069.59,2486.52,92.38,12317.75,51
+10,Windastic,TERM-USD,term_loan,10000.00,10000.00,active,2025-10-31,7877.84,604.69,902.74,0.00,9385.27,1

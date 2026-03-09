@@ -50,6 +50,7 @@ def main():
             SELECT lr.id AS repayment_id, lr.loan_id, lr.amount,
                    COALESCE(lr.value_date, lr.payment_date) AS value_date,
                    lr.status,
+                   lra.id AS allocation_id, lra.event_type,
                    lra.alloc_principal_not_due, lra.alloc_principal_arrears,
                    lra.alloc_interest_accrued, lra.alloc_interest_arrears,
                    lra.alloc_default_interest, lra.alloc_penalty_interest, lra.alloc_fees_charges,
@@ -65,7 +66,7 @@ def main():
         if getattr(args, "to_date", None):
             sql += " AND COALESCE(lr.value_date, lr.payment_date) <= %s"
             params.append(_parse_date(args.to_date))
-        sql += " ORDER BY COALESCE(lr.value_date, lr.payment_date), lr.id"
+        sql += " ORDER BY COALESCE(lr.value_date, lr.payment_date), lr.id, lra.created_at ASC NULLS LAST"
         cur.execute(sql, params)
     elif args.repayment_id is not None:
         cur.execute(
@@ -73,6 +74,7 @@ def main():
             SELECT lr.id AS repayment_id, lr.loan_id, lr.amount,
                    COALESCE(lr.value_date, lr.payment_date) AS value_date,
                    lr.status,
+                   lra.id AS allocation_id, lra.event_type,
                    lra.alloc_principal_not_due, lra.alloc_principal_arrears,
                    lra.alloc_interest_accrued, lra.alloc_interest_arrears,
                    lra.alloc_default_interest, lra.alloc_penalty_interest, lra.alloc_fees_charges,
@@ -80,6 +82,7 @@ def main():
             FROM loan_repayments lr
             LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
             WHERE lr.id = %s
+            ORDER BY lra.created_at ASC NULLS LAST
             """,
             (args.repayment_id,),
         )
@@ -111,7 +114,11 @@ def main():
         amount = float(r.get("amount") or 0)
         vd = r.get("value_date")
         status = r.get("status") or ""
+        evt = r.get("event_type") or ""
+        alloc_id = r.get("allocation_id")
         print(f"\n--- Repayment ID {rid} | loan_id={loan_id} | amount={amount} | value_date={vd} | status={status} ---")
+        if alloc_id is not None and evt:
+            print(f"  Event: {evt} (allocation_id={alloc_id})")
         if r.get("alloc_principal_total") is None and r.get("alloc_interest_total") is None:
             print("  (No allocation row in DB.)")
             continue
