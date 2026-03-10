@@ -1,11 +1,11 @@
-repayment_id,loan_id,customer_name,amount,payment_date,value_date,reference,customer_reference,status,created_at
-19,10,Windastic,1481.22,2025-10-30,2025-10-30,A,A,posted,2026-03-09 15:35:00.760863+02:00
-18,10,Windastic,-10.00,2025-10-28,2025-10-28,l,l,reversed,2026-03-09 13:31:02.465373+02:00
-17,10,Windastic,788.33,2025-10-28,2025-10-28,p,p,posted,2026-03-09 13:23:41.838030+02:00
-16,10,Windastic,10.00,2025-10-28,2025-10-28,l,l,reversed,2026-03-09 13:22:16.793612+02:00
-15,10,Windastic,-500.00,2025-10-22,2025-10-22,rec 123,rec 123,reversed,2026-03-09 11:29:51.582582+02:00
-9,10,Windastic,600.00,2025-10-22,2025-10-22,rec 562,rec 562,posted,2026-03-09 10:55:21.704506+02:00
-8,10,Windastic,500.00,2025-10-22,2025-10-22,rec 123,rec 123,reversed,2026-03-09 10:54:41.581172+02:00
-7,10,Windastic,1100.00,2025-10-21,2025-10-21,rec452,rec452,posted,2026-03-09 10:45:00.445255+02:00
-6,10,Windastic,1000.00,2025-10-21,2025-10-21,rec 123,rec 123,posted,2026-03-09 10:44:17.489149+02:00
-5,10,Windastic,1481.22,2025-07-31,2025-07-31,Cabs account,Cabs account,posted,2026-03-08 18:52:48.338561+02:00
+repayment_id,repayment_code,loan_id,customer_name,amount,payment_date,value_date,reference,customer_reference,status,repayment_key,receipt_type,original_repayment_id,created_at
+19,19,10,Windastic,1481.22,2025-10-30,2025-10-30,A,A,posted,19,cash_receipt,,2026-03-09 15:35:00.760863+02:00
+18,REV-16,10,Windastic,-10.00,2025-10-28,2025-10-28,l,l,reversed,REV-16,reversal,16,2026-03-09 13:31:02.465373+02:00
+17,17,10,Windastic,788.33,2025-10-28,2025-10-28,p,p,posted,17,cash_receipt,,2026-03-09 13:23:41.838030+02:00
+16,16,10,Windastic,10.00,2025-10-28,2025-10-28,l,l,reversed,16,cash_receipt,,2026-03-09 13:22:16.793612+02:00
+15,REV-08,10,Windastic,-500.00,2025-10-22,2025-10-22,rec 123,rec 123,reversed,REV-08,reversal,8,2026-03-09 11:29:51.582582+02:00
+9,09,10,Windastic,600.00,2025-10-22,2025-10-22,rec 562,rec 562,posted,09,cash_receipt,,2026-03-09 10:55:21.704506+02:00
+8,08,10,Windastic,500.00,2025-10-22,2025-10-22,rec 123,rec 123,reversed,08,cash_receipt,,2026-03-09 10:54:41.581172+02:00
+7,07,10,Windastic,1100.00,2025-10-21,2025-10-21,rec452,rec452,posted,07,cash_receipt,,2026-03-09 10:45:00.445255+02:00
+6,06,10,Windastic,1000.00,2025-10-21,2025-10-21,rec 123,rec 123,posted,06,cash_receipt,,2026-03-09 10:44:17.489149+02:00
+5,05,10,Windastic,1481.22,2025-07-31,2025-07-31,Cabs account,Cabs account,posted,05,cash_receipt,,2026-03-08 18:52:48.338561+02:00

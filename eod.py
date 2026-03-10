@@ -36,6 +36,8 @@ from config import get_database_url
 from loan_daily_engine import LoanConfig, ScheduleEntry, Loan
 from loan_management import (
     get_allocation_totals_for_loan_date,
+    get_net_allocation_for_loan_date,
+    get_unallocated_for_loan_date,
     get_loan_daily_state_balances,
     get_loan_ids_with_reversed_receipts_on_date,
     get_loans_with_unapplied_balance,
@@ -468,6 +470,8 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
                 default_interest_period_to_date_save = default_interest_daily_save
                 penalty_interest_period_to_date_save = penalty_interest_daily_save
 
+        net_alloc = get_net_allocation_for_loan_date(loan_id_int, as_of_date)
+        unalloc = get_unallocated_for_loan_date(loan_id_int, as_of_date)
         save_loan_daily_state(
             loan_id=loan_id_int,
             as_of_date=as_of_date,
@@ -485,6 +489,8 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
             regular_interest_period_to_date=float(engine_loan.regular_interest_period_to_date),
             penalty_interest_period_to_date=penalty_interest_period_to_date_save,
             default_interest_period_to_date=default_interest_period_to_date_save,
+            net_allocation=net_alloc,
+            unallocated=unalloc,
         )
         processed += 1
 

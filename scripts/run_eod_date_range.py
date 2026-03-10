@@ -71,7 +71,10 @@ def main():
 
     while current <= end:
         try:
-            result = run_eod_for_date(current)
+            # When we reallocate all receipts ourselves, skip EOD's reallocate_after_reversals
+            # to avoid double reallocate (EOD + this loop both calling reallocate for same receipt).
+            skip_reallocate = not args.eod_only
+            result = run_eod_for_date(current, skip_reallocate_after_reversals=skip_reallocate)
             total_days += 1
             total_loans += result.loans_processed
             if not args.quiet:
