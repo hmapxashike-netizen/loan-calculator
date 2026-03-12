@@ -24,6 +24,7 @@ Security and scalability notes
 """
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -56,6 +57,26 @@ from loan_management import (
 ARREARS_ZERO_TOLERANCE = 1e-6
 
 
+def _debug_log_eod(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        import time
+        payload = {
+            "sessionId": "eae17f",
+            "id": f"log_{int(time.time() * 1000)}",
+            "timestamp": int(time.time() * 1000),
+            "location": location,
+            "message": message,
+            "data": data,
+            "runId": "post-fix",
+            "hypothesisId": hypothesis_id,
+        }
+        log_path = os.path.join(os.path.dirname(__file__), "debug-eae17f.log")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload) + "\n")
+    except Exception:
+        pass
+
+
 def _effective_config_for_loan(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Merge product config over system config for this loan so balance/quotation/default penalty % come from product."""
     effective_cfg = dict(sys_cfg)
@@ -77,17 +98,232 @@ def _get_conn():
     return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
 
 
-def _fetch_active_loans(conn) -> List[Dict[str, Any]]:
-    """Load all active loans from the database."""
-    with conn.cursor() as cur:
+def _fetch_active_loans(
+    conn,
+    *,
+    loan_ids_filter: List[int] | None = None,
+) -> List[Dict[str, Any]]:
+    """Load active loans from the database.
+
+    When loan_ids_filter is provided, only those loan IDs are returned.
+    Uses a server-side named cursor so the full result-set is streamed in
+    chunks rather than materialised into client memory all at once.
+    """
+    with conn.cursor(name="fetch_active_loans", cursor_factory=RealDictCursor) as cur:
+        if loan_ids_filter:
+            cur.execute(
+                "SELECT * FROM loans WHERE status = 'active' AND id = ANY(%s)",
+                (loan_ids_filter,),
+            )
+        else:
+            cur.execute("SELECT * FROM loans WHERE status = 'active'")
+        result: List[Dict[str, Any]] = []
+        while True:
+            batch = cur.fetchmany(500)
+            if not batch:
+                break
+            result.extend(dict(r) for r in batch)
+    return result
+
+
+def _batch_fetch_schedules(
+    conn, loan_ids: List[int]
+) -> Dict[int, List[Dict[str, Any]]]:
+    """Fetch schedule lines for all given loans in two queries (latest version per loan)."""
+    result: Dict[int, List[Dict[str, Any]]] = {lid: [] for lid in loan_ids}
+    if not loan_ids:
+        return result
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT *
-            FROM loans
-            WHERE status = 'active'
-            """
+            SELECT DISTINCT ON (loan_id) loan_id, id AS schedule_id
+            FROM loan_schedules
+            WHERE loan_id = ANY(%s)
+            ORDER BY loan_id, version DESC
+            """,
+            (loan_ids,),
         )
-        return [dict(r) for r in cur.fetchall()]
+        rows = cur.fetchall()
+    if not rows:
+        return result
+    sched_to_loan = {int(r["schedule_id"]): int(r["loan_id"]) for r in rows}
+    schedule_ids = list(sched_to_loan.keys())
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            'SELECT * FROM schedule_lines WHERE loan_schedule_id = ANY(%s) ORDER BY "Period"',
+            (schedule_ids,),
+        )
+        for row in cur.fetchall():
+            lid = sched_to_loan.get(int(row["loan_schedule_id"]))
+            if lid is not None:
+                result[lid].append(dict(row))
+    return result
+
+
+_EMPTY_ALLOC: Dict[str, float] = {
+    "alloc_principal_not_due": 0.0,
+    "alloc_principal_arrears": 0.0,
+    "alloc_interest_accrued": 0.0,
+    "alloc_interest_arrears": 0.0,
+    "alloc_default_interest": 0.0,
+    "alloc_penalty_interest": 0.0,
+    "alloc_fees_charges": 0.0,
+}
+
+
+def _batch_fetch_allocation_totals(
+    conn, loan_ids: List[int], as_of_date: date
+) -> Dict[int, Dict[str, float]]:
+    """Fetch allocation bucket sums for all given loans on as_of_date (one query)."""
+    result: Dict[int, Dict[str, float]] = {lid: dict(_EMPTY_ALLOC) for lid in loan_ids}
+    if not loan_ids:
+        return result
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT lr.loan_id,
+                COALESCE(SUM(lra.alloc_principal_not_due), 0) AS alloc_principal_not_due,
+                COALESCE(SUM(lra.alloc_principal_arrears),  0) AS alloc_principal_arrears,
+                COALESCE(SUM(lra.alloc_interest_accrued),   0) AS alloc_interest_accrued,
+                COALESCE(SUM(lra.alloc_interest_arrears),   0) AS alloc_interest_arrears,
+                COALESCE(SUM(lra.alloc_default_interest),   0) AS alloc_default_interest,
+                COALESCE(SUM(lra.alloc_penalty_interest),   0) AS alloc_penalty_interest,
+                COALESCE(SUM(lra.alloc_fees_charges),       0) AS alloc_fees_charges
+            FROM loan_repayments lr
+            JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
+            WHERE lr.loan_id = ANY(%s)
+              AND lr.status IN ('posted', 'reversed')
+              AND (COALESCE(lr.value_date, lr.payment_date))::date = %s::date
+            GROUP BY lr.loan_id
+            """,
+            (loan_ids, as_of_date),
+        )
+        for row in cur.fetchall():
+            result[int(row["loan_id"])] = {k: float(row[k] or 0) for k in _EMPTY_ALLOC}
+    return result
+
+
+def _batch_fetch_yesterday_states(
+    conn, loan_ids: List[int], yesterday: date
+) -> Dict[int, Dict[str, Any] | None]:
+    """Fetch the most-recent daily-state row on or before yesterday for each loan."""
+    result: Dict[int, Dict[str, Any] | None] = {lid: None for lid in loan_ids}
+    if not loan_ids:
+        return result
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (loan_id)
+                loan_id,
+                principal_not_due, principal_arrears,
+                interest_accrued_balance, interest_arrears_balance,
+                default_interest_balance, penalty_interest_balance,
+                fees_charges_balance, days_overdue, total_exposure,
+                COALESCE(regular_interest_daily, 0)           AS regular_interest_daily,
+                COALESCE(penalty_interest_daily, 0)           AS penalty_interest_daily,
+                COALESCE(default_interest_daily, 0)           AS default_interest_daily,
+                COALESCE(regular_interest_period_to_date, 0)  AS regular_interest_period_to_date,
+                COALESCE(penalty_interest_period_to_date, 0)  AS penalty_interest_period_to_date,
+                COALESCE(default_interest_period_to_date, 0)  AS default_interest_period_to_date
+            FROM loan_daily_state
+            WHERE loan_id = ANY(%s) AND as_of_date <= %s
+            ORDER BY loan_id, as_of_date DESC
+            """,
+            (loan_ids, yesterday),
+        )
+        for row in cur.fetchall():
+            result[int(row["loan_id"])] = {
+                "principal_not_due":          float(row["principal_not_due"] or 0),
+                "principal_arrears":           float(row["principal_arrears"] or 0),
+                "interest_accrued_balance":    float(row["interest_accrued_balance"] or 0),
+                "interest_arrears_balance":    float(row["interest_arrears_balance"] or 0),
+                "default_interest_balance":    float(row["default_interest_balance"] or 0),
+                "penalty_interest_balance":    float(row["penalty_interest_balance"] or 0),
+                "fees_charges_balance":        float(row["fees_charges_balance"] or 0),
+                "days_overdue":                int(row["days_overdue"] or 0),
+                "total_exposure":              float(row["total_exposure"] or 0),
+                "regular_interest_daily":      float(row["regular_interest_daily"] or 0),
+                "penalty_interest_daily":      float(row["penalty_interest_daily"] or 0),
+                "default_interest_daily":      float(row["default_interest_daily"] or 0),
+                "regular_interest_period_to_date":  float(row["regular_interest_period_to_date"] or 0),
+                "penalty_interest_period_to_date":  float(row["penalty_interest_period_to_date"] or 0),
+                "default_interest_period_to_date":  float(row["default_interest_period_to_date"] or 0),
+            }
+    return result
+
+
+_UNAPPLIED_FILTER_SQL = """
+    AND NOT (
+        COALESCE(lr.reference, '')          ILIKE 'Unapplied funds allocation%%'
+        OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
+        OR COALESCE(lr.company_reference, '')  ILIKE 'Unapplied funds allocation%%'
+    )
+"""
+
+
+def _batch_fetch_net_alloc_and_unallocated(
+    conn, loan_ids: List[int], as_of_date: date
+) -> Tuple[Dict[int, float], Dict[int, float]]:
+    """
+    Batch-fetch net_allocation and unallocated amounts for all loans on as_of_date.
+    Returns (net_alloc_by_loan, unallocated_by_loan).
+    Replaces per-loan calls to get_net_allocation_for_loan_date /
+    get_unallocated_for_loan_date with two portfolio-wide queries.
+    """
+    net_alloc:   Dict[int, float] = {lid: 0.0 for lid in loan_ids}
+    unallocated: Dict[int, float] = {lid: 0.0 for lid in loan_ids}
+    if not loan_ids:
+        return net_alloc, unallocated
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            f"""
+            SELECT lr.loan_id,
+                COALESCE(SUM(
+                    lra.alloc_principal_total + lra.alloc_interest_total + lra.alloc_fees_total
+                ), 0) AS net_alloc
+            FROM loan_repayments lr
+            JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
+            WHERE lr.loan_id = ANY(%s)
+              AND lr.status IN ('posted', 'reversed')
+              AND (COALESCE(lr.value_date, lr.payment_date))::date = %s::date
+              {_UNAPPLIED_FILTER_SQL}
+            GROUP BY lr.loan_id
+            """,
+            (loan_ids, as_of_date),
+        )
+        for row in cur.fetchall():
+            lid = int(row["loan_id"])
+            if lid in net_alloc:
+                net_alloc[lid] = float(row["net_alloc"] or 0)
+
+        cur.execute(
+            f"""
+            SELECT loan_id, COALESCE(SUM(amount - alloc_total), 0) AS unallocated
+            FROM (
+                SELECT lr.loan_id,
+                    lr.amount,
+                    COALESCE(SUM(
+                        COALESCE(lra.alloc_principal_total, 0)
+                        + COALESCE(lra.alloc_interest_total, 0)
+                        + COALESCE(lra.alloc_fees_total, 0)
+                    ), 0) AS alloc_total
+                FROM loan_repayments lr
+                LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
+                WHERE lr.loan_id = ANY(%s)
+                  AND lr.status IN ('posted', 'reversed')
+                  AND (COALESCE(lr.value_date, lr.payment_date))::date = %s::date
+                  {_UNAPPLIED_FILTER_SQL}
+                GROUP BY lr.loan_id, lr.id, lr.amount
+            ) sub
+            GROUP BY loan_id
+            """,
+            (loan_ids, as_of_date),
+        )
+        for row in cur.fetchall():
+            lid = int(row["loan_id"])
+            if lid in unallocated:
+                unallocated[lid] = float(row["unallocated"] or 0)
+    return net_alloc, unallocated
 
 
 def _get_loan_capture_rate_pct(loan_row: Dict[str, Any]) -> float:
@@ -183,8 +419,8 @@ def _build_schedule_entries(
     if hasattr(disb_date, "isoformat"):
         period_start: date = disb_date
     else:
-        # Fallback: today; in practice disbursement/start_date should always be set.
-        period_start = date.today()
+        from system_business_date import get_effective_date
+        period_start = get_effective_date()
 
     for row in schedule_rows:
         raw_date = row.get("Date") or row.get("date")
@@ -280,19 +516,39 @@ def get_engine_state_for_loan_date(loan_id: int, as_of_date: date) -> Dict[str, 
     }
 
 
-def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
+def _run_loan_engine_for_date(
+    as_of_date: date,
+    sys_cfg: Dict[str, Any],
+    *,
+    loan_ids_filter: List[int] | None = None,
+) -> int:
     """
     Core loan engine step: recompute loan buckets and interest into loan_daily_state.
+
+    When loan_ids_filter is provided, only those loans are processed.
+    This is used by run_single_loan_eod to avoid the O(N) cost of reprocessing
+    every active loan when only one receipt needs reallocation.
 
     Returns the number of loans that were actually processed (i.e. with schedules).
     """
     processed = 0
+    yesterday = as_of_date - timedelta(days=1)
+
     with _get_conn() as conn:
-        loans = _fetch_active_loans(conn)
+        loans = _fetch_active_loans(conn, loan_ids_filter=loan_ids_filter)
+        if not loans:
+            return 0
+        loan_ids = [int(r["id"]) for r in loans]
+
+        # Batch-load all auxiliary data: O(1) queries regardless of portfolio size.
+        schedules_map          = _batch_fetch_schedules(conn, loan_ids)
+        alloc_map              = _batch_fetch_allocation_totals(conn, loan_ids, as_of_date)
+        yesterday_map          = _batch_fetch_yesterday_states(conn, loan_ids, yesterday)
+        net_alloc_map, unalloc_map = _batch_fetch_net_alloc_and_unallocated(conn, loan_ids, as_of_date)
 
     for loan_row in loans:
         loan_id_int = int(loan_row["id"])
-        schedule_rows = get_schedule_lines(loan_id_int)
+        schedule_rows = schedules_map.get(loan_id_int, [])
         if not schedule_rows:
             # Skip loans without schedules; nothing to accrue yet.
             continue
@@ -322,7 +578,6 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
         )
 
         # Run engine to yesterday to get engine state at end of yesterday (for deltas)
-        yesterday = as_of_date - timedelta(days=1)
         current = disb_date
         while current <= yesterday:
             engine_loan.process_day(current)
@@ -343,11 +598,8 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
         if as_of_date > yesterday:
             engine_loan.process_day(as_of_date)
 
-        alloc = get_allocation_totals_for_loan_date(loan_id_int, as_of_date)
-        yesterday_saved = (
-            get_loan_daily_state_balances(loan_id_int, yesterday)
-            if yesterday >= disb_date else None
-        )
+        alloc = alloc_map.get(loan_id_int, dict(_EMPTY_ALLOC))
+        yesterday_saved = yesterday_map.get(loan_id_int) if yesterday >= disb_date else None
 
         # Balance today = yesterday's balance + (engine today - engine yesterday) - allocations today.
         # So: interest_arrears_balance = yesterday_balance + new_arrears_today - receipts allocated to interest arrears.
@@ -370,6 +622,23 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
         default_interest_balance = _today_balance("default_interest_balance", float(engine_loan.default_interest_balance), engine_yesterday["default_interest_balance"], "alloc_default_interest")
         penalty_interest_balance = _today_balance("penalty_interest_balance", float(engine_loan.penalty_interest_balance), engine_yesterday["penalty_interest_balance"], "alloc_penalty_interest")
         fees_charges_balance = _today_balance("fees_charges_balance", float(engine_loan.fees_charges_balance), engine_yesterday["fees_charges_balance"], "alloc_fees_charges")
+
+        # Non-due-date guard: arrears principal/interest must only move by persisted allocations.
+        # This prevents hidden drift from engine/session recomputation on dates without due transitions.
+        due_today = any(e.due_date == as_of_date for e in schedule_entries)
+        if yesterday_saved is not None and not due_today:
+            principal_not_due = max(
+                0.0,
+                float(yesterday_saved.get("principal_not_due", 0) or 0) - alloc.get("alloc_principal_not_due", 0.0),
+            )
+            principal_arrears = max(
+                0.0,
+                float(yesterday_saved.get("principal_arrears", 0) or 0) - alloc.get("alloc_principal_arrears", 0.0),
+            )
+            interest_arrears_balance = max(
+                0.0,
+                float(yesterday_saved.get("interest_arrears_balance", 0) or 0) - alloc.get("alloc_interest_arrears", 0.0),
+            )
 
         # Post-allocation "no arrears": principal and interest arrears are zero (with tolerance).
         no_arrears = (
@@ -409,73 +678,139 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
                 - float(engine_loan.last_penalty_interest_daily),
             )
         else:
-            # Use reconciled balances (billable arrears after allocations), not engine's
-            # accrual-only state. Engine runs from scratch without allocations, so its
-            # balances can be ~2x the saved ones when payments have reduced arrears.
-            # Formula: balance * (rate_per_month) / 30
-            rate = float(config.default_interest_absolute_rate_per_month)
-            penalty_rate = float(config.penalty_interest_absolute_rate_per_month)
+            # Daily accrual must be based on the OPENING balance at the start of the day
+            # (before any of today's allocations).  Using the post-alloc balance (which
+            # subtracts today's alloc from interest_arrears / principal_arrears) produces a
+            # lower daily on re-runs and breaks the bucket identity:
+            #   opening + daily - alloc = closing
+            # Re-add today's alloc to recover the true pre-alloc opening balance.
+            #
+            # Use Decimal arithmetic throughout so the 10dp NUMERIC column receives the
+            # full irrational fraction (e.g. 33.3333333333) rather than a float-rounded
+            # 33.33, eliminating the per-period ±0.10 residual that comes from 2dp truncation.
+            D = Decimal
+            rate        = D(str(config.default_interest_absolute_rate_per_month))
+            penalty_rate = D(str(config.penalty_interest_absolute_rate_per_month))
+            _30 = D("30")
+            int_arr_opening = max(
+                D("0"),
+                D(str(interest_arrears_balance)) + D(str(alloc.get("alloc_interest_arrears", 0.0))),
+            )
             default_interest_daily_save = (
-                interest_arrears_balance * rate / 30.0
-                if interest_arrears_balance > 0 and rate > 0
-                else 0.0
+                int_arr_opening * rate / _30
+                if int_arr_opening > 0 and rate > 0
+                else D("0")
+            )
+            prin_arr_opening = max(
+                D("0"),
+                D(str(principal_arrears)) + D(str(alloc.get("alloc_principal_arrears", 0.0))),
             )
             if config.penalty_on_principal_arrears_only:
-                penalty_basis = principal_arrears
+                penalty_basis = prin_arr_opening
             else:
-                penalty_basis = principal_arrears + principal_not_due
+                penalty_basis = prin_arr_opening + (
+                    D(str(principal_not_due)) + D(str(alloc.get("alloc_principal_not_due", 0.0)))
+                )
             penalty_interest_daily_save = (
-                penalty_basis * penalty_rate / 30.0
+                penalty_basis * penalty_rate / _30
                 if penalty_basis > 0 and penalty_rate > 0
-                else 0.0
+                else D("0")
             )
             # Reconcile default/penalty balances using our daily amounts (not engine's)
             if yesterday_saved is not None:
                 default_interest_balance_save = max(
-                    0.0,
-                    yesterday_saved.get("default_interest_balance", 0)
+                    D("0"),
+                    D(str(yesterday_saved.get("default_interest_balance", 0)))
                     + default_interest_daily_save
-                    - alloc.get("alloc_default_interest", 0.0),
+                    - D(str(alloc.get("alloc_default_interest", 0.0))),
                 )
                 penalty_interest_balance_save = max(
-                    0.0,
-                    yesterday_saved.get("penalty_interest_balance", 0)
+                    D("0"),
+                    D(str(yesterday_saved.get("penalty_interest_balance", 0)))
                     + penalty_interest_daily_save
-                    - alloc.get("alloc_penalty_interest", 0.0),
+                    - D(str(alloc.get("alloc_penalty_interest", 0.0))),
                 )
             else:
                 default_interest_balance_save = max(
-                    0.0,
-                    default_interest_daily_save - alloc.get("alloc_default_interest", 0.0),
+                    D("0"),
+                    default_interest_daily_save - D(str(alloc.get("alloc_default_interest", 0.0))),
                 )
                 penalty_interest_balance_save = max(
-                    0.0,
-                    penalty_interest_daily_save - alloc.get("alloc_penalty_interest", 0.0),
+                    D("0"),
+                    penalty_interest_daily_save - D(str(alloc.get("alloc_penalty_interest", 0.0))),
                 )
             # Period-to-date: sum of our daily amounts; reset on due date
-            due_today = any(e.due_date == as_of_date for e in schedule_entries)
             if due_today:
                 default_interest_period_to_date_save = default_interest_daily_save
                 penalty_interest_period_to_date_save = penalty_interest_daily_save
             elif yesterday_saved is not None:
                 default_interest_period_to_date_save = (
-                    yesterday_saved.get("default_interest_period_to_date", 0)
+                    D(str(yesterday_saved.get("default_interest_period_to_date", 0)))
                     + default_interest_daily_save
                 )
                 penalty_interest_period_to_date_save = (
-                    yesterday_saved.get("penalty_interest_period_to_date", 0)
+                    D(str(yesterday_saved.get("penalty_interest_period_to_date", 0)))
                     + penalty_interest_daily_save
                 )
             else:
                 default_interest_period_to_date_save = default_interest_daily_save
                 penalty_interest_period_to_date_save = penalty_interest_daily_save
 
-        net_alloc = get_net_allocation_for_loan_date(loan_id_int, as_of_date)
-        unalloc = get_unallocated_for_loan_date(loan_id_int, as_of_date)
+        net_alloc = net_alloc_map.get(loan_id_int, 0.0)
+        unalloc   = unalloc_map.get(loan_id_int, 0.0)
+        # #region agent log
+        alloc_total_for_exposure = (
+            alloc.get("alloc_principal_not_due", 0.0)
+            + alloc.get("alloc_principal_arrears", 0.0)
+            + alloc.get("alloc_interest_accrued", 0.0)
+            + alloc.get("alloc_interest_arrears", 0.0)
+            + alloc.get("alloc_default_interest", 0.0)
+            + alloc.get("alloc_penalty_interest", 0.0)
+            + alloc.get("alloc_fees_charges", 0.0)
+        )
+        # Balance columns are NUMERIC(18,2) so keep them as float for the upsert.
+        default_interest_balance_save = float(default_interest_balance_save)
+        penalty_interest_balance_save = float(penalty_interest_balance_save)
+        total_exposure_save = (
+            principal_not_due
+            + principal_arrears
+            + interest_accrued_balance
+            + interest_arrears_balance
+            + default_interest_balance_save
+            + penalty_interest_balance_save
+            + fees_charges_balance
+        )
+        if yesterday_saved is not None:
+            prev_exposure = float(yesterday_saved.get("total_exposure", 0) or 0)
+            daily_accr_total = (
+                float(engine_loan.last_regular_interest_daily)
+                + float(default_interest_daily_save)
+                + float(penalty_interest_daily_save)
+            )
+            implied_other = round(
+                prev_exposure + daily_accr_total - alloc_total_for_exposure - total_exposure_save,
+                3,
+            )
+            if abs(implied_other) > 0.005:
+                _debug_log_eod(
+                    "H_EOD_RESIDUAL",
+                    "eod._run_loan_engine_for_date:identity",
+                    "Non-zero implied other movement in daily exposure identity",
+                    {
+                        "loan_id": loan_id_int,
+                        "as_of_date": str(as_of_date),
+                        "prev_exposure": round(prev_exposure, 3),
+                        "daily_accr_total": round(daily_accr_total, 3),
+                        "alloc_total": round(alloc_total_for_exposure, 3),
+                        "saved_total_exposure": round(total_exposure_save, 3),
+                        "implied_other": implied_other,
+                    },
+                )
+        # #endregion
         save_loan_daily_state(
             loan_id=loan_id_int,
             as_of_date=as_of_date,
-            regular_interest_daily=float(engine_loan.last_regular_interest_daily),
+            regular_interest_daily=engine_loan.last_regular_interest_daily,
             principal_not_due=principal_not_due,
             principal_arrears=principal_arrears,
             interest_accrued_balance=interest_accrued_balance,
@@ -486,7 +821,7 @@ def _run_loan_engine_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
             penalty_interest_balance=penalty_interest_balance_save,
             fees_charges_balance=fees_charges_balance,
             days_overdue=days_overdue_save,
-            regular_interest_period_to_date=float(engine_loan.regular_interest_period_to_date),
+            regular_interest_period_to_date=engine_loan.regular_interest_period_to_date,
             penalty_interest_period_to_date=penalty_interest_period_to_date_save,
             default_interest_period_to_date=default_interest_period_to_date_save,
             net_allocation=net_alloc,
@@ -633,5 +968,25 @@ def run_eod_for_date(
     )
 
 
-__all__ = ["run_eod_for_date", "EODResult"]
+def run_single_loan_eod(
+    loan_id: int,
+    as_of_date: date,
+    sys_cfg: Dict[str, Any] | None = None,
+) -> None:
+    """
+    Run the EOD engine computation for a single loan only.
+
+    Much cheaper than run_eod_for_date when only one loan's daily state needs
+    refreshing (e.g. after reallocate_repayment).  Bypasses the O(N) cost of
+    fetching and reprocessing every active loan in the portfolio.
+
+    sys_cfg is passed in when the caller already holds a loaded config so we
+    avoid a redundant DB round-trip to load_system_config_from_db.
+    """
+    if sys_cfg is None:
+        sys_cfg = load_system_config_from_db() or {}
+    _run_loan_engine_for_date(as_of_date, sys_cfg, loan_ids_filter=[loan_id])
+
+
+__all__ = ["run_eod_for_date", "run_single_loan_eod", "EODResult"]
 

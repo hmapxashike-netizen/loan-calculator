@@ -60,7 +60,8 @@ def get_loan_for_modification(loan_id: int, as_of: date | None = None) -> dict |
     Keys: loan, schedule_version, schedule_lines, balances, last_due_date.
     """
     if as_of is None:
-        as_of = date.today()
+        from system_business_date import get_effective_date
+        as_of = get_effective_date()
     loan = get_loan(loan_id)
     if not loan:
         return None

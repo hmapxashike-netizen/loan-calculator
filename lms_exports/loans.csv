@@ -1,2 +1,2 @@
 loan_id,customer_id,customer_name,product_code,loan_type,status,principal,disbursed_amount,term,annual_rate,monthly_rate,loan_metadata,disbursement_date,start_date,end_date,first_repayment_date,installment,loan_created_at
-10,6,Windastic,TERM-USD,term_loan,active,10000.00,10000.00,12,1.200000,,"{'currency': 'USD', 'penalty_rate_pct': 5.0, 'penalty_quotation': 'Absolute Rate'}",2025-06-30,2025-06-30,2026-06-30,2025-07-31,1481.22,2026-03-08 17:59:09.598559+02:00
+15,6,Windastic,TERM-USD,term_loan,active,10000.00,10000.00,12,1.200000,,"{'currency': 'USD', 'penalty_rate_pct': 5.0, 'penalty_quotation': 'Absolute Rate'}",2025-06-30,2025-06-30,2026-06-30,2025-07-31,1481.22,2026-03-11 22:26:57.164021+02:00

@@ -25,6 +25,12 @@
    ```
    Adds `first_repayment_date` and `payment_timing` to `loans`, and creates `loan_repayments` for payment/receipt details.
 
+5. **System business date** (decouples business date from calendar):
+   ```bash
+   psql -U postgres -d lms_db -f 26_system_business_config.sql
+   ```
+   Creates `system_business_config` with `current_system_date`, `eod_auto_run_time`, `is_auto_eod_enabled`.
+
 ## Tables
 
 | Table            | Purpose |
@@ -41,6 +47,7 @@
 | `schedule_lines` | One row per period (instalments). Columns match app.py schedule rows. |
 | `loan_repayments` | Actual payments/receipts (payment date, amount, reference); distinct from planned schedule. |
 | `config`         | Optional key-value configuration. |
+| `system_business_config` | System business date, EOD auto-run time, is_auto_eod_enabled. Single row (id=1). |
 
 ## Relationships
 

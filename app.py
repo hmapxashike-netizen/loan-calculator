@@ -291,6 +291,42 @@ def system_configurations_ui():
 
     # ---------------- EOD configurations tab ----------------
     with tab_eod:
+        st.subheader("System business date")
+        st.caption("Accruals and Amount Due use the system date, not the calendar.")
+        try:
+            from system_business_date import get_system_business_config, set_system_business_config
+            sb_cfg = get_system_business_config()
+            new_date = st.date_input(
+                "Current system date",
+                value=sb_cfg["current_system_date"],
+                key="syscfg_system_date",
+            )
+            if new_date != sb_cfg["current_system_date"]:
+                if st.button("Update system date", key="syscfg_update_date"):
+                    if set_system_business_config(current_system_date=new_date):
+                        st.success("System date updated.")
+                        st.rerun()
+                    else:
+                        st.error("Failed to update.")
+            rt = sb_cfg["eod_auto_run_time"]
+            h = getattr(rt, "hour", 23)
+            m = getattr(rt, "minute", 0)
+            s = getattr(rt, "second", 0)
+            default_time = datetime.now().replace(hour=h, minute=m, second=s, microsecond=0).time()
+            new_time = st.time_input(
+                "EOD auto-run time (when enabled)",
+                value=default_time,
+                key="syscfg_eod_auto_time",
+            )
+            new_auto = st.checkbox("Enable auto EOD (trigger at configured time)", value=sb_cfg["is_auto_eod_enabled"], key="syscfg_auto_eod")
+            if st.button("Save auto EOD settings", key="syscfg_save_auto"):
+                if set_system_business_config(eod_auto_run_time=new_time, is_auto_eod_enabled=new_auto):
+                    st.success("Auto EOD settings saved.")
+                    st.rerun()
+        except Exception as ex:
+            st.warning("System business config not available (run migration 26): %s", ex)
+
+        st.divider()
         st.subheader("End of day (EOD) settings")
         st.caption(
             "Configure how and when EOD runs, and which high-level tasks should be included. "
@@ -606,6 +642,7 @@ def system_configurations_ui():
 def eod_ui():
     """End-of-day processing configuration and manual run."""
     from eod import run_eod_for_date
+    from system_business_date import get_system_business_config, run_eod_process
 
     st.markdown(
         "<div style='background-color: #16A34A; color: white; padding: 8px 12px; "
@@ -614,40 +651,87 @@ def eod_ui():
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
+    sb_cfg = get_system_business_config()
+    current_system_date = sb_cfg["current_system_date"]
+    next_date = current_system_date + timedelta(days=1)
+
+    st.markdown(f"**Current system date:** `{current_system_date.isoformat()}`")
+    st.caption(f"Calendar date: {datetime.now().strftime('%Y-%m-%d')}")
+
     cfg = _get_system_config()
     eod_cfg = cfg.get("eod_settings", {}) or {}
     mode = eod_cfg.get("mode", "manual")
     automatic_time = eod_cfg.get("automatic_time", "23:00")
 
     st.caption(
-        f"Current EOD mode: **{mode.upper()}**"
+        f"EOD mode: **{mode.upper()}**"
         + (f" (scheduled around {automatic_time})" if mode == "automatic" else "")
-        + ". Configure this under **System configurations → EOD configurations**."
+        + ". Configure under **System configurations → EOD configurations**."
     )
 
     st.divider()
     if mode == "manual":
-        st.subheader("Manual EOD run")
+        st.subheader("Run EOD (advance system date)")
         st.caption(
-            "Runs EOD for the selected calendar date. This computes interest, updates loan buckets "
-            "into `loan_daily_state`, and prepares data for accounting events that depend on EOD."
+            "Runs EOD for the current system date. On success, system date advances by +1 day. "
+            "Accruals and Amount Due logic use the system date, not the calendar."
         )
-        as_of = st.date_input("EOD as-of date", datetime.today().date())
-        if st.button("Run EOD now", type="primary", key="eod_run_now"):
-            try:
-                result = run_eod_for_date(as_of)
-                duration = result.finished_at - result.started_at
+
+        from loan_management import _connection
+        from psycopg2.extras import RealDictCursor
+        is_rerun = False
+        try:
+            with _connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT 1 FROM loan_daily_state WHERE as_of_date = %s LIMIT 1",
+                        (current_system_date,),
+                    )
+                    is_rerun = cur.fetchone() is not None
+        except Exception:
+            pass
+
+        if is_rerun:
+            st.warning(
+                f"EOD has already been run for **{current_system_date.isoformat()}**. "
+                "Re-running is idempotent but will not advance the system date again. "
+                "Confirm below to re-run."
+            )
+        confirm = st.checkbox(
+            f"I confirm: EOD will process accruals for **{current_system_date.isoformat()}**. "
+            f"On success, system date will advance to **{next_date.isoformat()}**.",
+            key="eod_confirm",
+        )
+        if st.button("Run EOD now", type="primary", key="eod_run_now", disabled=not confirm):
+            result = run_eod_process()
+            if result["success"]:
                 st.success(
-                    f"EOD completed for {result.as_of_date.isoformat()} – "
-                    f"processed {result.loans_processed} loans in {duration.total_seconds():.2f} seconds."
+                    f"EOD completed for {result['as_of_date']}. "
+                    f"System date advanced to {result['new_system_date']}. "
+                    f"Real-world: {result['real_world_time']}"
                 )
-            except Exception as e:
-                st.error(f"EOD run failed: {e}")
+                st.rerun()
+            else:
+                st.error(f"EOD failed: {result.get('error', 'Unknown error')}")
+
+        with st.expander("Run EOD for specific date (backfill, no advance)"):
+            st.caption("Backfill only. Does not advance system date.")
+            backfill_date = st.date_input("EOD as-of date", current_system_date, key="eod_backfill_date")
+            if st.button("Run EOD for date only", key="eod_backfill_btn"):
+                try:
+                    result = run_eod_for_date(backfill_date)
+                    duration = result.finished_at - result.started_at
+                    st.success(
+                        f"EOD completed for {result.as_of_date.isoformat()} – "
+                        f"processed {result.loans_processed} loans. System date unchanged."
+                    )
+                except Exception as e:
+                    st.error(f"EOD run failed: {e}")
     else:
         st.subheader("Manual EOD run")
         st.info(
-            "EOD is configured for **automatic** mode. Manual runs are disabled here to avoid "
-            "conflicts with the external scheduler. Use your scheduling/ops tooling to trigger EOD."
+            "EOD is configured for **automatic** mode. Manual runs are disabled here. "
+            "Use your scheduling/ops tooling to trigger EOD."
         )
 
 
@@ -703,6 +787,16 @@ def consumer_loan_ui():
     )
     disbursement_input = st.sidebar.date_input("Disbursement date", datetime.today().date(), key="cl_start")
     disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
+    default_first_rep = add_months(disbursement_date, 1).date()
+    first_rep_input = st.sidebar.date_input("First Repayment Date", default_first_rep, key="cl_first_rep")
+    first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
+    use_anniversary = st.sidebar.radio(
+        "Repayments on",
+        ["Anniversary date (same day each month)", "Last day of each month"],
+        key="cl_timing",
+    ).startswith("Anniversary")
+    if not use_anniversary and not is_last_day_of_month(first_repayment_date):
+        st.sidebar.error("When repayments are on last day of month, First Repayment Date must be the last day of that month.")
 
     # Future disbursement: prompt for additional rate when disbursement_date > next month
     today_normalized = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -762,10 +856,13 @@ def consumer_loan_ui():
         admin_fee = admin_fee_percent / 100.0
 
     flat_rate = glob.get("interest_method") == "Flat rate"
+    if not use_anniversary and not is_last_day_of_month(first_repayment_date):
+        return
     details, df_schedule = compute_consumer_schedule(
         loan_required, loan_term, disbursement_date, base_rate, admin_fee, input_total_facility,
         glob.get("rate_basis", "Per month"), flat_rate, scheme=scheme,
         additional_monthly_rate=additional_buffer_rate,
+        first_repayment_date=first_repayment_date, use_anniversary=use_anniversary,
     )
     details["currency"] = currency
     total_facility = details["principal"]
@@ -1359,8 +1456,14 @@ def compute_consumer_schedule(
     flat_rate: bool,
     scheme: str = "Other",
     additional_monthly_rate: float = 0.0,
+    first_repayment_date: datetime | None = None,
+    use_anniversary: bool = True,
 ) -> tuple[dict, pd.DataFrame]:
-    """Compute consumer loan schedule. Returns (details dict for DB, schedule DataFrame)."""
+    """Compute consumer loan schedule. Returns (details dict for DB, schedule DataFrame).
+
+    When first_repayment_date and use_anniversary are provided, repayment dates follow
+    the same logic as Term Loan: anniversary (same day each month) or last day of month.
+    """
     if input_total_facility:
         total_facility = loan_required
         amount_display = total_facility * (1.0 - admin_fee)
@@ -1370,16 +1473,27 @@ def compute_consumer_schedule(
     base_monthly = (base_rate / 12.0) if rate_basis == "Per annum" else base_rate
     total_monthly_rate = base_monthly + additional_monthly_rate
     monthly_installment = float(npf.pmt(total_monthly_rate, loan_term, -total_facility))
-    end_date = add_months(start_date, loan_term) - timedelta(days=1)
-    first_rep = add_months(start_date, 1)
+
+    if first_repayment_date is not None:
+        schedule_dates = repayment_dates(start_date, first_repayment_date, int(loan_term), use_anniversary)
+        end_date = schedule_dates[-1] if schedule_dates else add_months(start_date, loan_term) - timedelta(days=1)
+        first_rep = first_repayment_date
+    else:
+        schedule_dates = None
+        end_date = add_months(start_date, loan_term) - timedelta(days=1)
+        first_rep = add_months(start_date, 1)
+
     df_schedule = get_amortization_schedule(
-        total_facility, total_monthly_rate, int(loan_term), start_date, monthly_installment, flat_rate=flat_rate
+        total_facility, total_monthly_rate, int(loan_term), start_date, monthly_installment,
+        flat_rate=flat_rate, schedule_dates=schedule_dates,
     )
     details = {
         "principal": total_facility, "disbursed_amount": amount_display, "term": loan_term,
         "monthly_rate": total_monthly_rate, "admin_fee": admin_fee, "scheme": scheme,
-        "disbursement_date": start_date, "start_date": start_date, "end_date": end_date, "first_repayment_date": first_rep,
-        "installment": monthly_installment, "payment_timing": "anniversary",
+        "disbursement_date": start_date, "start_date": start_date, "end_date": end_date,
+        "first_repayment_date": first_rep,
+        "installment": monthly_installment,
+        "payment_timing": "anniversary" if use_anniversary else "last_day_of_month",
     }
     return details, df_schedule
 
@@ -1646,6 +1760,22 @@ def capture_loan_ui():
                     st.date_input("Disbursement date", datetime.today().date(), key="cap_cl_start"),
                     datetime.min.time(),
                 )
+                default_first_rep = add_months(disbursement_date, 1).date()
+                first_rep_input = st.date_input("First Repayment Date", default_first_rep, key="cap_cl_first_rep")
+                first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
+                use_anniversary = st.radio(
+                    "Repayments on",
+                    ["Anniversary date (same day each month)", "Last day of each month"],
+                    key="cap_cl_timing",
+                ).startswith("Anniversary")
+                cl_schedule_valid = use_anniversary or is_last_day_of_month(first_repayment_date)
+                if not cl_schedule_valid:
+                    last_day = days_in_month(first_repayment_date.year, first_repayment_date.month)
+                    example = datetime(first_repayment_date.year, first_repayment_date.month, last_day).strftime("%d-%b-%Y")
+                    st.error(
+                        "When repayments are on the **last day of each month**, the First Repayment Date must be the last day of its month. "
+                        f"For {first_repayment_date.strftime('%B %Y')} the last day is **{example}**."
+                    )
                 if scheme != "Other":
                     sch = next((s for s in schemes if s["name"] == scheme), None)
                     base_rate = (sch["interest_rate_pct"] / 100.0) if sch else 0.07
@@ -1689,19 +1819,21 @@ def capture_loan_ui():
                         key="cap_cl_penalty",
                         help="Required. 0% is acceptable. System uses only this value for penalty/default interest.",
                     )
-                details, df_schedule = compute_consumer_schedule(
-                    loan_required, loan_term, disbursement_date, base_rate, admin_fee, input_tf,
-                    glob.get("rate_basis", "Per month"), flat_rate, scheme=scheme,
-                )
-                details["currency"] = currency
-                details["penalty_rate_pct"] = penalty_pct
-                details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
-                st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
-                if st.button("Use this schedule", key="cap_cl_use"):
-                    st.session_state["capture_loan_details"] = details
-                    st.session_state["capture_loan_schedule_df"] = df_schedule
-                    st.success("Schedule saved. Click **Next** below to go to Review & approve.")
-                    st.rerun()
+                if cl_schedule_valid:
+                    details, df_schedule = compute_consumer_schedule(
+                        loan_required, loan_term, disbursement_date, base_rate, admin_fee, input_tf,
+                        glob.get("rate_basis", "Per month"), flat_rate, scheme=scheme,
+                        first_repayment_date=first_repayment_date, use_anniversary=use_anniversary,
+                    )
+                    details["currency"] = currency
+                    details["penalty_rate_pct"] = penalty_pct
+                    details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
+                    st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+                    if st.button("Use this schedule", key="cap_cl_use"):
+                        st.session_state["capture_loan_details"] = details
+                        st.session_state["capture_loan_schedule_df"] = df_schedule
+                        st.success("Schedule saved. Click **Next** below to go to Review & approve.")
+                        st.rerun()
 
             elif ltype == "Term Loan":
                 cfg = _get_system_config()

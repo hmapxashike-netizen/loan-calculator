@@ -203,8 +203,9 @@ class Loan:
         """
         Daily regular interest for date d. Single source of truth: the saved schedule.
 
-        - Find the schedule period where period_start <= d < due_date (due_date is
-          exclusive: the due date is the first day of the next period).
+        - Find the schedule period where period_start < d <= due_date.
+          The period start date itself does not accrue (e.g. disbursement day),
+          and the due date is the last accrual day of the period.
         - daily = scheduled interest for that period / days in that period.
           E.g. first period 29 days, scheduled interest 154.79 => 154.79/29 = 5.34 per day.
           Second period starts 30.11.2025, ends 31.12.2025 (31 days) => daily = interest/31.
@@ -219,9 +220,9 @@ class Loan:
         return entry.interest_component / Decimal(total_days)
 
     def _find_schedule_entry_for_day(self, d: date) -> Optional[ScheduleEntry]:
-        """Return the schedule entry where period_start <= d < due_date, or None (e.g. after last due date)."""
+        """Return the schedule entry where period_start < d <= due_date, or None."""
         for entry in self.schedule:
-            if entry.period_start <= d < entry.due_date:
+            if entry.period_start < d <= entry.due_date:
                 return entry
         return None
 

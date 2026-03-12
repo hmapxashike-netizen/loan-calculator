@@ -122,7 +122,12 @@ def get_amortization_schedule(
     start_date: datetime,
     installment: float,
     flat_rate: bool = False,
+    schedule_dates: list[datetime] | None = None,
 ) -> pd.DataFrame:
+    """
+    Consumer loan amortization (30/360 style). If schedule_dates is provided,
+    those dates are used for the Date column; otherwise add_months(start_date, i).
+    """
     schedule = []
     schedule.append({
         "Period": 0,
@@ -143,9 +148,14 @@ def get_amortization_schedule(
         principal_payment = installment - interest_payment
         remaining_balance -= principal_payment
         bal = round(max(0, remaining_balance), 2)
+        date_str = (
+            schedule_dates[i - 1].strftime("%d-%b-%Y")
+            if schedule_dates and i <= len(schedule_dates)
+            else add_months(start_date, i).strftime("%d-%b-%Y")
+        )
         schedule.append({
             "Period": i,
-            "Date": add_months(start_date, i).strftime("%d-%b-%Y"),
+            "Date": date_str,
             "Monthly Installment": round(installment, 2),
             "Principal": round(principal_payment, 2),
             "Interest": round(interest_payment, 2),

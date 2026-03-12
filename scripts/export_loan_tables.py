@@ -564,6 +564,185 @@ def _export_repayment_application(conn, export_dir: str) -> None:
         print(f"  {len(rows):5} rows -> {alt_path} (original in use)")
 
 
+def _export_statement_credits(conn, export_dir: str) -> None:
+    """
+    Statement-oriented credits view driven strictly by persisted tables:
+    1) Credits from loan_repayment_allocation totals per receipt (non-system receipts).
+    2) Credits from unapplied liquidations (event_type='unapplied_funds_allocation').
+    3) One accrual summary line per scheduled due date (regular/default/penalty period sums).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH alloc_receipts AS (
+                SELECT
+                    lr.loan_id,
+                    lr.id AS repayment_id,
+                    (COALESCE(lr.value_date, lr.payment_date))::date AS value_date,
+                    CASE
+                        WHEN lr.status = 'reversed' AND lr.original_repayment_id IS NOT NULL
+                            THEN 'REV-' || LPAD(lr.original_repayment_id::text, 2, '0')
+                        ELSE LPAD(lr.id::text, 2, '0')
+                    END AS repayment_key,
+                    COALESCE(lr.customer_reference, '') AS customer_reference,
+                    COALESCE(SUM(lra.alloc_principal_total), 0) AS alloc_prin_total,
+                    COALESCE(SUM(lra.alloc_interest_total), 0) AS alloc_int_total,
+                    COALESCE(SUM(lra.alloc_fees_total), 0) AS alloc_fees_total,
+                    COALESCE(SUM(lra.alloc_principal_arrears), 0) AS alloc_prin_arrears,
+                    COALESCE(SUM(lra.alloc_interest_arrears), 0) AS alloc_int_arrears,
+                    COALESCE(SUM(lra.alloc_penalty_interest), 0) AS alloc_penalty_int,
+                    COALESCE(SUM(lra.alloc_default_interest), 0) AS alloc_default_int,
+                    COALESCE(SUM(lra.alloc_fees_charges), 0) AS alloc_fees_charges,
+                    (lr.amount - COALESCE(SUM(lra.alloc_principal_total + lra.alloc_interest_total + lra.alloc_fees_total), 0)) AS unapplied_amount
+                FROM loan_repayments lr
+                LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
+                WHERE (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
+                  AND NOT (
+                    COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
+                    OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
+                    OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+                  )
+                GROUP BY
+                    lr.loan_id, lr.id, lr.value_date, lr.payment_date,
+                    lr.status, lr.original_repayment_id, lr.customer_reference, lr.amount
+            ),
+            liquidation_credits AS (
+                SELECT
+                    lr.loan_id,
+                    lra.source_repayment_id AS repayment_id,
+                    (COALESCE(lr.value_date, lr.payment_date))::date AS value_date,
+                    LPAD(lra.source_repayment_id::text, 2, '0') AS repayment_key,
+                    ''::text AS customer_reference,
+                    COALESCE(SUM(lra.alloc_principal_total), 0) AS alloc_prin_total,
+                    COALESCE(SUM(lra.alloc_interest_total), 0) AS alloc_int_total,
+                    COALESCE(SUM(lra.alloc_fees_total), 0) AS alloc_fees_total,
+                    COALESCE(SUM(lra.alloc_principal_arrears), 0) AS alloc_prin_arrears,
+                    COALESCE(SUM(lra.alloc_interest_arrears), 0) AS alloc_int_arrears,
+                    COALESCE(SUM(lra.alloc_penalty_interest), 0) AS alloc_penalty_int,
+                    COALESCE(SUM(lra.alloc_default_interest), 0) AS alloc_default_int,
+                    COALESCE(SUM(lra.alloc_fees_charges), 0) AS alloc_fees_charges
+                FROM loan_repayment_allocation lra
+                JOIN loan_repayments lr ON lr.id = lra.repayment_id
+                WHERE lra.event_type = 'unapplied_funds_allocation'
+                  AND lra.source_repayment_id IS NOT NULL
+                  AND (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
+                GROUP BY lr.loan_id, lra.source_repayment_id, (COALESCE(lr.value_date, lr.payment_date))::date
+            ),
+            due_calendar AS (
+                SELECT
+                    ls.loan_id,
+                    to_date(sl."Date", 'DD-Mon-YYYY')::date AS due_date,
+                    LAG(to_date(sl."Date", 'DD-Mon-YYYY')::date) OVER (
+                        PARTITION BY ls.loan_id ORDER BY sl."Period"
+                    ) AS prev_due_date
+                FROM schedule_lines sl
+                JOIN loan_schedules ls ON ls.id = sl.loan_schedule_id
+                WHERE to_date(sl."Date", 'DD-Mon-YYYY') BETWEEN %s::date AND %s::date
+            ),
+            due_accruals AS (
+                SELECT
+                    dc.loan_id,
+                    dc.due_date AS value_date,
+                    COALESCE(SUM(lds.regular_interest_daily), 0) AS regular_interest_period,
+                    COALESCE(SUM(lds.penalty_interest_daily), 0) AS penalty_interest_period,
+                    COALESCE(SUM(lds.default_interest_daily), 0) AS default_interest_period
+                FROM due_calendar dc
+                LEFT JOIN loan_daily_state lds
+                    ON lds.loan_id = dc.loan_id
+                   AND lds.as_of_date > COALESCE(dc.prev_due_date, (dc.due_date - INTERVAL '31 days')::date)
+                   AND lds.as_of_date <= dc.due_date
+                GROUP BY dc.loan_id, dc.due_date
+            )
+            SELECT
+                'repayment_credit' AS line_type,
+                CASE
+                    WHEN a.unapplied_amount < 0 THEN 'reversal'
+                    WHEN a.unapplied_amount > 0 THEN 'credit'
+                    ELSE 'neutral'
+                END AS entry_kind,
+                a.loan_id,
+                a.value_date,
+                a.repayment_id,
+                a.repayment_key,
+                CASE
+                    WHEN a.unapplied_amount < 0
+                        THEN ('Reversal from receipt no ' || a.repayment_key || ' : ' || a.customer_reference)
+                    ELSE ('Repayment no ' || a.repayment_key || ' : ' || a.customer_reference)
+                END AS narration,
+                (a.alloc_prin_total + a.alloc_int_total + a.alloc_fees_total) AS credits,
+                a.unapplied_amount AS unapplied_from_receipt,
+                a.alloc_prin_arrears,
+                a.alloc_int_arrears,
+                a.alloc_penalty_int,
+                a.alloc_default_int,
+                a.alloc_fees_charges,
+                NULL::numeric AS regular_interest_period,
+                NULL::numeric AS penalty_interest_period,
+                NULL::numeric AS default_interest_period
+            FROM alloc_receipts a
+            UNION ALL
+            SELECT
+                'liquidation_credit' AS line_type,
+                'liquidation' AS entry_kind,
+                l.loan_id,
+                l.value_date,
+                l.repayment_id,
+                l.repayment_key,
+                ('Liquidation of unapplied receipt no ' || l.repayment_key) AS narration,
+                (l.alloc_prin_total + l.alloc_int_total + l.alloc_fees_total) AS credits,
+                -(l.alloc_prin_total + l.alloc_int_total + l.alloc_fees_total) AS unapplied_from_receipt,
+                l.alloc_prin_arrears,
+                l.alloc_int_arrears,
+                l.alloc_penalty_int,
+                l.alloc_default_int,
+                l.alloc_fees_charges,
+                NULL::numeric AS regular_interest_period,
+                NULL::numeric AS penalty_interest_period,
+                NULL::numeric AS default_interest_period
+            FROM liquidation_credits l
+            UNION ALL
+            SELECT
+                'period_accrual' AS line_type,
+                NULL::text AS entry_kind,
+                d.loan_id,
+                d.value_date,
+                NULL::integer AS repayment_id,
+                NULL::text AS repayment_key,
+                ('Accruals for period ending ' || to_char(d.value_date, 'YYYY-MM-DD')) AS narration,
+                NULL::numeric AS credits,
+                NULL::numeric AS unapplied_from_receipt,
+                NULL::numeric AS alloc_prin_arrears,
+                NULL::numeric AS alloc_int_arrears,
+                NULL::numeric AS alloc_penalty_int,
+                NULL::numeric AS alloc_default_int,
+                NULL::numeric AS alloc_fees_charges,
+                d.regular_interest_period,
+                d.penalty_interest_period,
+                d.default_interest_period
+            FROM due_accruals d
+            ORDER BY loan_id, value_date, line_type, repayment_id
+            """,
+            (START_DATE, END_DATE, START_DATE, END_DATE, START_DATE, END_DATE),
+        )
+        rows = cur.fetchall()
+        colnames = [d[0] for d in cur.description]
+
+    out_path = os.path.join(export_dir, "statement_credits_view.csv")
+    try:
+        with open(out_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(colnames)
+            w.writerows(rows)
+        print(f"  {len(rows):5} rows -> {out_path}")
+    except PermissionError:
+        alt_path = os.path.join(export_dir, "statement_credits_view_new.csv")
+        with open(alt_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(colnames)
+            w.writerows(rows)
+        print(f"  {len(rows):5} rows -> {alt_path} (original in use)")
+
+
 def _export_loans_capture_rates(conn, export_dir: str) -> None:
     """Export rates captured at loan (loan parameters): annual_rate, monthly_rate, metadata.penalty_rate_pct."""
     with conn.cursor() as cur:
@@ -640,6 +819,8 @@ def main():
         _export_loans_capture_rates(conn, EXPORT_DIR)
         # Unapplied funds ledger: +credits and -liquidations linked to repayment IDs
         _export_repayment_application(conn, EXPORT_DIR)
+        # Statement-oriented lines for credits/unapplied/liquidation and period accrual summaries
+        _export_statement_credits(conn, EXPORT_DIR)
 
     finally:
         conn.close()
