@@ -94,6 +94,13 @@ except Exception as e:
 
 # --- App state & global settings (UI) ---
 
+def _get_system_date():
+    try:
+        from system_business_date import get_effective_date
+        return get_effective_date()
+    except ImportError:
+        return __import__('datetime').datetime.now().date()
+
 def _get_mapping_registry() -> MappingRegistry:
     """Lazy-initialise an in-memory MappingRegistry stored in session state."""
     if "accounting_mapping_registry" not in st.session_state:
@@ -785,7 +792,7 @@ def consumer_loan_ui():
         step=1,
         key="cl_term",
     )
-    disbursement_input = st.sidebar.date_input("Disbursement date", datetime.today().date(), key="cl_start")
+    disbursement_input = st.sidebar.date_input("Disbursement date", _get_system_date(), key="cl_start")
     disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
     default_first_rep = add_months(disbursement_date, 1).date()
     first_rep_input = st.sidebar.date_input("First Repayment Date", default_first_rep, key="cl_first_rep")
@@ -799,7 +806,7 @@ def consumer_loan_ui():
         st.sidebar.error("When repayments are on last day of month, First Repayment Date must be the last day of that month.")
 
     # Future disbursement: prompt for additional rate when disbursement_date > next month
-    today_normalized = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_normalized = datetime.combine(_get_system_date(), datetime.min.time()).replace(hour=0, minute=0, second=0, microsecond=0)
     next_month_limit = add_months(today_normalized, 1)
     additional_buffer_rate = 0.0
 
@@ -991,7 +998,7 @@ def term_loan_ui():
         step=1,
         key="term_months",
     )
-    disbursement_input = st.sidebar.date_input("Disbursement date", datetime.today().date(), key="term_disb")
+    disbursement_input = st.sidebar.date_input("Disbursement date", _get_system_date(), key="term_disb")
     disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
 
     # Term loan: defaults from System configurations, user can override
@@ -1034,7 +1041,7 @@ def term_loan_ui():
     first_rep_input = st.sidebar.date_input("First Repayment Date", default_first_rep, key="term_first_rep")
     first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
 
-    today_norm = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_norm = datetime.combine(_get_system_date(), datetime.min.time()).replace(hour=0, minute=0, second=0, microsecond=0)
     next_month_limit = add_months(today_norm, 1)
 
     if grace_type == "No grace period" and first_repayment_date > next_month_limit:
@@ -1174,7 +1181,7 @@ def bullet_loan_ui():
         step=1,
         key="bullet_term",
     )
-    disbursement_input = st.sidebar.date_input("Disbursement date", datetime.today().date(), key="bullet_disb")
+    disbursement_input = st.sidebar.date_input("Disbursement date", _get_system_date(), key="bullet_disb")
     disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
 
     dr = cfg.get("default_rates", {}).get("bullet_loan", {})
@@ -1313,7 +1320,7 @@ def customised_repayments_ui():
         step=1,
         key="cust_term",
     )
-    disbursement_input = st.sidebar.date_input("Disbursement date", datetime.today().date(), key="cust_start")
+    disbursement_input = st.sidebar.date_input("Disbursement date", _get_system_date(), key="cust_start")
     disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
     irregular_calc = st.sidebar.checkbox("Irregular", value=False, key="cust_irregular", help="Allow editing dates and adding rows; schedule recomputes from table.")
     use_anniversary = st.sidebar.radio(
@@ -1757,7 +1764,7 @@ def capture_loan_ui():
                     )
                 loan_term = st.number_input("Term (months)", 1, 60, 6, key="cap_cl_term")
                 disbursement_date = datetime.combine(
-                    st.date_input("Disbursement date", datetime.today().date(), key="cap_cl_start"),
+                    st.date_input("Disbursement date", _get_system_date(), key="cap_cl_start"),
                     datetime.min.time(),
                 )
                 default_first_rep = add_months(disbursement_date, 1).date()
@@ -1871,7 +1878,7 @@ def capture_loan_ui():
                     loan_term = st.number_input("Term (months)", 1, 120, 24, key="cap_term_months")
                 with tcol2:
                     disbursement_date = datetime.combine(
-                        st.date_input("Disbursement date", datetime.today().date(), key="cap_term_disb"),
+                        st.date_input("Disbursement date", _get_system_date(), key="cap_term_disb"),
                         datetime.min.time(),
                     )
                     rate_pct = st.number_input(
@@ -2006,7 +2013,7 @@ def capture_loan_ui():
                 with bcol2:
                     loan_term = st.number_input("Term (months)", 1, 120, 12, key="cap_bullet_term")
                     disbursement_date = datetime.combine(
-                        st.date_input("Disbursement date", datetime.today().date(), key="cap_bullet_disb"),
+                        st.date_input("Disbursement date", _get_system_date(), key="cap_bullet_disb"),
                         datetime.min.time(),
                     )
                     rate_pct = st.number_input(
@@ -2113,7 +2120,7 @@ def capture_loan_ui():
                 input_tf = principal_input == "Principal (total loan amount)"
                 loan_required = st.number_input("Loan amount", min_value=0.0, value=1000.0, step=100.0, format="%.2f", key="cap_cust_principal")
                 loan_term = st.number_input("Term (months)", 1, 120, 12, key="cap_cust_term")
-                disbursement_date = datetime.combine(st.date_input("Disbursement date", datetime.today().date(), key="cap_cust_start"), datetime.min.time())
+                disbursement_date = datetime.combine(st.date_input("Disbursement date", _get_system_date(), key="cap_cust_start"), datetime.min.time())
                 irregular = st.checkbox("Irregular", value=False, key="cap_cust_irregular", help="Allow editing dates and adding rows; schedule recomputes from table dates.")
                 use_anniversary = st.radio("Repayments on", ["Anniversary date", "Last day of month"], key="cap_cust_timing").startswith("Anniversary")
                 default_first = add_months(disbursement_date, 1).date()
@@ -2781,15 +2788,16 @@ def teller_ui():
                             )
 
                         now = datetime.now()
+                        _sys = _get_system_date()
                         with st.form("teller_single_form", clear_on_submit=True):
                             amount = st.number_input("Amount", min_value=0.01, value=100.0, step=100.0, format="%.2f", key="teller_amount")
                             customer_ref = st.text_input("Customer reference (appears on loan statement)", placeholder="e.g. Receipt #123", key="teller_cust_ref")
                             company_ref = st.text_input("Company reference (appears in general ledger)", placeholder="e.g. GL ref", key="teller_company_ref")
                             col1, col2 = st.columns(2)
                             with col1:
-                                value_date = st.date_input("Value date", value=now.date(), key="teller_value_date")
+                                value_date = st.date_input("Value date", value=_sys, key="teller_value_date")
                             with col2:
-                                system_date = st.date_input("System date", value=now.date(), key="teller_system_date")
+                                system_date = st.date_input("System date", value=_sys, key="teller_system_date")
                             submitted = st.form_submit_button("Record repayment")
                             if submitted and amount > 0:
                                 try:
@@ -2817,7 +2825,7 @@ def teller_ui():
         template_df = pd.DataFrame(columns=[
             "loan_id", "amount", "payment_date", "value_date", "customer_reference", "company_reference"
         ])
-        today = datetime.now().date().isoformat()
+        today = _get_system_date().isoformat()
         template_df.loc[0] = [1, 100.00, today, today, "Receipt-001", "GL-001"]
         buf = BytesIO()
         template_df.to_excel(buf, index=False, engine="openpyxl")
@@ -2854,7 +2862,7 @@ def teller_ui():
                                     continue
                                 pdate = r.get("payment_date")
                                 if pd.isna(pdate):
-                                    pdate = datetime.now().date().isoformat()
+                                    pdate = _get_system_date().isoformat()
                                 elif hasattr(pdate, "date"):
                                     pdate = pdate.date().isoformat()
                                 else:
@@ -2930,7 +2938,7 @@ def teller_ui():
 
                     if loan_id:
                         # Fetch recent receipts for this loan (last 12 months)
-                        today = datetime.today().date()
+                        today = _get_system_date()
                         start_date = today - timedelta(days=365)
                         try:
                             receipts = get_repayments_with_allocations(loan_id, start_date, today)
@@ -3060,7 +3068,7 @@ def reamortisation_ui():
                         )
                         if last_due and restructure_date > last_due:
                             st.error("Restructure date cannot be after the last due date.")
-                        elif last_due and restructure_date < datetime.now().date() and restructure_date < last_due:
+                        elif last_due and restructure_date < _get_system_date() and restructure_date < last_due:
                             pass
                         new_loan_type = st.selectbox(
                             "Modified loan type",
@@ -3164,7 +3172,7 @@ def reamortisation_ui():
                 loan_sel_r = st.selectbox("Select loan", loan_labels_r, key="recast_loan")
                 loan_id_r = loan_opts[loan_labels_r.index(loan_sel_r)][0] if loan_sel_r else None
                 if loan_id_r:
-                    recast_date = st.date_input("Recast effective date", value=datetime.now().date(), key="recast_date")
+                    recast_date = st.date_input("Recast effective date", value=_get_system_date(), key="recast_date")
                     from loan_management import get_loan_daily_state_balances
                     bal = get_loan_daily_state_balances(loan_id_r, recast_date)
                     new_principal = st.number_input(
@@ -3450,12 +3458,12 @@ def statements_ui():
                     disbursement = disbursement.date()
                 elif isinstance(disbursement, str):
                     disbursement = datetime.fromisoformat(disbursement[:10]).date()
-                start_default = disbursement or datetime.now().date()
+                start_default = disbursement or _get_system_date()
                 fd1, fd2 = st.columns(2)
                 with fd1:
                     start_date = st.date_input("Start date (optional)", value=start_default, key="stmt_start")
                 with fd2:
-                    end_date = st.date_input("End date (optional)", value=datetime.now().date(), key="stmt_end")
+                    end_date = st.date_input("End date (optional)", value=_get_system_date(), key="stmt_end")
                 st.caption("Leave defaults for start of loan to today.")
 
                 if st.button("Generate statement", type="primary", key="stmt_gen"):
@@ -3912,9 +3920,7 @@ def main():
     )
     st.sidebar.divider()
     st.sidebar.header("Navigation")
-    # Display current system date and time for operator awareness.
-    now = datetime.now()
-    st.sidebar.caption(f"System date/time: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+   
     nav = st.sidebar.radio(
         "Section",
         [

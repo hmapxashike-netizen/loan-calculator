@@ -227,8 +227,14 @@ def main():
 
     # Logged in: show role-filtered sidebar
     st.sidebar.write(f"Logged in as **{user['full_name']}** ({user['role']})")
+    try:
+        from system_business_date import get_effective_date
+        system_date = get_effective_date()
+    except ImportError:
+        system_date = datetime.now().date()
     now = datetime.now()
-    st.sidebar.caption(f"System date/time: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    st.sidebar.caption(f"**System date:** {system_date.isoformat()}")
+    st.sidebar.caption(f"**Calendar date:** {now.strftime('%Y-%m-%d %H:%M:%S')}")
     if st.sidebar.button("Log out"):
         clear_current_user()
         st.rerun() 

@@ -471,7 +471,11 @@ def record_repayment(
     vdate = _date_conv(value_date) if value_date else pdate
     sdate = system_date
     if sdate is None:
-        sdate = datetime.now()
+        try:
+            from system_business_date import get_effective_date
+            sdate = datetime.combine(get_effective_date(), datetime.now().time())
+        except ImportError:
+            sdate = datetime.now()
     elif isinstance(sdate, str):
         sdate = datetime.fromisoformat(sdate.replace("Z", "+00:00"))
     ref = customer_reference or reference
