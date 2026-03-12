@@ -1,4 +1,4 @@
-﻿"""
+"""
 Export loan tables to CSV in the LMS project folder.
 Run from project root:  python scripts/export_loan_tables.py
 
@@ -30,6 +30,7 @@ import json
 import os
 import sys
 from datetime import date
+from decimal import Decimal
 
 # Allow imports from project root when run as scripts/export_loan_tables.py
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -37,6 +38,35 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 EXPORT_DIR = os.path.join(_PROJECT_ROOT, "lms_exports")
+
+
+def _format_csv_value(v):
+    """Format value for CSV to avoid scientific notation (e.g. 0E-10) for zero/small numbers."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return str(v).lower()
+    if isinstance(v, (int,)):
+        return str(v)
+    try:
+        f = float(v)
+        if abs(f) < 1e-9:
+            return "0"
+        if 1e-4 <= abs(f) <= 1e12:
+            s = f"{f:.10f}".rstrip("0").rstrip(".")
+            return s if s else "0"
+        return str(v)
+    except (TypeError, ValueError):
+        pass
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return str(v)
+
+
+def _format_csv_row(row):
+    """Format a row of values for CSV export."""
+    return [_format_csv_value(cell) for cell in row]
+
 
 START_DATE = "2025-06-30"
 # Include at least the latest receipt value_date so allocation and state impact appear in export
@@ -97,11 +127,10 @@ QUERIES = [
             COALESCE(i.name, c.trading_name, c.legal_name) AS customer_name,
             CASE
                 WHEN lr.status = 'reversed' AND lr.original_repayment_id IS NOT NULL
-                    THEN 'REV-' || LPAD(lr.original_repayment_id::text, 2, '0')
-                ELSE LPAD(lr.id::text, 2, '0')
+                    THEN 'REV-' || lr.original_repayment_id::text
+                ELSE lr.id::text
             END AS repayment_key,
             CASE
-                WHEN lr.reference = 'Unapplied funds allocation' THEN 'unapplied_liquidation'
                 WHEN lr.status = 'reversed' AND lr.amount < 0 THEN 'reversal'
                 ELSE 'cash_receipt'
             END AS receipt_type
@@ -110,6 +139,11 @@ QUERIES = [
         LEFT JOIN individuals i ON i.customer_id = l.customer_id
         LEFT JOIN corporates c ON c.customer_id = l.customer_id
         WHERE COALESCE(lr.value_date, lr.payment_date) BETWEEN %s AND %s
+          AND NOT (
+            COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
+            OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
+            OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+          )
         ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lr.id DESC
         """,
         (START_DATE, END_DATE),
@@ -122,6 +156,11 @@ QUERIES = [
         FROM loan_repayment_allocation lra
         JOIN loan_repayments lr ON lr.id = lra.repayment_id
         WHERE COALESCE(lr.value_date, lr.payment_date) BETWEEN %s AND %s
+          AND NOT (
+            COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
+            OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
+            OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+          )
         ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lra.repayment_id, lra.id
         """,
         (START_DATE, END_DATE),
@@ -289,14 +328,14 @@ def _export_config_rates(conn, export_dir: str) -> None:
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(colnames)
-            w.writerows(flat_rows)
+            w.writerows(_format_csv_row(r) for r in flat_rows)
         print(f"  {len(flat_rows):5} rows -> {out_path}")
     except PermissionError:
         alt_path = os.path.join(export_dir, "config_rates_per_product_new.csv")
         with open(alt_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(colnames)
-            w.writerows(flat_rows)
+            w.writerows(_format_csv_row(r) for r in flat_rows)
         print(f"  {len(flat_rows):5} rows -> {alt_path} (original in use)")
 
 
@@ -339,8 +378,8 @@ def _export_repayment_application(conn, export_dir: str) -> None:
                     ar.repayment_id,
                     CASE
                         WHEN lr.status = 'reversed' AND lr.original_repayment_id IS NOT NULL
-                            THEN 'REV-' || LPAD(lr.original_repayment_id::text, 2, '0')
-                        ELSE LPAD(ar.repayment_id::text, 2, '0')
+                            THEN 'REV-' || lr.original_repayment_id::text
+                        ELSE ar.repayment_id::text
                     END AS repayment_key,
                     ar.loan_id,
                     ar.value_date,
@@ -361,7 +400,7 @@ def _export_repayment_application(conn, export_dir: str) -> None:
                 -- Liquidations come only from unapplied_funds_allocation (always negative unapplied delta).
                 SELECT
                     lra.source_repayment_id AS repayment_id,
-                    LPAD(lra.source_repayment_id::text, 2, '0') AS repayment_key,
+                    lra.source_repayment_id::text AS repayment_key,
                     lr.loan_id AS loan_id,
                     (COALESCE(lr.value_date, lr.payment_date))::date AS value_date,
                     'liquidation' AS entry_kind,
@@ -416,14 +455,14 @@ def _export_repayment_application(conn, export_dir: str) -> None:
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(colnames)
-            w.writerows(rows)
+            w.writerows(_format_csv_row(r) for r in rows)
         print(f"  {len(rows):5} rows -> {out_path}")
     except PermissionError:
         alt_path = os.path.join(export_dir, "unapplied_funds_ledger_new.csv")
         with open(alt_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(colnames)
-            w.writerows(rows)
+            w.writerows(_format_csv_row(r) for r in rows)
         print(f"  {len(rows):5} rows -> {alt_path} (original in use)")
 
 
@@ -444,8 +483,8 @@ def _export_statement_credits(conn, export_dir: str) -> None:
                     (COALESCE(lr.value_date, lr.payment_date))::date AS value_date,
                     CASE
                         WHEN lr.status = 'reversed' AND lr.original_repayment_id IS NOT NULL
-                            THEN 'REV-' || LPAD(lr.original_repayment_id::text, 2, '0')
-                        ELSE LPAD(lr.id::text, 2, '0')
+                            THEN 'REV-' || lr.original_repayment_id::text
+                        ELSE lr.id::text
                     END AS repayment_key,
                     COALESCE(lr.customer_reference, '') AS customer_reference,
                     COALESCE(SUM(lra.alloc_principal_total), 0) AS alloc_prin_total,
@@ -474,7 +513,7 @@ def _export_statement_credits(conn, export_dir: str) -> None:
                     lr.loan_id,
                     lra.source_repayment_id AS repayment_id,
                     (COALESCE(lr.value_date, lr.payment_date))::date AS value_date,
-                    LPAD(lra.source_repayment_id::text, 2, '0') AS repayment_key,
+                    lra.source_repayment_id::text AS repayment_key,
                     ''::text AS customer_reference,
                     COALESCE(SUM(lra.alloc_principal_total), 0) AS alloc_prin_total,
                     COALESCE(SUM(lra.alloc_interest_total), 0) AS alloc_int_total,
@@ -595,14 +634,14 @@ def _export_statement_credits(conn, export_dir: str) -> None:
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(colnames)
-            w.writerows(rows)
+            w.writerows(_format_csv_row(r) for r in rows)
         print(f"  {len(rows):5} rows -> {out_path}")
     except PermissionError:
         alt_path = os.path.join(export_dir, "statement_credits_view_new.csv")
         with open(alt_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(colnames)
-            w.writerows(rows)
+            w.writerows(_format_csv_row(r) for r in rows)
         print(f"  {len(rows):5} rows -> {alt_path} (original in use)")
 
 
@@ -634,14 +673,14 @@ def _export_loans_capture_rates(conn, export_dir: str) -> None:
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(colnames)
-            w.writerows(flat_rows)
+            w.writerows(_format_csv_row(r) for r in flat_rows)
         print(f"  {len(flat_rows):5} rows -> {out_path}")
     except PermissionError:
         alt_path = os.path.join(export_dir, "loans_capture_rates_new.csv")
         with open(alt_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(colnames)
-            w.writerows(flat_rows)
+            w.writerows(_format_csv_row(r) for r in flat_rows)
         print(f"  {len(flat_rows):5} rows -> {alt_path} (original in use)")
 
 
@@ -666,7 +705,7 @@ def main():
                 with open(path, "w", newline="", encoding="utf-8") as f:
                     w = csv.writer(f)
                     w.writerow(colnames)
-                    w.writerows(rows)
+                    w.writerows(_format_csv_row(r) for r in rows)
                 print(f"  {len(rows):5} rows -> {path}")
             except PermissionError:
                 base, ext = os.path.splitext(filename)
@@ -674,7 +713,7 @@ def main():
                 with open(alt_path, "w", newline="", encoding="utf-8") as f:
                     w = csv.writer(f)
                     w.writerow(colnames)
-                    w.writerows(rows)
+                    w.writerows(_format_csv_row(r) for r in rows)
                 print(f"  {len(rows):5} rows -> {alt_path} (original in use)")
         # Flatten config into rates-per-product for verification (default_rates, penalty_rates per loan_type)
         _export_config_rates(conn, EXPORT_DIR)

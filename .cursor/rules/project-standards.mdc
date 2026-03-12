@@ -20,3 +20,4 @@ alwaysApply: true
 - Name **files, columns, variables, APIs** in an **intuitive and professional** way so intent is clear to maintainers and users.
 Avoid manual adjustments to make things balance.
 Always fix issues in such a way that if a new scenarion is created same bug will not arise. tHink solutions that hardcode
+All tables that amounts must store it to 10 decimal places. All engines that do maths on money shoud work with 10 decimal places

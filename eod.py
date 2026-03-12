@@ -24,7 +24,6 @@ Security and scalability notes
 """
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -34,6 +33,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from config import get_database_url
+from decimal_utils import as_10dp
 from loan_daily_engine import LoanConfig, ScheduleEntry, Loan
 from loan_management import (
     get_allocation_totals_for_loan_date,
@@ -55,26 +55,6 @@ from loan_management import (
 
 # Treat balances below this as zero for "no arrears" and default/penalty zeroing (avoids float drift).
 ARREARS_ZERO_TOLERANCE = 1e-6
-
-
-def _debug_log_eod(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
-    try:
-        import time
-        payload = {
-            "sessionId": "eae17f",
-            "id": f"log_{int(time.time() * 1000)}",
-            "timestamp": int(time.time() * 1000),
-            "location": location,
-            "message": message,
-            "data": data,
-            "runId": "post-fix",
-            "hypothesisId": hypothesis_id,
-        }
-        log_path = os.path.join(os.path.dirname(__file__), "debug-eae17f.log")
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
 
 
 def _effective_config_for_loan(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -626,6 +606,7 @@ def _run_loan_engine_for_date(
         # Non-due-date guard: arrears principal/interest must only move by persisted allocations.
         # This prevents hidden drift from engine/session recomputation on dates without due transitions.
         due_today = any(e.due_date == as_of_date for e in schedule_entries)
+        due_yesterday = any(e.due_date == yesterday for e in schedule_entries)
         if yesterday_saved is not None and not due_today:
             principal_not_due = max(
                 0.0,
@@ -667,16 +648,20 @@ def _run_loan_engine_for_date(
             penalty_interest_daily_save = 0.0
             default_interest_balance_save = 0.0
             penalty_interest_balance_save = 0.0
-            default_interest_period_to_date_save = max(
-                0.0,
-                float(engine_loan.default_interest_period_to_date)
-                - float(engine_loan.last_default_interest_daily),
-            )
-            penalty_interest_period_to_date_save = max(
-                0.0,
-                float(engine_loan.penalty_interest_period_to_date)
-                - float(engine_loan.last_penalty_interest_daily),
-            )
+            # Period-to-date: always table(yesterday) + today's daily. Never use engine (it has no allocations).
+            if due_yesterday:
+                default_interest_period_to_date_save = default_interest_daily_save
+                penalty_interest_period_to_date_save = penalty_interest_daily_save
+            elif yesterday_saved is not None:
+                default_interest_period_to_date_save = float(
+                    yesterday_saved.get("default_interest_period_to_date", 0) or 0
+                ) + default_interest_daily_save
+                penalty_interest_period_to_date_save = float(
+                    yesterday_saved.get("penalty_interest_period_to_date", 0) or 0
+                ) + penalty_interest_daily_save
+            else:
+                default_interest_period_to_date_save = default_interest_daily_save
+                penalty_interest_period_to_date_save = penalty_interest_daily_save
         else:
             # Daily accrual must be based on the OPENING balance at the start of the day
             # (before any of today's allocations).  Using the post-alloc balance (which
@@ -696,7 +681,7 @@ def _run_loan_engine_for_date(
                 D("0"),
                 D(str(interest_arrears_balance)) + D(str(alloc.get("alloc_interest_arrears", 0.0))),
             )
-            default_interest_daily_save = (
+            default_interest_daily_save = as_10dp(
                 int_arr_opening * rate / _30
                 if int_arr_opening > 0 and rate > 0
                 else D("0")
@@ -711,7 +696,7 @@ def _run_loan_engine_for_date(
                 penalty_basis = prin_arr_opening + (
                     D(str(principal_not_due)) + D(str(alloc.get("alloc_principal_not_due", 0.0)))
                 )
-            penalty_interest_daily_save = (
+            penalty_interest_daily_save = as_10dp(
                 penalty_basis * penalty_rate / _30
                 if penalty_basis > 0 and penalty_rate > 0
                 else D("0")
@@ -739,8 +724,8 @@ def _run_loan_engine_for_date(
                     D("0"),
                     penalty_interest_daily_save - D(str(alloc.get("alloc_penalty_interest", 0.0))),
                 )
-            # Period-to-date: sum of our daily amounts; reset on due date
-            if due_today:
+            # Period-to-date: accumulate daily amounts up to and including due date; reset day after due date
+            if due_yesterday:
                 default_interest_period_to_date_save = default_interest_daily_save
                 penalty_interest_period_to_date_save = penalty_interest_daily_save
             elif yesterday_saved is not None:
@@ -758,17 +743,7 @@ def _run_loan_engine_for_date(
 
         net_alloc = net_alloc_map.get(loan_id_int, 0.0)
         unalloc   = unalloc_map.get(loan_id_int, 0.0)
-        # #region agent log
-        alloc_total_for_exposure = (
-            alloc.get("alloc_principal_not_due", 0.0)
-            + alloc.get("alloc_principal_arrears", 0.0)
-            + alloc.get("alloc_interest_accrued", 0.0)
-            + alloc.get("alloc_interest_arrears", 0.0)
-            + alloc.get("alloc_default_interest", 0.0)
-            + alloc.get("alloc_penalty_interest", 0.0)
-            + alloc.get("alloc_fees_charges", 0.0)
-        )
-        # Balance columns are NUMERIC(18,2) so keep them as float for the upsert.
+        # Balance columns are NUMERIC(22,10); quantize to 10dp.
         default_interest_balance_save = float(default_interest_balance_save)
         penalty_interest_balance_save = float(penalty_interest_balance_save)
         total_exposure_save = (
@@ -780,33 +755,17 @@ def _run_loan_engine_for_date(
             + penalty_interest_balance_save
             + fees_charges_balance
         )
-        if yesterday_saved is not None:
-            prev_exposure = float(yesterday_saved.get("total_exposure", 0) or 0)
-            daily_accr_total = (
-                float(engine_loan.last_regular_interest_daily)
-                + float(default_interest_daily_save)
-                + float(penalty_interest_daily_save)
-            )
-            implied_other = round(
-                prev_exposure + daily_accr_total - alloc_total_for_exposure - total_exposure_save,
-                3,
-            )
-            if abs(implied_other) > 0.005:
-                _debug_log_eod(
-                    "H_EOD_RESIDUAL",
-                    "eod._run_loan_engine_for_date:identity",
-                    "Non-zero implied other movement in daily exposure identity",
-                    {
-                        "loan_id": loan_id_int,
-                        "as_of_date": str(as_of_date),
-                        "prev_exposure": round(prev_exposure, 3),
-                        "daily_accr_total": round(daily_accr_total, 3),
-                        "alloc_total": round(alloc_total_for_exposure, 3),
-                        "saved_total_exposure": round(total_exposure_save, 3),
-                        "implied_other": implied_other,
-                    },
-                )
-        # #endregion
+        # Period-to-date: always table(yesterday) + today's daily. Never use engine (it has no allocations).
+        # Use Decimal + as_10dp for 10dp precision (avoids float accumulation).
+        regular_daily = engine_loan.last_regular_interest_daily
+        if due_yesterday:
+            regular_interest_period_to_date_save = as_10dp(regular_daily)
+        elif yesterday_saved is not None:
+            prev = Decimal(str(yesterday_saved.get("regular_interest_period_to_date", 0) or 0))
+            regular_interest_period_to_date_save = as_10dp(prev + regular_daily)
+        else:
+            regular_interest_period_to_date_save = as_10dp(regular_daily)
+
         save_loan_daily_state(
             loan_id=loan_id_int,
             as_of_date=as_of_date,
@@ -821,7 +780,7 @@ def _run_loan_engine_for_date(
             penalty_interest_balance=penalty_interest_balance_save,
             fees_charges_balance=fees_charges_balance,
             days_overdue=days_overdue_save,
-            regular_interest_period_to_date=engine_loan.regular_interest_period_to_date,
+            regular_interest_period_to_date=regular_interest_period_to_date_save,
             penalty_interest_period_to_date=penalty_interest_period_to_date_save,
             default_interest_period_to_date=default_interest_period_to_date_save,
             net_allocation=net_alloc,

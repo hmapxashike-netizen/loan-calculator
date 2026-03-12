@@ -11,17 +11,17 @@ from datetime import date, timedelta
 from decimal import Decimal, getcontext, ROUND_HALF_UP
 from typing import Dict, List, Optional
 
+from decimal_utils import as_10dp
+
 
 # Configure decimal for currency calculations
 getcontext().prec = 28
 getcontext().rounding = ROUND_HALF_UP
 
 
-MONEY_QUANT = Decimal("0.01")
-
-
-def as_money(value: Decimal) -> Decimal:
-    return value.quantize(MONEY_QUANT)
+def _q10(value: Decimal) -> Decimal:
+    """Quantize to 10dp; alias for decimal_utils.as_10dp for engine-internal use."""
+    return as_10dp(value)
 
 
 # Config bucket names (from waterfall_profiles) -> Loan balance attribute name.
@@ -121,7 +121,7 @@ class Loan:
     default_interest_period_to_date: Decimal = field(default=Decimal("0"), init=False)
 
     def __post_init__(self) -> None:
-        self.original_principal = as_money(self.original_principal)
+        self.original_principal = _q10(self.original_principal)
         self.principal_not_due = self.original_principal
         self.schedule.sort(key=lambda s: s.due_date)
         self.fx_rate_history[self.disbursement_date] = self.fx_rate_at_disbursement
@@ -139,9 +139,9 @@ class Loan:
         self.last_penalty_interest_daily = Decimal("0")
 
         scheduled_interest_today = self._scheduled_interest_for_day(current_date)
-        self.last_regular_interest_daily = scheduled_interest_today
+        self.last_regular_interest_daily = _q10(scheduled_interest_today)
         if scheduled_interest_today > 0:
-            self.interest_accrued_balance = as_money(
+            self.interest_accrued_balance = _q10(
                 self.interest_accrued_balance + scheduled_interest_today
             )
 
@@ -157,20 +157,26 @@ class Loan:
         if self.days_overdue > self.config.grace_period_days:
             self._accrue_default_and_penalty_interest()
 
-        # Period-to-date: reset on due date, else add today's daily amounts (for efficient statements)
-        if due_entries_today:
+        # Period-to-date: accumulate regular_interest_daily, default_interest_daily, penalty_interest_daily
+        # up to and including due date; restart accumulating on day after due date.
+        # Use 10dp (not 2dp) so sum of daily accruals matches schedule total (e.g. Oct 31 days = 876.53).
+        yesterday = current_date - timedelta(days=1)
+        due_entries_yesterday = [s for s in self.schedule if s.due_date == yesterday]
+        if due_entries_yesterday:
+            # Day after due date: reset and start new period with today's daily
             self.current_period_start = current_date
-            self.regular_interest_period_to_date = as_money(self.last_regular_interest_daily)
-            self.penalty_interest_period_to_date = as_money(self.last_penalty_interest_daily)
-            self.default_interest_period_to_date = as_money(self.last_default_interest_daily)
+            self.regular_interest_period_to_date = _q10(self.last_regular_interest_daily)
+            self.penalty_interest_period_to_date = _q10(self.last_penalty_interest_daily)
+            self.default_interest_period_to_date = _q10(self.last_default_interest_daily)
         else:
-            self.regular_interest_period_to_date = as_money(
+            # Accumulate today's daily (includes due date; reset happens day after)
+            self.regular_interest_period_to_date = _q10(
                 self.regular_interest_period_to_date + self.last_regular_interest_daily
             )
-            self.penalty_interest_period_to_date = as_money(
+            self.penalty_interest_period_to_date = _q10(
                 self.penalty_interest_period_to_date + self.last_penalty_interest_daily
             )
-            self.default_interest_period_to_date = as_money(
+            self.default_interest_period_to_date = _q10(
                 self.default_interest_period_to_date + self.last_default_interest_daily
             )
 
@@ -192,12 +198,12 @@ class Loan:
 
     @property
     def outstanding_principal(self) -> Decimal:
-        return as_money(self.principal_not_due + self.principal_arrears)
+        return _q10(self.principal_not_due + self.principal_arrears)
 
     def outstanding_principal_base(self, on_date: Optional[date] = None) -> Decimal:
         if on_date is None:
             on_date = self.current_date or self.disbursement_date
-        return as_money(self.outstanding_principal * self.get_fx_rate_for_date(on_date))
+        return _q10(self.outstanding_principal * self.get_fx_rate_for_date(on_date))
 
     def _scheduled_interest_for_day(self, d: date) -> Decimal:
         """
@@ -230,16 +236,16 @@ class Loan:
         due_entries = [s for s in self.schedule if s.due_date == d]
         for entry in due_entries:
             principal_to_move = min(self.principal_not_due, entry.principal_component)
-            self.principal_not_due = as_money(self.principal_not_due - principal_to_move)
-            self.principal_arrears = as_money(self.principal_arrears + principal_to_move)
+            self.principal_not_due = _q10(self.principal_not_due - principal_to_move)
+            self.principal_arrears = _q10(self.principal_arrears + principal_to_move)
 
             amount_from_accrued = min(
                 self.interest_accrued_balance, entry.interest_component
             )
-            self.interest_accrued_balance = as_money(
+            self.interest_accrued_balance = _q10(
                 self.interest_accrued_balance - amount_from_accrued
             )
-            self.interest_arrears = as_money(
+            self.interest_arrears = _q10(
                 self.interest_arrears + entry.interest_component
             )
 
@@ -255,8 +261,8 @@ class Loan:
                 * self.config.default_interest_absolute_rate_per_month
                 / Decimal("30")
             )
-            self.last_default_interest_daily = default_today
-            self.default_interest_balance = as_money(
+            self.last_default_interest_daily = _q10(default_today)
+            self.default_interest_balance = _q10(
                 self.default_interest_balance + default_today
             )
 
@@ -273,14 +279,14 @@ class Loan:
                     * self.config.penalty_interest_absolute_rate_per_month
                     / Decimal("30")
                 )
-                self.last_penalty_interest_daily = penalty_today
-                self.penalty_interest_balance = as_money(
+                self.last_penalty_interest_daily = _q10(penalty_today)
+                self.penalty_interest_balance = _q10(
                     self.penalty_interest_balance + penalty_today
                 )
 
     def add_fee(self, amount: Decimal) -> None:
-        self.fees_charges_balance = as_money(
-            self.fees_charges_balance + as_money(amount)
+        self.fees_charges_balance = _q10(
+            self.fees_charges_balance + _q10(amount)
         )
 
     def process_payment(self, amount: Decimal) -> Dict[str, Decimal]:
@@ -303,7 +309,7 @@ class Loan:
                 "Please set waterfall_profiles (e.g. 'standard') in System configuration "
                 "and ensure payment_waterfall is set, then retry."
             )
-        remaining = as_money(amount)
+        remaining = _q10(amount)
         allocations: Dict[str, Decimal] = {}
 
         for config_bucket in order:
@@ -316,9 +322,9 @@ class Loan:
             if current_balance <= 0:
                 continue
             pay_amount = min(current_balance, remaining)
-            setattr(self, attr, as_money(current_balance - pay_amount))
+            setattr(self, attr, _q10(current_balance - pay_amount))
             allocations[attr] = allocations.get(attr, Decimal("0")) + pay_amount
-            remaining = as_money(remaining - pay_amount)
+            remaining = _q10(remaining - pay_amount)
 
         return allocations
 

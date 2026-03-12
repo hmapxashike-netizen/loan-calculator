@@ -3348,15 +3348,7 @@ def statements_ui():
         return
 
     try:
-        from statements import (
-            generate_customer_loan_statement,
-            generate_customer_loan_statement_periodic,
-            generate_customer_facing_statement,
-            CUSTOMER_LOAN_STATEMENT_HEADINGS,
-            PERIODIC_STATEMENT_HEADINGS,
-            CUSTOMER_FACING_STATEMENT_HEADINGS,
-            ALLOC_BUCKET_COLUMNS,
-        )
+        from statements import generate_customer_facing_statement
     except ImportError as e:
         st.error(f"Statements module not available: {e}")
         return
@@ -3371,16 +3363,9 @@ def statements_ui():
     tab_loan, tab_gl = st.tabs(["Customer loan statement", "General ledger (later)"])
     with tab_loan:
         st.subheader("Customer loan statement")
-        statement_type = st.radio(
-            "Statement type",
-            ["Internal (daily)", "Internal (periodic)", "Customer loan statement"],
-            index=0,
-            key="stmt_type",
-            horizontal=True,
-        )
         st.caption(
-            "Search by customer or Loan ID. Select loan and dates. Internal: full detail for staff. "
-            "Customer statement: Due Date, Narration, Debits, Credits, Balance, Unapplied funds (no principal arrears; PDF/CSV/Print)."
+            "Search by customer or Loan ID. Select loan and dates. "
+            "Shows Due Date, Narration, Debits, Credits, Balance, Unapplied funds (PDF/CSV/Print)."
         )
         search = st.text_input(
             "Search by customer name or Loan ID",
@@ -3461,34 +3446,24 @@ def statements_ui():
                 start_default = disbursement or _get_system_date()
                 fd1, fd2 = st.columns(2)
                 with fd1:
-                    start_date = st.date_input("Start date (optional)", value=start_default, key="stmt_start")
+                    start_date = st.date_input(
+                        "Start date",
+                        value=start_default,
+                        key=f"stmt_start_{loan_id}",
+                        disabled=True,
+                        help="Fixed to disbursement date.",
+                    )
                 with fd2:
                     end_date = st.date_input("End date (optional)", value=_get_system_date(), key="stmt_end")
-                st.caption("Leave defaults for start of loan to today.")
+                st.caption("Start date is fixed to disbursement. Adjust end date as needed.")
 
                 if st.button("Generate statement", type="primary", key="stmt_gen"):
                     try:
-                        is_customer = statement_type == "Customer loan statement"
-                        is_internal_periodic = statement_type == "Internal (periodic)"
-                        is_internal_daily = statement_type == "Internal (daily)"
-                        if is_customer:
-                            rows, meta = generate_customer_facing_statement(
-                                loan_id,
-                                start_date=start_date,
-                                end_date=end_date,
-                            )
-                        elif is_internal_periodic:
-                            rows, meta = generate_customer_loan_statement_periodic(
-                                loan_id,
-                                start_date=start_date,
-                                end_date=end_date,
-                            )
-                        else:
-                            rows, meta = generate_customer_loan_statement(
-                                loan_id,
-                                start_date=start_date,
-                                end_date=end_date,
-                            )
+                        rows, meta = generate_customer_facing_statement(
+                            loan_id,
+                            start_date=start_date,
+                            end_date=end_date,
+                        )
                         if not rows:
                             st.info("No statement lines for this period.")
                         else:
@@ -3502,39 +3477,28 @@ def statements_ui():
                             gen = meta.get("generated_at")
                             generated_fmt = gen.strftime("%d %b %Y, %H:%M:%S") if gen and hasattr(gen, "strftime") else (str(gen) if gen else "")
 
-                            if is_customer:
-                                statement_title = "Customer loan statement"
-                                numeric_cols = ["Debits", "Credits", "Balance", "Unapplied funds"]
-                            else:
-                                statement_title = "Loan Statement (Internal – Daily)" if is_internal_daily else "Loan Statement (Internal – Periodic)"
-                                numeric_cols = [
-                                    "Interest", "Penalty", "Default", "Principal", "Fees", "Credits",
-                                    "Portion of Credit Allocated to Interest", "Credit Allocated to Fees", "Credit Allocated to Capital",
-                                    "Total Outstanding Balance", "Arrears", "Unapplied funds",
-                                ]
+                            statement_title = "Customer loan statement"
+                            numeric_cols = ["Debits", "Credits", "Balance", "Unapplied funds"]
                             for c in numeric_cols:
                                 if c in df.columns:
                                     df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
                             # Full-width statement: HTML table (no Streamlit dataframe width limits)
                             display_headers = {**_alloc_display}
-                            alloc_cols_main = [c for c in ALLOC_BUCKET_COLUMNS if c in df.columns]
                             closing_row = None
-                            if is_customer and len(df) > 0:
+                            if len(df) > 0:
                                 last_narr = str(df.iloc[-1].get("Narration") or "")
                                 if "Total outstanding" in last_narr:
                                     closing_row = df.iloc[-1]
                                     stmt_df = df.iloc[:-1]
                                 else:
                                     stmt_df = df
-                            elif is_internal_periodic:
-                                stmt_df = df
                             else:
-                                stmt_df = df.drop(columns=alloc_cols_main, errors="ignore") if alloc_cols_main else df
-                            center_cols = ["Debits", "Credits", "Balance", "Unapplied funds"] if is_customer else None
+                                stmt_df = df
+                            center_cols = ["Debits", "Credits", "Balance", "Unapplied funds"]
                             table_html = _statement_table_html(stmt_df, display_headers, center_columns=center_cols)
                             closing_html = ""
-                            if is_customer and closing_row is not None:
+                            if closing_row is not None:
                                 due_d = closing_row.get("Due Date")
                                 bal = closing_row.get("Balance")
                                 unapp = closing_row.get("Unapplied funds")
@@ -3574,17 +3538,6 @@ def statements_ui():
                             )
                             st.markdown(stmt_html, unsafe_allow_html=True)
 
-                            if is_internal_daily and alloc_cols_main:
-                                with st.expander("Show allocation buckets 1–5", expanded=False):
-                                    st.caption("Fees, Penalty interest, Default interest, Interest arrears, Principal arrears.")
-                                    ctx = [c for c in ["Value Date", "Transaction Date", "Narration", "Credits"] if c in df.columns]
-                                    show_cols = list(dict.fromkeys(ctx + alloc_cols_main))
-                                    df_alloc = df[show_cols]
-                                    st.markdown(
-                                        "<div class='stmt-view'>" + _statement_table_html(df_alloc, _alloc_display) + "</div>",
-                                        unsafe_allow_html=True,
-                                    )
-
                             st.markdown(
                                 "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.9rem;'>"
                                 f"For the period from {start_fmt} to {end_fmt}<br>"
@@ -3593,7 +3546,7 @@ def statements_ui():
                                 unsafe_allow_html=True,
                             )
                             # CSV with header (comment lines at top) so all formats include header
-                            stmt_slug = "customer" if is_customer else ("internal_periodic" if is_internal_periodic else "internal_daily")
+                            stmt_slug = "customer"
                             csv_header_lines = [
                                 f"# {statement_title}",
                                 f"# Customer: {customer_name}",
@@ -3604,7 +3557,12 @@ def statements_ui():
                             ]
                             buf = BytesIO()
                             buf.write(("\n".join(csv_header_lines) + "\n").encode("utf-8"))
-                            df.to_csv(buf, index=False, date_format="%Y-%m-%d")
+                            df.to_csv(
+                                buf,
+                                index=False,
+                                date_format="%Y-%m-%d",
+                                float_format="%.2f",
+                            )
                             buf.seek(0)
                             col_csv, col_pdf, col_print = st.columns([1, 1, 1])
                             with col_csv:
