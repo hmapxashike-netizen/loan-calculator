@@ -121,29 +121,24 @@ CUSTOMER_FACING_STATEMENT_HEADINGS = [
 def _get_drawdown_breakdown(loan: dict[str, Any]) -> list[tuple[str, float]]:
     """
     Return drawdown breakdown as [(narration, amount), ...] for Option 2 statement display.
-    - Consumer SSB & TPC (product_code SSB/TPC): Disbursed Amount + Administration Fees
-    - All other loan types/products: Disbursed Amount + Drawdown Fees + Arrangement Fees
+    Always starts with Disbursed Amount, then includes whichever fees are present on the loan:
+    - Administration Fees (Consumer SSB & TPC)
+    - Drawdown Fees and/or Arrangement Fees (Term, Bullet, Customised)
+    The sum of all parts always equals the principal (facility amount).
     """
     disbursed = float(loan.get("disbursed_amount") or loan.get("principal") or 0)
     admin_fee = float(loan.get("admin_fee") or 0)
     drawdown_fee = float(loan.get("drawdown_fee") or 0)
     arrangement_fee = float(loan.get("arrangement_fee") or 0)
-    product_code = (loan.get("product_code") or "").strip().upper()
 
-    is_consumer_ssb_tpc = product_code in ("CONSUMERSSB", "CONSUMERTPC", "SSB", "TPC")
-
-    if is_consumer_ssb_tpc:
-        parts: list[tuple[str, float]] = [("Disbursed Amount", round(disbursed, 2))]
-        if admin_fee > 0:
-            parts.append(("Administration Fees", round(admin_fee, 2)))
-        return parts
-    else:
-        parts = [("Disbursed Amount", round(disbursed, 2))]
-        if drawdown_fee > 0:
-            parts.append(("Drawdown Fees", round(drawdown_fee, 2)))
-        if arrangement_fee > 0:
-            parts.append(("Arrangement Fees", round(arrangement_fee, 2)))
-        return parts
+    parts: list[tuple[str, float]] = [("Disbursed Amount", round(disbursed, 2))]
+    if admin_fee > 0:
+        parts.append(("Administration Fees", round(admin_fee, 2)))
+    if drawdown_fee > 0:
+        parts.append(("Drawdown Fees", round(drawdown_fee, 2)))
+    if arrangement_fee > 0:
+        parts.append(("Arrangement Fees", round(arrangement_fee, 2)))
+    return parts
 
 
 def _parse_schedule_date(s: Any) -> date | None:
@@ -365,10 +360,7 @@ def generate_customer_loan_statement(
                 row["Transaction Date"] = disbursement
                 row["Value Date"] = disbursement
                 row["Narration"] = narration
-                if narration in ("Administration Fees", "Drawdown Fees", "Arrangement Fees"):
-                    row["Fees"] = round(amt, 2)
-                else:
-                    row["Debits"] = round(amt, 2)
+                row["Debits"] = round(amt, 2)
                 rows.append(row)
             prev_state = {"principal_not_due": fac, "fees_charges_balance": 0.0}
 
@@ -714,10 +706,7 @@ def generate_customer_loan_statement_periodic(
             row = _blank_row_periodic()
             row["Due Date"] = disbursement
             row["Narration"] = narration
-            if narration in ("Administration Fees", "Drawdown Fees", "Arrangement Fees"):
-                row["Fees"] = _f3(amt)
-            else:
-                row["Principal"] = _f3(amt)
+            row["Principal"] = _f3(amt)
             rows.append(row)
 
     prev_fees = 0.0
@@ -1045,7 +1034,7 @@ def generate_customer_facing_statement(
         unapplied = _f3(r.get("Unapplied funds") or 0)
 
         if narration in ("Disbursement", "Disbursed Amount", "Administration Fees", "Drawdown Fees", "Arrangement Fees", "Loan Drawdown"):
-            debits = _f3(r.get("Principal") or r.get("Fees") or 0)
+            debits = _f3(r.get("Principal") or 0)
             if debits > 0:
                 out.append({
                     "Due Date": r.get("Due Date"),
