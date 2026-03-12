@@ -873,9 +873,50 @@ def generate_customer_loan_statement_periodic(
         row["Unapplied funds"] = _unapplied_at(vd)
         rows.append(row)
 
-    # Table-derived non-cash movement residual (explicit, never hidden):
-    # opening + charges + reversals - receipts + closing_unapplied = closing_balance
-    # => required_charges = closing_balance - closing_unapplied - opening - reversals + receipts
+    # Current (incomplete) period interest -- emitted BEFORE the non-cash residual
+    # so it is counted in current_charge_total and the residual is zero for clean loans.
+    # Fires when:
+    #   (a) there are due dates in range and end is beyond the last one, OR
+    #   (b) no due dates have fallen yet (statement is entirely in the first period).
+    last_due_in_range = due_entries[-1][0] if due_entries else None
+    period_boundary = last_due_in_range or disbursement
+    if period_boundary is not None and end > period_boundary:
+        end_bal = _state_at(end)
+        if end_bal:
+            cur_regular = float(end_bal.get("regular_interest_period_to_date") or 0)
+            cur_penalty = float(end_bal.get("penalty_interest_period_to_date") or 0)
+            cur_default = float(end_bal.get("default_interest_period_to_date") or 0)
+        else:
+            cur_regular = cur_penalty = cur_default = 0.0
+            for ds in daily_states:
+                ad = _date_conv(ds.get("as_of_date"))
+                if not ad or ad > end:
+                    continue
+                if last_due_in_range and ad <= last_due_in_range:
+                    continue
+                if not last_due_in_range and disbursement and ad <= disbursement:
+                    continue
+                cur_regular += float(ds.get("regular_interest_daily") or 0)
+                cur_penalty += float(ds.get("penalty_interest_daily") or 0)
+                cur_default += float(ds.get("default_interest_daily") or 0)
+        current_period_total = cur_regular + cur_penalty + cur_default
+        if abs(current_period_total) > 0.005:
+            row = _blank_row_periodic()
+            row["Due Date"] = end
+            _narr_sfx = "since last due date" if last_due_in_range else "since disbursement"
+            row["Narration"] = f"Current period interest ({_narr_sfx})"
+            row["Interest"] = _f3(cur_regular)
+            row["Penalty"] = _f3(cur_penalty)
+            row["Default"] = _f3(cur_default)
+            end_bal = _state_at(end)
+            if end_bal:
+                row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
+                row["Arrears"] = _f3(float(end_bal.get("principal_arrears") or 0))
+            row["Unapplied funds"] = _f3(unapplied_at_end)
+            rows.append(row)
+
+    # Table-derived non-cash movement: catch-all residual after all explicit rows.
+    # With current-period interest above, this should be zero for healthy loans.
     closing_state = _state_at(end)
     closing_balance = _total_outstanding(closing_state) if closing_state else 0.0
     positive_receipts = sum(max(0.0, float(r.get("amount") or 0)) for r in repayments)
@@ -896,6 +937,7 @@ def generate_customer_loan_statement_periodic(
             or narr.startswith("Total outstanding balance")
             or narr.startswith("Unapplied from receipt no ")
             or narr.startswith("Liquidation of unapplied receipt no ")
+            or narr.startswith("Current period interest (")
         ):
             continue
         if abs(float(r.get("Credits") or 0)) > 1e-9:
@@ -917,39 +959,6 @@ def generate_customer_loan_statement_periodic(
             row["Arrears"] = _f3(float(closing_state.get("principal_arrears") or 0))
         row["Unapplied funds"] = _f3(unapplied_at_end)
         rows.append(row)
-
-    # Current (incomplete) period interest: period-to-date per type stored separately
-    # so the customer-facing statement can emit one line per type.
-    last_due_in_range = due_entries[-1][0] if due_entries else None
-    if last_due_in_range and end > last_due_in_range:
-        end_bal = _state_at(end)
-        if end_bal:
-            cur_regular = float(end_bal.get("regular_interest_period_to_date") or 0)
-            cur_penalty = float(end_bal.get("penalty_interest_period_to_date") or 0)
-            cur_default = float(end_bal.get("default_interest_period_to_date") or 0)
-        else:
-            cur_regular = cur_penalty = cur_default = 0.0
-            for ds in daily_states:
-                ad = _date_conv(ds.get("as_of_date"))
-                if not ad or ad <= last_due_in_range or ad > end:
-                    continue
-                cur_regular += float(ds.get("regular_interest_daily") or 0)
-                cur_penalty += float(ds.get("penalty_interest_daily") or 0)
-                cur_default += float(ds.get("default_interest_daily") or 0)
-        current_period_total = cur_regular + cur_penalty + cur_default
-        if abs(current_period_total) > 0.01:
-            row = _blank_row_periodic()
-            row["Due Date"] = end
-            row["Narration"] = "Current period interest (since last due date)"
-            row["Interest"] = _f3(cur_regular)
-            row["Penalty"] = _f3(cur_penalty)
-            row["Default"] = _f3(cur_default)
-            end_bal = _state_at(end)
-            if end_bal:
-                row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
-                row["Arrears"] = _f3(float(end_bal.get("principal_arrears") or 0))
-            row["Unapplied funds"] = _f3(unapplied_at_end)
-            rows.append(row)
 
     row = _blank_row_periodic()
     row["Due Date"] = end
@@ -1133,7 +1142,7 @@ def generate_customer_facing_statement(
             default = _to_dec(r.get("Default") or 0)
             fees = _to_dec(r.get("Fees") or 0)
             # Incomplete current period: suffix each component with "(period to date)"
-            is_current_period = narration == "Current period interest (since last due date)"
+            is_current_period = narration.startswith("Current period interest (")
             sfx = " (period to date)" if is_current_period else ""
             raw_components = [
                 (f"Accrued interest{sfx}", interest),
