@@ -376,11 +376,12 @@ def save_loan(
                 INSERT INTO loans (
                     customer_id, loan_type, product_code, principal, disbursed_amount, term,
                     annual_rate, monthly_rate, drawdown_fee, arrangement_fee, admin_fee,
+                    admin_fee_amount, drawdown_fee_amount, arrangement_fee_amount,
                     disbursement_date, start_date, end_date, first_repayment_date,
                     installment, total_payment, grace_type, moratorium_months, bullet_type, scheme,
                     payment_timing, metadata, status, agent_id, relationship_manager_id
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 ) RETURNING id
                 """,
                 (
@@ -395,6 +396,10 @@ def save_loan(
                     details.get("drawdown_fee"),
                     details.get("arrangement_fee"),
                     details.get("admin_fee"),
+                    # Absolute fee amounts: prefer explicitly passed value, else derive from rate * principal
+                    round(float(details.get("admin_fee_amount") or (float(details.get("principal", details.get("facility", 0))) * float(details.get("admin_fee") or 0))), 2),
+                    round(float(details.get("drawdown_fee_amount") or (float(details.get("principal", details.get("facility", 0))) * float(details.get("drawdown_fee") or 0))), 2),
+                    round(float(details.get("arrangement_fee_amount") or (float(details.get("principal", details.get("facility", 0))) * float(details.get("arrangement_fee") or 0))), 2),
                     _date_conv(disb_date),
                     _date_conv(disb_date),
                     _date_conv(details.get("end_date")),

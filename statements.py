@@ -120,27 +120,39 @@ CUSTOMER_FACING_STATEMENT_HEADINGS = [
 
 def _get_drawdown_breakdown(loan: dict[str, Any]) -> list[tuple[str, float]]:
     """
-    Return drawdown breakdown as [(narration, amount), ...] for Option 2 statement display.
+    Return drawdown breakdown as [(narration, amount), ...] for statement display.
     Parts always sum to principal (facility amount) so the statement reconciles.
 
-    Net proceeds = Principal - (Administration Fees + Drawdown Fees + Arrangement Fees).
-    If individual fee columns are NULL/0 in the DB but principal > disbursed_amount, the gap
-    is treated as an implicit fee and preserved in the net proceeds so totals balance.
+    Reads absolute fee amount columns (admin_fee_amount, drawdown_fee_amount,
+    arrangement_fee_amount).  For older rows where these are 0/NULL, derives
+    amounts from rate * principal as a fallback.
+
+    Identity: Disbursed Amount + Administration Fees + Drawdown Fees + Arrangement Fees = Principal
     """
     principal = float(loan.get("principal") or 0)
-    admin_fee = float(loan.get("admin_fee") or 0)
-    drawdown_fee = float(loan.get("drawdown_fee") or 0)
-    arrangement_fee = float(loan.get("arrangement_fee") or 0)
-    total_fees = round(admin_fee + drawdown_fee + arrangement_fee, 2)
+
+    # Prefer stored absolute amounts; derive from rate * principal if absent
+    def _fee_amount(amount_key: str, rate_key: str) -> float:
+        stored = float(loan.get(amount_key) or 0)
+        if stored > 0:
+            return stored
+        rate = float(loan.get(rate_key) or 0)
+        return round(principal * rate, 2) if rate > 0 else 0.0
+
+    admin_fee_amt = _fee_amount("admin_fee_amount", "admin_fee")
+    drawdown_fee_amt = _fee_amount("drawdown_fee_amount", "drawdown_fee")
+    arrangement_fee_amt = _fee_amount("arrangement_fee_amount", "arrangement_fee")
+
+    total_fees = round(admin_fee_amt + drawdown_fee_amt + arrangement_fee_amt, 2)
     net_proceeds = round(principal - total_fees, 2)
 
     parts: list[tuple[str, float]] = [("Disbursed Amount", net_proceeds)]
-    if admin_fee > 0:
-        parts.append(("Administration Fees", round(admin_fee, 2)))
-    if drawdown_fee > 0:
-        parts.append(("Drawdown Fees", round(drawdown_fee, 2)))
-    if arrangement_fee > 0:
-        parts.append(("Arrangement Fees", round(arrangement_fee, 2)))
+    if admin_fee_amt > 0:
+        parts.append(("Administration Fees", round(admin_fee_amt, 2)))
+    if drawdown_fee_amt > 0:
+        parts.append(("Drawdown Fees", round(drawdown_fee_amt, 2)))
+    if arrangement_fee_amt > 0:
+        parts.append(("Arrangement Fees", round(arrangement_fee_amt, 2)))
     return parts
 
 
