@@ -1,4 +1,4 @@
-"""
+﻿"""
 Statements module: generate statements on demand (no persistence).
 - Customer loan statements (this module)
 - Other loan statement types (later)
@@ -918,28 +918,32 @@ def generate_customer_loan_statement_periodic(
         row["Unapplied funds"] = _f3(unapplied_at_end)
         rows.append(row)
 
-    # Current period interest: from stored period-to-date at end (one read, no summing)
+    # Current (incomplete) period interest: period-to-date per type stored separately
+    # so the customer-facing statement can emit one line per type.
     last_due_in_range = due_entries[-1][0] if due_entries else None
     if last_due_in_range and end > last_due_in_range:
         end_bal = _state_at(end)
         if end_bal:
-            current_period = (
-                float(end_bal.get("regular_interest_period_to_date") or 0)
-                + float(end_bal.get("penalty_interest_period_to_date") or 0)
-                + float(end_bal.get("default_interest_period_to_date") or 0)
-            )
+            cur_regular = float(end_bal.get("regular_interest_period_to_date") or 0)
+            cur_penalty = float(end_bal.get("penalty_interest_period_to_date") or 0)
+            cur_default = float(end_bal.get("default_interest_period_to_date") or 0)
         else:
-            current_period = 0.0
+            cur_regular = cur_penalty = cur_default = 0.0
             for ds in daily_states:
                 ad = _date_conv(ds.get("as_of_date"))
                 if not ad or ad <= last_due_in_range or ad > end:
                     continue
-                current_period += float(ds.get("regular_interest_daily") or 0) + float(ds.get("default_interest_daily") or 0) + float(ds.get("penalty_interest_daily") or 0)
-        if abs(current_period) > 0.01:
+                cur_regular += float(ds.get("regular_interest_daily") or 0)
+                cur_penalty += float(ds.get("penalty_interest_daily") or 0)
+                cur_default += float(ds.get("default_interest_daily") or 0)
+        current_period_total = cur_regular + cur_penalty + cur_default
+        if abs(current_period_total) > 0.01:
             row = _blank_row_periodic()
             row["Due Date"] = end
             row["Narration"] = "Current period interest (since last due date)"
-            row["Interest"] = _f3(current_period)
+            row["Interest"] = _f3(cur_regular)
+            row["Penalty"] = _f3(cur_penalty)
+            row["Default"] = _f3(cur_default)
             end_bal = _state_at(end)
             if end_bal:
                 row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
@@ -1044,7 +1048,7 @@ def generate_customer_facing_statement(
     for r in rows_periodic:
         narration = (r.get("Narration") or "").strip()
         credits = _to_dec(r.get("Credits") or 0)
-        balance = _f3(r.get("Total Outstanding Balance") or 0)
+        # Balance is recomputed as running balance after the loop; placeholder 0.0 for now.
         arrears = _f3(r.get("Arrears") or 0)
         unapplied = _f3(r.get("Unapplied funds") or 0)
 
@@ -1056,7 +1060,7 @@ def generate_customer_facing_statement(
                     "Narration": narration,
                     "Debits": debits,
                     "Credits": 0.0,
-                    "Balance": balance,
+                    "Balance": 0.0,
                     "Arrears": arrears,
                     "Unapplied funds": unapplied,
                 })
@@ -1066,7 +1070,7 @@ def generate_customer_facing_statement(
                 "Narration": narration or "",
                 "Debits": 0.0,
                 "Credits": _f3(credits),
-                "Balance": balance,
+                "Balance": 0.0,
                 "Arrears": arrears,
                 "Unapplied funds": unapplied,
             })
@@ -1083,7 +1087,7 @@ def generate_customer_facing_statement(
                     "Narration": narration,
                     "Debits": _f3(internal_amt),
                     "Credits": 0.0,
-                    "Balance": balance,
+                    "Balance": 0.0,
                     "Arrears": arrears,
                     "Unapplied funds": unapplied,
                 })
@@ -1093,7 +1097,7 @@ def generate_customer_facing_statement(
                     "Narration": narration,
                     "Debits": 0.0,
                     "Credits": _f3(abs(internal_amt)),
-                    "Balance": balance,
+                    "Balance": 0.0,
                     "Arrears": arrears,
                     "Unapplied funds": unapplied,
                 })
@@ -1106,7 +1110,7 @@ def generate_customer_facing_statement(
                     "Narration": narration or "Receipt",
                     "Debits": 0.0,
                     "Credits": _f3(credits),
-                    "Balance": balance,
+                    "Balance": 0.0,
                     "Arrears": arrears,
                     "Unapplied funds": unapplied,
                 })
@@ -1116,7 +1120,7 @@ def generate_customer_facing_statement(
                     "Narration": narration or "Reversal",
                     "Debits": _f3(abs(credits)),
                     "Credits": 0.0,
-                    "Balance": balance,
+                    "Balance": 0.0,
                     "Arrears": arrears,
                     "Unapplied funds": unapplied,
                 })
@@ -1128,10 +1132,13 @@ def generate_customer_facing_statement(
             penalty = _to_dec(r.get("Penalty") or 0)
             default = _to_dec(r.get("Default") or 0)
             fees = _to_dec(r.get("Fees") or 0)
+            # Incomplete current period: suffix each component with "(period to date)"
+            is_current_period = narration == "Current period interest (since last due date)"
+            sfx = " (period to date)" if is_current_period else ""
             raw_components = [
-                ("Accrued interest", interest),
-                ("Penalty interest", penalty),
-                ("Default interest", default),
+                (f"Accrued interest{sfx}", interest),
+                (f"Penalty interest{sfx}", penalty),
+                (f"Default interest{sfx}", default),
                 ("Fees & Charges", fees),
             ]
             raw_components = [(n, v) for n, v in raw_components if abs(v) > Decimal("0")]
@@ -1152,7 +1159,7 @@ def generate_customer_facing_statement(
                         "Narration": n,
                         "Debits": _f3(rv),
                         "Credits": 0.0,
-                        "Balance": balance,
+                        "Balance": 0.0,
                         "Arrears": arrears,
                         "Unapplied funds": unapplied,
                     })
@@ -1168,10 +1175,19 @@ def generate_customer_facing_statement(
         closing_row = out.pop(closing_index)
         out.append(closing_row)
 
+    # Compute running balance: Balance[i] = Balance[i-1] + Debits[i] - Credits[i]
+    running_bal = Decimal("0")
+    for _rb_row in out:
+        running_bal += _to_dec(_rb_row.get("Debits") or 0) - _to_dec(_rb_row.get("Credits") or 0)
+        _rb_row["Balance"] = _f3(running_bal)
+
     # Deterministic reconciliation payload for audits/debugging.
     closing_row = out[-1] if out else {}
-    closing_balance_d = _to_dec(closing_row.get("Balance") or 0)
     closing_unapplied_d = _to_dec(closing_row.get("Unapplied funds") or 0)
+    # Use engine closing balance for reconciliation (running balance is display-only).
+    closing_balance_d = _to_dec(
+        (rows_periodic[-1].get("Total Outstanding Balance") if rows_periodic else 0) or 0
+    )
     total_debits_d = sum((_to_dec(r.get("Debits") or 0) for r in out), Decimal("0"))
     total_credits_d = sum((_to_dec(r.get("Credits") or 0) for r in out), Decimal("0"))
     formula_lhs_d = total_debits_d - total_credits_d + closing_unapplied_d
@@ -1230,7 +1246,10 @@ def generate_customer_facing_statement(
             "rows": len(out),
             "sum_debits_disbursement": round(sum(float(r.get("Debits") or 0) for r in out if str(r.get("Narration") or "") == "Disbursement"), 3),
             "sum_debits_reversals": round(sum(float(r.get("Debits") or 0) for r in out if str(r.get("Narration") or "").startswith("Reversal of ")), 3),
-            "sum_debits_charges": round(sum(float(r.get("Debits") or 0) for r in out if str(r.get("Narration") or "") in {"Accrued interest", "Penalty interest", "Default interest", "Fees & Charges"}), 3),
+            "sum_debits_charges": round(sum(float(r.get("Debits") or 0) for r in out if str(r.get("Narration") or "") in {
+                    "Accrued interest", "Penalty interest", "Default interest", "Fees & Charges",
+                    "Accrued interest (period to date)", "Penalty interest (period to date)", "Default interest (period to date)",
+                }), 3),
             "sum_credits_receipts": round(sum(float(r.get("Credits") or 0) for r in out if float(r.get("Credits") or 0) > 0), 3),
             "required_charges_for_identity": round(
                 (
@@ -1254,7 +1273,10 @@ def generate_customer_facing_statement(
                     "credits": round(float(r.get("Credits") or 0), 3),
                 }
                 for r in out
-                if str(r.get("Narration") or "") in {"Accrued interest", "Penalty interest", "Default interest", "Fees & Charges"}
+                if str(r.get("Narration") or "") in {
+                    "Accrued interest", "Penalty interest", "Default interest", "Fees & Charges",
+                    "Accrued interest (period to date)", "Penalty interest (period to date)", "Default interest (period to date)",
+                }
             ],
             "unapplied_last5": [
                 {
