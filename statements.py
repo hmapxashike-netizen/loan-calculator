@@ -937,7 +937,6 @@ def generate_customer_loan_statement_periodic(
             or narr.startswith("Total outstanding balance")
             or narr.startswith("Unapplied from receipt no ")
             or narr.startswith("Liquidation of unapplied receipt no ")
-            or narr.startswith("Current period interest (")
         ):
             continue
         if abs(float(r.get("Credits") or 0)) > 1e-9:
