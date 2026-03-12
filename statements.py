@@ -121,17 +121,20 @@ CUSTOMER_FACING_STATEMENT_HEADINGS = [
 def _get_drawdown_breakdown(loan: dict[str, Any]) -> list[tuple[str, float]]:
     """
     Return drawdown breakdown as [(narration, amount), ...] for Option 2 statement display.
-    Always starts with Disbursed Amount, then includes whichever fees are present on the loan:
-    - Administration Fees (Consumer SSB & TPC)
-    - Drawdown Fees and/or Arrangement Fees (Term, Bullet, Customised)
-    The sum of all parts always equals the principal (facility amount).
+    Parts always sum to principal (facility amount) so the statement reconciles.
+
+    Net proceeds = Principal - (Administration Fees + Drawdown Fees + Arrangement Fees).
+    If individual fee columns are NULL/0 in the DB but principal > disbursed_amount, the gap
+    is treated as an implicit fee and preserved in the net proceeds so totals balance.
     """
-    disbursed = float(loan.get("disbursed_amount") or loan.get("principal") or 0)
+    principal = float(loan.get("principal") or 0)
     admin_fee = float(loan.get("admin_fee") or 0)
     drawdown_fee = float(loan.get("drawdown_fee") or 0)
     arrangement_fee = float(loan.get("arrangement_fee") or 0)
+    total_fees = round(admin_fee + drawdown_fee + arrangement_fee, 2)
+    net_proceeds = round(principal - total_fees, 2)
 
-    parts: list[tuple[str, float]] = [("Disbursed Amount", round(disbursed, 2))]
+    parts: list[tuple[str, float]] = [("Disbursed Amount", net_proceeds)]
     if admin_fee > 0:
         parts.append(("Administration Fees", round(admin_fee, 2)))
     if drawdown_fee > 0:
