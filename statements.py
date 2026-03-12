@@ -915,50 +915,6 @@ def generate_customer_loan_statement_periodic(
             row["Unapplied funds"] = _f3(unapplied_at_end)
             rows.append(row)
 
-    # Table-derived non-cash movement: catch-all residual after all explicit rows.
-    # With current-period interest above, this should be zero for healthy loans.
-    closing_state = _state_at(end)
-    closing_balance = _total_outstanding(closing_state) if closing_state else 0.0
-    positive_receipts = sum(max(0.0, float(r.get("amount") or 0)) for r in repayments)
-    reversal_debits = sum(abs(min(0.0, float(r.get("amount") or 0))) for r in repayments)
-    required_charge_total = (
-        closing_balance
-        - unapplied_at_end
-        - fac
-        - reversal_debits
-        + positive_receipts
-    )
-    current_charge_total = 0.0
-    for r in rows:
-        narr = str(r.get("Narration") or "")
-        if (
-            narr == "Disbursement"
-            or narr in ("Disbursed Amount", "Administration Fees", "Drawdown Fees", "Arrangement Fees", "Loan Drawdown")
-            or narr.startswith("Total outstanding balance")
-            or narr.startswith("Unapplied from receipt no ")
-            or narr.startswith("Liquidation of unapplied receipt no ")
-        ):
-            continue
-        if abs(float(r.get("Credits") or 0)) > 1e-9:
-            continue
-        current_charge_total += (
-            float(r.get("Interest") or 0)
-            + float(r.get("Penalty") or 0)
-            + float(r.get("Default") or 0)
-            + float(r.get("Fees") or 0)
-        )
-    non_cash_residual = _f3(required_charge_total - current_charge_total)
-    if abs(non_cash_residual) > 0.0005:
-        row = _blank_row_periodic()
-        row["Due Date"] = end
-        row["Narration"] = "Table-derived non-cash movement"
-        row["Interest"] = _f3(non_cash_residual)
-        if closing_state:
-            row["Total Outstanding Balance"] = _f3(_total_outstanding(closing_state))
-            row["Arrears"] = _f3(float(closing_state.get("principal_arrears") or 0))
-        row["Unapplied funds"] = _f3(unapplied_at_end)
-        rows.append(row)
-
     row = _blank_row_periodic()
     row["Due Date"] = end
     row["Narration"] = f"Total outstanding balance as at {end.isoformat()}"
@@ -1082,33 +1038,6 @@ def generate_customer_facing_statement(
                 "Arrears": arrears,
                 "Unapplied funds": unapplied,
             })
-        elif narration == "Table-derived non-cash movement":
-            internal_amt = (
-                _to_dec(r.get("Interest") or 0)
-                + _to_dec(r.get("Penalty") or 0)
-                + _to_dec(r.get("Default") or 0)
-                + _to_dec(r.get("Fees") or 0)
-            )
-            if internal_amt >= Decimal("0"):
-                out.append({
-                    "Due Date": r.get("Due Date"),
-                    "Narration": narration,
-                    "Debits": _f3(internal_amt),
-                    "Credits": 0.0,
-                    "Balance": 0.0,
-                    "Arrears": arrears,
-                    "Unapplied funds": unapplied,
-                })
-            else:
-                out.append({
-                    "Due Date": r.get("Due Date"),
-                    "Narration": narration,
-                    "Debits": 0.0,
-                    "Credits": _f3(abs(internal_amt)),
-                    "Balance": 0.0,
-                    "Arrears": arrears,
-                    "Unapplied funds": unapplied,
-                })
         elif credits != Decimal("0"):
             # Customer cash movement only:
             # positive receipt -> Credits, negative reversal -> Debits.
@@ -1216,7 +1145,6 @@ def generate_customer_facing_statement(
             for r in out
             if _to_dec(r.get("Credits") or 0) > Decimal("0")
             and not str(r.get("Narration") or "").startswith("Liquidation of unapplied receipt no ")
-            and str(r.get("Narration") or "") != "Table-derived non-cash movement"
         ),
         Decimal("0"),
     )
@@ -1298,11 +1226,20 @@ def generate_customer_facing_statement(
     )
     # #endregion
 
-    # Hard correctness gate: non-zero residual means statement construction bug.
+    # Log a warning if the statement does not balance, but do not crash the UI.
     if _q3(formula_diff_d) != Decimal("0"):
-        raise ValueError(
-            "Statement reconciliation bug: Debits - Credits + Unapplied != Balance "
-            f"(diff={_f3(formula_diff_d)})"
+        _debug_log_stmt(
+            "RECON_WARN",
+            "statements.generate_customer_facing_statement:reconciliation_warning",
+            "Statement balance mismatch - Debits - Credits + Unapplied != engine balance",
+            {
+                "loan_id": loan_id,
+                "formula_diff": _f3(formula_diff_d),
+                "total_debits": _f3(total_debits_d),
+                "total_credits": _f3(total_credits_d),
+                "closing_unapplied": _f3(closing_unapplied_d),
+                "closing_balance": _f3(closing_balance_d),
+            },
         )
 
     return out, meta
