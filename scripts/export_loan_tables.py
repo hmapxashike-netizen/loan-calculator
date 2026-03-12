@@ -1,4 +1,4 @@
-"""
+﻿"""
 Export loan tables to CSV in the LMS project folder.
 Run from project root:  python scripts/export_loan_tables.py
 
@@ -47,24 +47,8 @@ QUERIES = [
         "loans.csv",
         """
         SELECT
-            l.id AS loan_id,
-            l.customer_id,
-            COALESCE(i.name, c.trading_name, c.legal_name) AS customer_name,
-            l.product_code,
-            l.loan_type,
-            l.status,
-            l.principal,
-            l.disbursed_amount,
-            l.term,
-            l.annual_rate,
-            l.monthly_rate,
-            l.metadata AS loan_metadata,
-            l.disbursement_date,
-            l.start_date,
-            l.end_date,
-            l.first_repayment_date,
-            l.installment,
-            l.created_at AS loan_created_at
+            l.*,
+            COALESCE(i.name, c.trading_name, c.legal_name) AS customer_name
         FROM loans l
         LEFT JOIN individuals i ON i.customer_id = l.customer_id
         LEFT JOIN corporates c ON c.customer_id = l.customer_id
@@ -76,25 +60,9 @@ QUERIES = [
         "loan_daily_state.csv",
         """
         SELECT
-            lds.loan_id,
-            l.customer_id,
+            lds.*,
             COALESCE(i.name, c.trading_name, c.legal_name) AS customer_name,
             l.product_code,
-            lds.as_of_date,
-            lds.principal_not_due,
-            lds.principal_arrears,
-            lds.interest_accrued_balance,
-            lds.interest_arrears_balance,
-            lds.default_interest_balance,
-            lds.penalty_interest_balance,
-            lds.fees_charges_balance,
-            lds.days_overdue,
-            lds.total_exposure,
-            lds.regular_interest_daily,
-            lds.default_interest_daily,
-            lds.penalty_interest_daily,
-            lds.net_allocation AS "net allocation",
-            lds.unallocated,
             (COALESCE(lds.net_allocation, 0) + COALESCE(lds.unallocated, 0)) AS credit
         FROM loan_daily_state lds
         JOIN loans l ON l.id = lds.loan_id
@@ -109,22 +77,8 @@ QUERIES = [
         "loan_daily_state_range.csv",
         """
         SELECT
-            lds.loan_id,
+            lds.*,
             COALESCE(i.name, c.trading_name, c.legal_name) AS customer_name,
-            lds.as_of_date,
-            lds.principal_not_due,
-            lds.principal_arrears,
-            lds.interest_accrued_balance,
-            lds.interest_arrears_balance,
-            lds.default_interest_daily,
-            lds.default_interest_balance,
-            lds.penalty_interest_daily,
-            lds.penalty_interest_balance,
-            lds.fees_charges_balance,
-            lds.total_exposure,
-            lds.days_overdue,
-            lds.net_allocation AS "net allocation",
-            lds.unallocated,
             (COALESCE(lds.net_allocation, 0) + COALESCE(lds.unallocated, 0)) AS credit
         FROM loan_daily_state lds
         JOIN loans l ON l.id = lds.loan_id
@@ -139,20 +93,8 @@ QUERIES = [
         "loan_repayments.csv",
         """
         SELECT
-            lr.id AS repayment_id,
-            CASE
-                WHEN lr.status = 'reversed' AND lr.original_repayment_id IS NOT NULL
-                    THEN 'REV-' || LPAD(lr.original_repayment_id::text, 2, '0')
-                ELSE LPAD(lr.id::text, 2, '0')
-            END AS repayment_code,
-            lr.loan_id,
+            lr.*,
             COALESCE(i.name, c.trading_name, c.legal_name) AS customer_name,
-            lr.amount,
-            lr.payment_date,
-            lr.value_date,
-            lr.reference,
-            lr.customer_reference,
-            lr.status,
             CASE
                 WHEN lr.status = 'reversed' AND lr.original_repayment_id IS NOT NULL
                     THEN 'REV-' || LPAD(lr.original_repayment_id::text, 2, '0')
@@ -162,19 +104,12 @@ QUERIES = [
                 WHEN lr.reference = 'Unapplied funds allocation' THEN 'unapplied_liquidation'
                 WHEN lr.status = 'reversed' AND lr.amount < 0 THEN 'reversal'
                 ELSE 'cash_receipt'
-            END AS receipt_type,
-            lr.original_repayment_id,
-            lr.created_at
+            END AS receipt_type
         FROM loan_repayments lr
         JOIN loans l ON l.id = lr.loan_id
         LEFT JOIN individuals i ON i.customer_id = l.customer_id
         LEFT JOIN corporates c ON c.customer_id = l.customer_id
         WHERE COALESCE(lr.value_date, lr.payment_date) BETWEEN %s AND %s
-          AND NOT (
-            COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
-            OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-            OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
-          )
         ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lr.id DESC
         """,
         (START_DATE, END_DATE),
@@ -182,88 +117,35 @@ QUERIES = [
     (
         "loan_repayment_allocation.csv",
         """
-        WITH alloc AS (
-            SELECT
-                lr.id AS repayment_id,
-                lr.loan_id,
-                lr.amount AS repayment_amount,
-                lr.payment_date,
-                lr.value_date,
-                CASE
-                    WHEN lr.status = 'reversed' AND lr.original_repayment_id IS NOT NULL
-                        THEN 'REV-' || LPAD(lr.original_repayment_id::text, 2, '0')
-                    ELSE LPAD(lr.id::text, 2, '0')
-                END AS repayment_key,
-                CASE
-                    WHEN lr.reference = 'Unapplied funds allocation' THEN 'unapplied_liquidation'
-                    WHEN lr.status = 'reversed' AND lr.amount < 0 THEN 'reversal'
-                    ELSE 'cash_receipt'
-                END AS receipt_type,
-                COALESCE(SUM(lra.alloc_principal_total), 0)      AS alloc_prin_total,
-                COALESCE(SUM(lra.alloc_interest_total), 0)       AS alloc_int_total,
-                COALESCE(SUM(lra.alloc_fees_total), 0)           AS alloc_fees_total,
-                COALESCE(SUM(lra.alloc_principal_not_due), 0)    AS alloc_prin_not_due,
-                COALESCE(SUM(lra.alloc_principal_arrears), 0)    AS alloc_prin_arrears,
-                COALESCE(SUM(lra.alloc_interest_accrued), 0)     AS alloc_int_accrued,
-                COALESCE(SUM(lra.alloc_interest_arrears), 0)     AS alloc_int_arrears,
-                COALESCE(SUM(lra.alloc_default_interest), 0)     AS alloc_default_int,
-                COALESCE(SUM(lra.alloc_penalty_interest), 0)     AS alloc_penalty_int,
-                COALESCE(SUM(lra.alloc_fees_charges), 0)         AS alloc_fees_charges
-            FROM loan_repayments lr
-            LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
-            WHERE COALESCE(lr.value_date, lr.payment_date) BETWEEN %s AND %s
-              AND NOT (
-                COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
-                OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-                OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
-              )
-            GROUP BY lr.id, lr.loan_id, lr.amount, lr.payment_date, lr.value_date, lr.status, lr.original_repayment_id, lr.reference
-        )
-        SELECT
-            ROW_NUMBER() OVER (ORDER BY COALESCE(value_date, payment_date) DESC, repayment_id) AS allocation_id,
-            repayment_id,
-            loan_id,
-            repayment_amount,
-            payment_date,
-            value_date,
-            repayment_key,
-            'net_allocation' AS event_type,
-            receipt_type,
-            alloc_prin_total,
-            alloc_int_total,
-            alloc_fees_total,
-            alloc_prin_not_due,
-            alloc_prin_arrears,
-            alloc_int_accrued,
-            alloc_int_arrears,
-            alloc_default_int,
-            alloc_penalty_int,
-            alloc_fees_charges,
-            (repayment_amount - (alloc_prin_total + alloc_int_total + alloc_fees_total)) AS unapplied_amount,
-            NULL::timestamptz AS allocation_created_at
-        FROM alloc
-        ORDER BY COALESCE(value_date, payment_date) DESC, repayment_id
+        SELECT lra.*, lr.loan_id, lr.amount AS repayment_amount,
+               COALESCE(lr.value_date, lr.payment_date) AS value_date
+        FROM loan_repayment_allocation lra
+        JOIN loan_repayments lr ON lr.id = lra.repayment_id
+        WHERE COALESCE(lr.value_date, lr.payment_date) BETWEEN %s AND %s
+        ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lra.repayment_id, lra.id
         """,
         (START_DATE, END_DATE),
     ),
-        (
-            "loans_with_latest_state.csv",
-            """
+    (
+        "loans_with_latest_state.csv",
+        """
         SELECT
-            l.id AS loan_id,
+            l.*,
             COALESCE(i.name, c.trading_name, c.legal_name) AS customer_name,
-            l.product_code,
-            l.loan_type,
-            l.principal,
-            l.disbursed_amount,
-            l.status,
             lds.as_of_date,
             lds.principal_not_due,
             lds.principal_arrears,
+            lds.interest_accrued_balance,
+            lds.interest_arrears_balance,
             lds.interest_accrued_balance + lds.interest_arrears_balance AS interest_balance,
+            lds.default_interest_balance,
             lds.penalty_interest_balance,
+            lds.fees_charges_balance,
             lds.total_exposure,
-            lds.days_overdue
+            lds.days_overdue,
+            lds.regular_interest_daily,
+            lds.default_interest_daily,
+            lds.penalty_interest_daily
         FROM loans l
         LEFT JOIN individuals i ON i.customer_id = l.customer_id
         LEFT JOIN corporates c ON c.customer_id = l.customer_id
@@ -280,11 +162,10 @@ QUERIES = [
         """,
         (END_DATE,),
     ),
-    # --- All loan tables (schedules, unapplied, modifications, recasts) ---
     (
         "loan_schedules.csv",
         """
-        SELECT ls.id AS schedule_id, ls.loan_id, ls.version, ls.created_at
+        SELECT ls.*
         FROM loan_schedules ls
         ORDER BY ls.loan_id, ls.version
         """,
@@ -293,9 +174,7 @@ QUERIES = [
     (
         "schedule_lines.csv",
         """
-        SELECT ls.loan_id, ls.version AS schedule_version, sl.id AS line_id,
-               sl."Period", sl."Date", sl.payment, sl.principal, sl.interest,
-               sl.principal_balance, sl.total_outstanding
+        SELECT ls.loan_id, ls.version AS schedule_version, sl.*
         FROM schedule_lines sl
         JOIN loan_schedules ls ON ls.id = sl.loan_schedule_id
         ORDER BY ls.loan_id, ls.version, sl."Period"
@@ -305,25 +184,13 @@ QUERIES = [
     (
         "unapplied_funds.csv",
         """
-        SELECT
-            uf.id,
-            uf.loan_id,
-            uf.repayment_id,
-            uf.amount,
-            uf.currency,
-            uf.value_date,
-            uf.entry_type,
-            uf.reference,
-            uf.allocation_repayment_id,
-            uf.source_repayment_id,
-            uf.source_unapplied_id,
+        SELECT uf.*,
             CASE
                 WHEN uf.entry_type = 'credit' AND uf.reference = 'Overpayment' THEN 'from_receipt'
                 WHEN uf.entry_type = 'debit' AND uf.reference = 'Applied to arrears (EOD)' THEN 'to_loan_arrears_eod'
                 WHEN uf.entry_type = 'debit' AND uf.reference = 'Applied via recast' THEN 'to_loan_recast'
                 ELSE 'other'
-            END AS movement_type,
-            uf.created_at
+            END AS movement_type
         FROM unapplied_funds uf
         WHERE uf.value_date BETWEEN %s AND %s
         ORDER BY uf.loan_id, uf.value_date, uf.id
@@ -333,8 +200,7 @@ QUERIES = [
     (
         "allocation_audit_log.csv",
         """
-        SELECT aal.id, aal.created_at, aal.event_type, aal.loan_id, aal.as_of_date,
-               aal.repayment_id, aal.original_repayment_id, aal.narration, aal.details
+        SELECT aal.*
         FROM allocation_audit_log aal
         WHERE aal.as_of_date BETWEEN %s AND %s
         ORDER BY aal.created_at
@@ -344,9 +210,7 @@ QUERIES = [
     (
         "loan_modifications.csv",
         """
-        SELECT lm.id, lm.loan_id, lm.modification_date, lm.previous_schedule_version,
-               lm.new_schedule_version, lm.outstanding_interest_treatment,
-               lm.new_loan_type, lm.new_term, lm.new_annual_rate, lm.new_principal, lm.created_at, lm.notes
+        SELECT lm.*
         FROM loan_modifications lm
         ORDER BY lm.loan_id, lm.modification_date
         """,
@@ -355,8 +219,7 @@ QUERIES = [
     (
         "loan_recasts.csv",
         """
-        SELECT lr.id, lr.loan_id, lr.recast_date, lr.previous_schedule_version,
-               lr.new_schedule_version, lr.new_installment, lr.trigger_repayment_id, lr.created_at, lr.notes
+        SELECT lr.*
         FROM loan_recasts lr
         ORDER BY lr.loan_id, lr.recast_date
         """,
@@ -365,7 +228,7 @@ QUERIES = [
     (
         "config.csv",
         """
-        SELECT key, value, updated_at
+        SELECT *
         FROM config
         ORDER BY key
         """,
