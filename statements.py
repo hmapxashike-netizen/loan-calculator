@@ -437,25 +437,21 @@ def _generate_periodic_statement(
         delta = float(u.get("unapplied_delta") or 0)
         if abs(delta) < 1e-9:
             continue
-        if kind == "reversal":
+        if kind != "liquidation":
             continue
         row = _blank_row_periodic()
         row["Due Date"] = vd
         rk = u.get("repayment_key") or ""
-        if kind == "liquidation":
-            row["Narration"] = f"Liquidation of unapplied receipt no {rk}"
-            # Internal movement only: no cash debit/credit impact on statement totals.
-            row["Credits"] = 0.0
-            row["Portion of Credit Allocated to Interest"] = _f3(
-                float(u.get("alloc_int_arrears") or 0)
-                + float(u.get("alloc_penalty_int") or 0)
-                + float(u.get("alloc_default_int") or 0),
-            )
-            row["Credit Allocated to Fees"] = _f3(float(u.get("alloc_fees_charges") or 0))
-            row["Credit Allocated to Capital"] = _f3(float(u.get("alloc_prin_arrears") or 0))
-        else:
-            row["Narration"] = f"Unapplied from receipt no {rk}"
-            row["Credits"] = 0.0
+        row["Narration"] = f"Liquidation of unapplied receipt no {rk}"
+        # Internal movement only: no cash debit/credit impact on statement totals.
+        row["Credits"] = 0.0
+        row["Portion of Credit Allocated to Interest"] = _f3(
+            float(u.get("alloc_int_arrears") or 0)
+            + float(u.get("alloc_penalty_int") or 0)
+            + float(u.get("alloc_default_int") or 0),
+        )
+        row["Credit Allocated to Fees"] = _f3(float(u.get("alloc_fees_charges") or 0))
+        row["Credit Allocated to Capital"] = _f3(float(u.get("alloc_prin_arrears") or 0))
         bal = _state_at(vd)
         if bal:
             row["Total Outstanding Balance"] = _f3(_total_outstanding(bal))
@@ -570,7 +566,7 @@ def generate_customer_facing_statement(
                 "Arrears": arrears,
                 "Unapplied funds": unapplied,
             })
-        elif narration.startswith("Liquidation of unapplied") or narration.startswith("Unapplied from receipt"):
+        elif narration.startswith("Liquidation of unapplied"):
             credits_alloc = _to_dec(r.get("Portion of Credit Allocated to Interest") or 0) + \
                             _to_dec(r.get("Credit Allocated to Fees") or 0) + \
                             _to_dec(r.get("Credit Allocated to Capital") or 0)

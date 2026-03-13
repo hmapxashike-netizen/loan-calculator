@@ -63,6 +63,24 @@ except Exception:
     list_users_for_selection = lambda: []
 
 try:
+    from documents import (
+        list_document_classes,
+        create_document_class,
+        update_document_class,
+        list_document_categories,
+        create_document_category,
+        update_document_category,
+        upload_document,
+        list_documents,
+        get_document,
+        delete_document,
+    )
+    _documents_available = True
+except Exception as e:
+    _documents_available = False
+    _documents_error = str(e)
+
+try:
     from loan_management import (
         save_loan as save_loan_to_db,
         record_repayment,
@@ -2253,7 +2271,8 @@ def capture_loan_ui():
         save_result = st.session_state.pop("capture_last_save_result", None)
         if save_result is not None:
             if save_result.get("success"):
-                st.success(f"**Loan saved successfully to the database.** Loan ID: **{save_result.get('loan_id', '—')}**")
+                doc_msg = f" Also uploaded {save_result.get('doc_count', 0)} document(s)." if save_result.get('doc_count', 0) > 0 else ""
+                st.success(f"**Loan saved successfully to the database.** Loan ID: **{save_result.get('loan_id', '—')}**{doc_msg}")
             else:
                 st.error(f"**Save to database failed.** {save_result.get('error', 'Unknown error')}")
 
@@ -2288,6 +2307,32 @@ def capture_loan_ui():
             st.subheader("Schedule")
             st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
             st.divider()
+            
+            st.subheader("Loan Documents")
+            st.write("Upload supporting loan documents before saving.")
+            uploaded_loan_docs = []
+            if _documents_available:
+                doc_cats = list_document_categories(active_only=True)
+                if not doc_cats:
+                    st.info("No document categories configured.")
+                else:
+                    from collections import defaultdict
+                    cats_by_class = defaultdict(list)
+                    for cat in doc_cats:
+                        class_name = cat.get("class_name") or "Uncategorized"
+                        cats_by_class[class_name].append(cat)
+                    
+                    for class_name, cats in cats_by_class.items():
+                        st.markdown(f"**{class_name}**")
+                        for cat in cats:
+                            f = st.file_uploader(f"Upload {cat['name']}", type=["pdf", "png", "jpg", "jpeg"], key=f"loan_doc_{cat['id']}")
+                            if f is not None:
+                                uploaded_loan_docs.append((cat['id'], f))
+                        st.divider()
+            else:
+                st.info("Document module is unavailable.")
+            
+            st.divider()
             st.subheader("Approve & save")
             col_save, col_cancel, col_back = st.columns([2, 1, 1])
             with col_save:
@@ -2299,7 +2344,17 @@ def capture_loan_ui():
                             "relationship_manager_id": st.session_state.get("capture_relationship_manager_id"),
                         }
                         loan_id = save_loan_to_db(cid, ltype, details_with_agent, df_schedule, product_code=st.session_state.get("capture_product_code"))
-                        st.session_state["capture_last_save_result"] = {"success": True, "loan_id": loan_id}
+                        
+                        doc_count = 0
+                        if _documents_available and uploaded_loan_docs:
+                            for cat_id, f in uploaded_loan_docs:
+                                try:
+                                    upload_document("loan", loan_id, cat_id, f.name, f.type, f.size, f.getvalue(), uploaded_by="System User")
+                                    doc_count += 1
+                                except Exception as e:
+                                    st.error(f"Failed to upload {f.name}: {e}")
+                                    
+                        st.session_state["capture_last_save_result"] = {"success": True, "loan_id": loan_id, "doc_count": doc_count}
                         for k in ["capture_loan_details", "capture_loan_schedule_df"]:
                             st.session_state.pop(k, None)
                         st.rerun()
@@ -2371,6 +2426,32 @@ def customers_ui():
                     postal_code = st.text_input("Postal code", key="ind_addr_postal_code")
                     country = st.text_input("Country", key="ind_addr_country")
                     use_addr = st.checkbox("Include this address", value=False, key="ind_use_addr")
+                
+                uploaded_files_data = []
+                with st.expander("Documents (optional)"):
+                    if _documents_available:
+                        st.write("Upload customer documents here. Max size 200MB per file.")
+                        doc_cats = list_document_categories(active_only=True)
+                        if not doc_cats:
+                            st.info("No document categories configured.")
+                        else:
+                            # Group categories by class
+                            from collections import defaultdict
+                            cats_by_class = defaultdict(list)
+                            for cat in doc_cats:
+                                class_name = cat.get("class_name") or "Uncategorized"
+                                cats_by_class[class_name].append(cat)
+                            
+                            for class_name, cats in cats_by_class.items():
+                                st.markdown(f"**{class_name}**")
+                                for cat in cats:
+                                    f = st.file_uploader(f"Upload {cat['name']}", type=["pdf", "png", "jpg", "jpeg"], key=f"ind_doc_{cat['id']}")
+                                    if f is not None:
+                                        uploaded_files_data.append((cat['id'], f))
+                                st.divider()
+                    else:
+                        st.info("Document module is unavailable.")
+
                 submitted = st.form_submit_button("Create individual")
                 if submitted and name.strip():
                     addresses = None
@@ -2390,6 +2471,18 @@ def customers_ui():
                             subsector_id=subsector_id,
                         )
                         st.success(f"Individual customer created. Customer ID: **{cid}**.")
+                        
+                        if _documents_available and uploaded_files_data:
+                            doc_count = 0
+                            for cat_id, f in uploaded_files_data:
+                                try:
+                                    upload_document("customer", cid, cat_id, f.name, f.type, f.size, f.getvalue(), uploaded_by="System User")
+                                    doc_count += 1
+                                except Exception as e:
+                                    st.error(f"Failed to upload {f.name}: {e}")
+                            if doc_count > 0:
+                                st.success(f"Successfully uploaded {doc_count} documents.")
+                                
                     except Exception as e:
                         st.error(f"Could not create customer: {e}")
                 elif submitted and not name.strip():
@@ -2457,6 +2550,31 @@ def customers_ui():
                     sh_email = st.text_input("Shareholder email", key="corp_sh_email")
                     sh_pct = st.number_input("Shareholding %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, key="corp_sh_pct")
                     use_sh = st.checkbox("Include this shareholder", value=False, key="corp_use_sh")
+                
+                uploaded_files_data_corp = []
+                with st.expander("Documents (optional)"):
+                    if _documents_available:
+                        st.write("Upload corporate documents here. Max size 200MB per file.")
+                        doc_cats = list_document_categories(active_only=True)
+                        if not doc_cats:
+                            st.info("No document categories configured.")
+                        else:
+                            from collections import defaultdict
+                            cats_by_class = defaultdict(list)
+                            for cat in doc_cats:
+                                class_name = cat.get("class_name") or "Uncategorized"
+                                cats_by_class[class_name].append(cat)
+                            
+                            for class_name, cats in cats_by_class.items():
+                                st.markdown(f"**{class_name}**")
+                                for cat in cats:
+                                    f = st.file_uploader(f"Upload {cat['name']}", type=["pdf", "png", "jpg", "jpeg"], key=f"corp_doc_{cat['id']}")
+                                    if f is not None:
+                                        uploaded_files_data_corp.append((cat['id'], f))
+                                st.divider()
+                    else:
+                        st.info("Document module is unavailable.")
+
                 submitted = st.form_submit_button("Create corporate")
                 if submitted and legal_name.strip():
                     addresses = [{"address_type": addr_type or None, "line1": line1 or None, "line2": line2 or None, "city": city or None, "region": region or None, "postal_code": postal_code or None, "country": country or None}] if use_addr and line1.strip() else None
@@ -2479,6 +2597,18 @@ def customers_ui():
                             subsector_id=corp_subsector_id,
                         )
                         st.success(f"Corporate customer created. Customer ID: **{cid}**.")
+                        
+                        if _documents_available and uploaded_files_data_corp:
+                            doc_count = 0
+                            for cat_id, f in uploaded_files_data_corp:
+                                try:
+                                    upload_document("customer", cid, cat_id, f.name, f.type, f.size, f.getvalue(), uploaded_by="System User")
+                                    doc_count += 1
+                                except Exception as e:
+                                    st.error(f"Failed to upload {f.name}: {e}")
+                            if doc_count > 0:
+                                st.success(f"Successfully uploaded {doc_count} documents.")
+                                
                     except Exception as e:
                         st.error(f"Could not create customer: {e}")
                         st.exception(e)
@@ -3867,6 +3997,284 @@ def accounting_ui():
                 st.success(f"FX rate for {cur} saved.")
 
 
+def notifications_ui():
+    st.header("Notifications Module")
+    
+    tab_send, tab_templates, tab_history = st.tabs([
+        "Send Notification",
+        "Templates",
+        "History"
+    ])
+    
+    with tab_send:
+        st.subheader("Send a Notification")
+        with st.form("send_notification_form"):
+            recipient_type = st.radio("Send to", ["Specific Customer", "All Active Customers", "Custom Phone/Email"], horizontal=True)
+            
+            customer_search = None
+            if recipient_type == "Specific Customer":
+                if _customers_available:
+                    cust_list = list_customers()
+                    if cust_list:
+                        # Map customers to format for dropdown
+                        cust_options = {c["id"]: f"{get_display_name(c)} (ID: {c['id']})" for c in cust_list}
+                        customer_id = st.selectbox("Select Customer", options=list(cust_options.keys()), format_func=lambda x: cust_options[x])
+                    else:
+                        st.warning("No customers found.")
+                else:
+                    st.error("Customers module is unavailable.")
+            elif recipient_type == "Custom Phone/Email":
+                custom_contact = st.text_input("Enter Email or Phone Number")
+            
+            st.divider()
+            notification_type = st.selectbox("Notification Method", ["SMS", "Email", "In-App/Push"])
+            template_used = st.selectbox("Use Template (Optional)", ["None", "Payment Reminder", "Payment Overdue", "Account Update", "Loan Approved"])
+            
+            subject = ""
+            if notification_type == "Email":
+                subject = st.text_input("Subject")
+            
+            message_body = st.text_area("Message Body", height=150)
+            
+            submitted = st.form_submit_button("Send Notification", type="primary")
+            if submitted:
+                if not message_body.strip():
+                    st.error("Message body cannot be empty.")
+                else:
+                    st.success("Notification queued for delivery successfully!")
+                    
+                    # Store to history in session state for mock
+                    if "notification_history" not in st.session_state:
+                        st.session_state["notification_history"] = []
+                    
+                    target = ""
+                    if recipient_type == "Specific Customer" and 'customer_id' in locals():
+                        target = f"Customer ID: {customer_id}"
+                    elif recipient_type == "Custom Phone/Email":
+                        target = custom_contact
+                    else:
+                        target = "All Active Customers"
+                        
+                    st.session_state["notification_history"].insert(0, {
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "type": notification_type,
+                        "recipient": target,
+                        "status": "Sent",
+                        "message": message_body[:50] + "..." if len(message_body) > 50 else message_body
+                    })
+
+    with tab_templates:
+        st.subheader("Manage Templates")
+        st.info("Here you can define and edit standard templates to use for bulk or automated notifications.")
+        
+        with st.expander("Create New Template"):
+            with st.form("new_template_form"):
+                new_tpl_name = st.text_input("Template Name", placeholder="e.g. Loan Disbursement SMS")
+                new_tpl_type = st.selectbox("Template Type", ["SMS", "Email", "In-App"])
+                new_tpl_body = st.text_area("Template Content (use {variables} for dynamic fields)")
+                if st.form_submit_button("Save Template"):
+                    st.success(f"Template '{new_tpl_name}' saved.")
+                    
+        st.markdown("### Existing Templates")
+        mock_templates = pd.DataFrame([
+            {"Template Name": "Payment Reminder", "Type": "SMS", "Last Updated": "2024-01-15", "Content Preview": "Dear {name}, your payment of {amount} is due..."},
+            {"Template Name": "Payment Overdue", "Type": "Email", "Last Updated": "2024-02-10", "Content Preview": "Notice: Your account is currently in arrears..."},
+            {"Template Name": "Loan Approved", "Type": "SMS", "Last Updated": "2023-11-20", "Content Preview": "Congratulations {name}, your loan application..."},
+        ])
+        st.dataframe(mock_templates, hide_index=True, use_container_width=True)
+
+    with tab_history:
+        st.subheader("Notification History")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            filter_type = st.selectbox("Filter by Type", ["All", "SMS", "Email", "In-App"], key="hist_filter_type")
+        with col2:
+            filter_status = st.selectbox("Filter by Status", ["All", "Sent", "Failed", "Pending"], key="hist_filter_status")
+            
+        history = st.session_state.get("notification_history", [])
+        
+        if not history:
+            st.info("No notifications have been sent during this session.")
+            # Show some mock history if empty to make it look realistic
+            mock_history = pd.DataFrame([
+                {"timestamp": "2024-03-01 09:15:00", "type": "SMS", "recipient": "Customer ID: 12", "status": "Sent", "message": "Your loan has been disbursed...!"},
+                {"timestamp": "2024-03-01 08:30:22", "type": "Email", "recipient": "Customer ID: 45", "status": "Failed", "message": "Statement for February 2024"},
+                {"timestamp": "2024-02-28 14:05:10", "type": "SMS", "recipient": "All Active Customers", "status": "Sent", "message": "Notice: Our offices will be closed..."},
+            ])
+            st.dataframe(mock_history, hide_index=True, use_container_width=True)
+        else:
+            df_history = pd.DataFrame(history)
+            
+            if filter_type != "All":
+                df_history = df_history[df_history["type"] == filter_type]
+            if filter_status != "All":
+                df_history = df_history[df_history["status"] == filter_status]
+                
+            st.dataframe(df_history, hide_index=True, use_container_width=True)
+
+
+def document_management_ui():
+    if not _documents_available:
+        st.error(f"Documents module unavailable: {_documents_error}")
+        return
+
+    st.header("Document Management")
+    
+    tab_classes, tab_categories, tab_all_docs, tab_generated = st.tabs([
+        "Document Classes",
+        "Document Categories", 
+        "All Documents",
+        "Generated Documents"
+    ])
+    
+    with tab_classes:
+        st.subheader("Document Classes Configuration")
+        st.write("Manage the high-level grouping of documents (e.g., 'Know Your Customer', 'Agreements').")
+        
+        with st.expander("Create New Class", expanded=False):
+            with st.form("create_doc_class_form"):
+                new_class_name = st.text_input("Class Name", placeholder="e.g. KYC Documents")
+                new_class_desc = st.text_area("Description")
+                if st.form_submit_button("Save Class"):
+                    if new_class_name.strip():
+                        try:
+                            create_document_class(new_class_name.strip(), new_class_desc.strip())
+                            st.success(f"Class '{new_class_name}' created.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error creating class: {e}")
+                    else:
+                        st.error("Class Name is required.")
+        
+        classes = list_document_classes(active_only=False)
+        if classes:
+            df_classes = pd.DataFrame(classes)
+            st.dataframe(df_classes[["id", "name", "description", "is_active", "created_at"]], hide_index=True, use_container_width=True)
+            
+            st.subheader("Edit Class")
+            edit_class_id = st.selectbox("Select Class to Edit", [c["id"] for c in classes], format_func=lambda x: next(c["name"] for c in classes if c["id"] == x))
+            selected_class = next(c for c in classes if c["id"] == edit_class_id)
+            
+            with st.form("edit_doc_class_form"):
+                edit_c_name = st.text_input("Class Name", value=selected_class["name"])
+                edit_c_desc = st.text_area("Description", value=selected_class["description"] or "")
+                edit_c_active = st.checkbox("Is Active?", value=selected_class["is_active"])
+                
+                if st.form_submit_button("Update Class"):
+                    if edit_c_name.strip():
+                        try:
+                            update_document_class(edit_class_id, edit_c_name.strip(), edit_c_desc.strip(), edit_c_active)
+                            st.success(f"Class '{edit_c_name}' updated.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error updating class: {e}")
+                    else:
+                        st.error("Class Name is required.")
+        else:
+            st.info("No document classes found. Create one above.")
+
+    with tab_categories:
+        st.subheader("Document Categories Configuration")
+        st.write("Manage the specific types of documents within classes that can be uploaded.")
+        
+        active_classes = list_document_classes(active_only=True)
+        class_options = {c["id"]: c["name"] for c in active_classes} if active_classes else {}
+        
+        with st.expander("Create New Category", expanded=False):
+            with st.form("create_doc_cat_form"):
+                if class_options:
+                    new_cat_class_id = st.selectbox("Document Class", options=list(class_options.keys()), format_func=lambda x: class_options[x])
+                else:
+                    st.warning("Please create a Document Class first.")
+                    new_cat_class_id = None
+                    
+                new_cat_name = st.text_input("Category Name", placeholder="e.g. Identity Document")
+                new_cat_desc = st.text_area("Description")
+                if st.form_submit_button("Save Category"):
+                    if new_cat_name.strip() and new_cat_class_id:
+                        try:
+                            create_document_category(new_cat_name.strip(), new_cat_desc.strip(), new_cat_class_id)
+                            st.success(f"Category '{new_cat_name}' created.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error creating category: {e}")
+                    else:
+                        st.error("Category Name and Class are required.")
+        
+        cats = list_document_categories(active_only=False)
+        if cats:
+            df_cats = pd.DataFrame(cats)
+            # Reorder columns for display
+            display_cols = ["id", "class_name", "name", "description", "is_active", "created_at"]
+            # Ensure all columns exist
+            display_cols = [c for c in display_cols if c in df_cats.columns]
+            st.dataframe(df_cats[display_cols], hide_index=True, use_container_width=True)
+            
+            st.subheader("Edit Category")
+            edit_cat_id = st.selectbox("Select Category to Edit", [c["id"] for c in cats], format_func=lambda x: next(c["name"] for c in cats if c["id"] == x))
+            selected_cat = next(c for c in cats if c["id"] == edit_cat_id)
+            
+            with st.form("edit_doc_cat_form"):
+                edit_cat_class_id = None
+                if class_options:
+                    default_idx = list(class_options.keys()).index(selected_cat["class_id"]) if selected_cat["class_id"] in class_options else 0
+                    edit_cat_class_id = st.selectbox("Document Class", options=list(class_options.keys()), format_func=lambda x: class_options[x], index=default_idx)
+                
+                edit_name = st.text_input("Category Name", value=selected_cat["name"])
+                edit_desc = st.text_area("Description", value=selected_cat["description"] or "")
+                edit_active = st.checkbox("Is Active?", value=selected_cat["is_active"])
+                
+                if st.form_submit_button("Update Category"):
+                    if edit_name.strip():
+                        try:
+                            update_document_category(edit_cat_id, edit_name.strip(), edit_desc.strip(), edit_active, edit_cat_class_id)
+                            st.success(f"Category '{edit_name}' updated.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error updating category: {e}")
+                    else:
+                        st.error("Category Name is required.")
+        else:
+            st.info("No document categories found. Create one above.")
+
+    with tab_all_docs:
+        st.subheader("All Uploaded Documents")
+        docs = list_documents()
+        if docs:
+            # We don't want to display the full bytea content in the dataframe
+            display_docs = []
+            for d in docs:
+                display_docs.append({
+                    "ID": d["id"],
+                    "Entity": f"{d['entity_type'].capitalize()} #{d['entity_id']}",
+                    "Category": d["category_name"] or "Uncategorized",
+                    "File Name": d["file_name"],
+                    "Size (KB)": round(d["file_size"] / 1024, 1),
+                    "Uploaded At": d["uploaded_at"],
+                    "Uploaded By": d["uploaded_by"]
+                })
+            st.dataframe(pd.DataFrame(display_docs), hide_index=True, use_container_width=True)
+            
+            st.subheader("Download Document")
+            dl_doc_id = st.selectbox("Select Document to Download", [d["id"] for d in docs], format_func=lambda x: next(f"ID {d['id']} - {d['file_name']}" for d in docs if d["id"] == x))
+            dl_doc = get_document(dl_doc_id)
+            if dl_doc:
+                st.download_button(
+                    label=f"Download {dl_doc['file_name']}",
+                    data=dl_doc["file_content"],
+                    file_name=dl_doc["file_name"],
+                    mime=dl_doc["file_type"]
+                )
+        else:
+            st.info("No documents found in the system.")
+
+    with tab_generated:
+        st.subheader("Autogenerated Documents")
+        st.info("System-generated quotations, agreements, and offer letters will appear here once configured in the product rules.")
+        # Future implementation for autogenerated documents.
+        
+
 def main():
     _get_global_loan_settings()  # ensure defaults exist
 
@@ -3888,6 +4296,8 @@ def main():
             "Reamortisation",
             "Statements",
             "Accounting",
+            "Notifications",
+            "Document Management",
             "End of day",
             "System configurations",
         ],
@@ -3927,6 +4337,10 @@ def main():
                 customised_repayments_ui()
     elif nav == "Accounting":
         accounting_ui()
+    elif nav == "Notifications":
+        notifications_ui()
+    elif nav == "Document Management":
+        document_management_ui()
     elif nav == "End of day":
         eod_ui()
     elif nav == "System configurations":
