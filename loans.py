@@ -8,6 +8,13 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy_financial as npf
 
+from decimal_utils import as_10dp
+
+
+def _q10(v: float) -> float:
+    """Quantize to 10dp for schedule amounts (matches project standard)."""
+    return float(as_10dp(v))
+
 
 # --- Date / schedule helpers ---
 
@@ -135,8 +142,8 @@ def get_amortization_schedule(
         "Monthly Installment": 0.0,
         "Principal": 0.0,
         "Interest": 0.0,
-        "Principal Balance": round(total_facility, 2),
-        "Total Outstanding": round(total_facility, 2),
+        "Principal Balance": _q10(total_facility),
+        "Total Outstanding": _q10(total_facility),
     })
     remaining_balance = total_facility
 
@@ -147,7 +154,7 @@ def get_amortization_schedule(
             interest_payment = remaining_balance * monthly_rate
         principal_payment = installment - interest_payment
         remaining_balance -= principal_payment
-        bal = round(max(0, remaining_balance), 2)
+        bal = _q10(max(0, remaining_balance))
         date_str = (
             schedule_dates[i - 1].strftime("%d-%b-%Y")
             if schedule_dates and i <= len(schedule_dates)
@@ -156,9 +163,9 @@ def get_amortization_schedule(
         schedule.append({
             "Period": i,
             "Date": date_str,
-            "Monthly Installment": round(installment, 2),
-            "Principal": round(principal_payment, 2),
-            "Interest": round(interest_payment, 2),
+            "Monthly Installment": _q10(installment),
+            "Principal": _q10(principal_payment),
+            "Interest": _q10(interest_payment),
             "Principal Balance": bal,
             "Total Outstanding": bal,
         })
@@ -264,8 +271,8 @@ def get_term_loan_amortization_schedule(
         "Monthly Installment": 0.0,
         "Principal": 0.0,
         "Interest": 0.0,
-        "Principal Balance": round(total_facility, 2),
-        "Total Outstanding": round(total_facility, 2),
+        "Principal Balance": _q10(total_facility),
+        "Total Outstanding": _q10(total_facility),
     })
     balance = total_facility
     principal_balance = total_facility
@@ -284,9 +291,9 @@ def get_term_loan_amortization_schedule(
                 "Date": end_date.strftime("%d-%b-%Y"),
                 "Monthly Installment": 0.0,
                 "Principal": 0.0,
-                "Interest": round(interest, 2),
-                "Principal Balance": round(principal_balance, 2),
-                "Total Outstanding": round(balance, 2),
+                "Interest": _q10(interest),
+                "Principal Balance": _q10(principal_balance),
+                "Total Outstanding": _q10(balance),
             })
             prev_date = end_date
         remaining = num_periods - moratorium_months
@@ -318,13 +325,13 @@ def get_term_loan_amortization_schedule(
                     payment = interest + principal
                 balance -= principal
                 principal_balance -= principal
-                pb, to = round(max(0, principal_balance), 2), round(max(0, balance), 2)
+                pb, to = _q10(max(0, principal_balance)), _q10(max(0, balance))
                 schedule.append({
                     "Period": i + 1,
                     "Date": end_date.strftime("%d-%b-%Y"),
-                    "Monthly Installment": round(payment, 2),
-                    "Principal": round(principal, 2),
-                    "Interest": round(interest, 2),
+                    "Monthly Installment": _q10(payment),
+                    "Principal": _q10(principal),
+                    "Interest": _q10(interest),
                     "Principal Balance": pb,
                     "Total Outstanding": to,
                 })
@@ -339,11 +346,11 @@ def get_term_loan_amortization_schedule(
             schedule.append({
                 "Period": i + 1,
                 "Date": end_date.strftime("%d-%b-%Y"),
-                "Monthly Installment": round(interest, 2),
+                "Monthly Installment": _q10(interest),
                 "Principal": 0.0,
-                "Interest": round(interest, 2),
-                "Principal Balance": round(balance, 2),
-                "Total Outstanding": round(balance, 2),
+                "Interest": _q10(interest),
+                "Principal Balance": _q10(balance),
+                "Total Outstanding": _q10(balance),
             })
             prev_date = end_date
         remaining = num_periods - principal_start_idx
@@ -373,13 +380,13 @@ def get_term_loan_amortization_schedule(
                 payment = interest + principal
             balance -= principal
             principal_balance -= principal
-            pb, to = round(max(0, principal_balance), 2), round(max(0, balance), 2)
+            pb, to = _q10(max(0, principal_balance)), _q10(max(0, balance))
             schedule.append({
                 "Period": i + 1,
                 "Date": end_date.strftime("%d-%b-%Y"),
-                "Monthly Installment": round(payment, 2),
-                "Principal": round(principal, 2),
-                "Interest": round(interest, 2),
+                "Monthly Installment": _q10(payment),
+                "Principal": _q10(principal),
+                "Interest": _q10(interest),
                 "Principal Balance": pb,
                 "Total Outstanding": to,
             })
@@ -412,13 +419,13 @@ def get_term_loan_amortization_schedule(
                 payment = interest + principal
             balance -= principal
             principal_balance -= principal
-            pb, to = round(max(0, principal_balance), 2), round(max(0, balance), 2)
+            pb, to = _q10(max(0, principal_balance)), _q10(max(0, balance))
             schedule.append({
                 "Period": i + 1,
                 "Date": end_date.strftime("%d-%b-%Y"),
-                "Monthly Installment": round(payment, 2),
-                "Principal": round(principal, 2),
-                "Interest": round(interest, 2),
+                "Monthly Installment": _q10(payment),
+                "Principal": _q10(principal),
+                "Interest": _q10(interest),
                 "Principal Balance": pb,
                 "Total Outstanding": to,
             })
@@ -447,8 +454,8 @@ def get_bullet_schedule(
         "Payment": 0.0,
         "Principal": 0.0,
         "Interest": 0.0,
-        "Principal Balance": round(total_facility, 2),
-        "Total Outstanding": round(total_facility, 2),
+        "Principal Balance": _q10(total_facility),
+        "Total Outstanding": _q10(total_facility),
     })
     balance = total_facility
     principal_balance = total_facility
@@ -461,9 +468,9 @@ def get_bullet_schedule(
         schedule.append({
             "Period": 1,
             "Date": maturity_date.strftime("%d-%b-%Y"),
-            "Payment": round(balance + interest, 2),
-            "Principal": round(balance, 2),
-            "Interest": round(interest, 2),
+            "Payment": _q10(balance + interest),
+            "Principal": _q10(balance),
+            "Interest": _q10(interest),
             "Principal Balance": 0.0,
             "Total Outstanding": 0.0,
         })
@@ -485,11 +492,11 @@ def get_bullet_schedule(
         schedule.append({
             "Period": i + 1,
             "Date": end_date.strftime("%d-%b-%Y"),
-            "Payment": round(payment, 2),
-            "Principal": round(principal, 2),
-            "Interest": round(interest, 2),
-            "Principal Balance": round(principal_balance, 2),
-            "Total Outstanding": round(balance, 2),
+            "Payment": _q10(payment),
+            "Principal": _q10(principal),
+            "Interest": _q10(interest),
+            "Principal Balance": _q10(principal_balance),
+            "Total Outstanding": _q10(balance),
         })
         prev_date = end_date
     return pd.DataFrame(schedule)
@@ -557,9 +564,9 @@ def recompute_customised_from_payments(
         principal = min(max(0.0, payment - interest), principal_balance)
         cum_principal += principal
         principal_balance = total_facility - cum_principal
-        out.at[idx, "Interest"] = round(interest, 2)
-        out.at[idx, "Principal"] = round(principal, 2)
-        out.at[idx, "Principal Balance"] = round(max(0, principal_balance), 2)
-        out.at[idx, "Total Outstanding"] = round(max(0, total_outstanding), 2)
+        out.at[idx, "Interest"] = _q10(interest)
+        out.at[idx, "Principal"] = _q10(principal)
+        out.at[idx, "Principal Balance"] = _q10(max(0, principal_balance))
+        out.at[idx, "Total Outstanding"] = _q10(max(0, total_outstanding))
         prev_date = end_date
     return out

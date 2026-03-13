@@ -21,3 +21,9 @@ alwaysApply: true
 Avoid manual adjustments to make things balance.
 Always fix issues in such a way that if a new scenarion is created same bug will not arise. tHink solutions that hardcode
 All tables that amounts must store it to 10 decimal places. All engines that do maths on money shoud work with 10 decimal places
+
+## 4. Repayment allocation policy
+
+- **loan_repayment_allocation**: exactly one row per repayment_id. Reallocate overrides the existing row in place; never insert correction pairs (unallocation + reallocation).
+- **loan_repayments**: id is unique (PRIMARY KEY); each row = one receipt.
+- **unapplied_funds**: ledger-style; multiple rows per repayment_id are expected (credits, debits).

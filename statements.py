@@ -16,7 +16,6 @@ from loan_management import (
     get_repayments_with_allocations,
     get_loan_daily_state_balances,
     get_unapplied_balance,
-    get_unapplied_entries,
     get_unapplied_ledger_entries_for_statement,
     get_schedule_lines,
 )
@@ -253,14 +252,38 @@ def _generate_periodic_statement(
             _date_conv(u.get("value_date")) or date(9999, 12, 31),
             int(u.get("repayment_id") or 0),
             str(u.get("entry_kind") or ""),
+            int(u.get("id") or 0),
         ),
     )
-    try:
-        unapplied_entries = get_unapplied_entries(loan_id, end)
-    except Exception:
-        unapplied_entries = []
-    def _unapplied_at(d: date) -> float:
-        return _f3(sum(amt for vd, amt in unapplied_entries if vd <= d))
+    def _unapplied_at(
+        d: date,
+        *,
+        repayment_id: int | None = None,
+        entry_kind: str | None = None,
+    ) -> float:
+        latest_running = 0.0
+        for u in unapplied_lines_sorted:
+            vd = _date_conv(u.get("value_date"))
+            if not vd:
+                continue
+            rid = int(u.get("repayment_id") or 0)
+            kind = str(u.get("entry_kind") or "")
+            if vd > d:
+                break
+            if vd < d:
+                latest_running = float(u.get("unapplied_running_balance") or 0)
+                continue
+            if repayment_id is None:
+                latest_running = float(u.get("unapplied_running_balance") or 0)
+                continue
+            if rid < repayment_id:
+                latest_running = float(u.get("unapplied_running_balance") or 0)
+                continue
+            if rid == repayment_id and (entry_kind is None or kind <= entry_kind):
+                latest_running = float(u.get("unapplied_running_balance") or 0)
+                continue
+            break
+        return _f3(latest_running)
     unapplied_at_end = _unapplied_at(end)
 
     ds_by_date: dict[date, dict] = {}
@@ -347,11 +370,12 @@ def _generate_periodic_statement(
             if not vd or vd <= period_start_d or vd > due_d:
                 continue
             amount = float(r.get("amount") or 0)
+            alloc_total = float(r.get("alloc_total") or 0)
             rec_row = _blank_row_periodic()
             rec_row["Due Date"] = vd
             ref = (r.get("customer_reference") or "").strip() or "Receipt"
             rec_row["Narration"] = f"Reversal of {ref}" if amount < 0 else ref
-            rec_row["Credits"] = _f3(amount)  # positive = payment, negative = reversal
+            rec_row["Credits"] = _f3(alloc_total)
             rec_row["Portion of Credit Allocated to Interest"] = _f3(float(r.get("alloc_interest_total") or 0))
             rec_row["Credit Allocated to Fees"] = _f3(float(r.get("alloc_fees_total") or 0))
             rec_row["Credit Allocated to Capital"] = _f3(float(r.get("alloc_principal_total") or 0))
@@ -362,7 +386,7 @@ def _generate_periodic_statement(
             else:
                 rec_row["Total Outstanding Balance"] = 0.0
                 rec_row["Arrears"] = 0.0
-            rec_row["Unapplied funds"] = _unapplied_at(vd)
+            rec_row["Unapplied funds"] = _unapplied_at(vd, repayment_id=int(r.get("id") or 0))
             rows.append(rec_row)
             if r.get("id") is not None:
                 try:
@@ -383,11 +407,12 @@ def _generate_periodic_statement(
         if not vd or vd < start or vd > end:
             continue
         amount = float(r.get("amount") or 0)
+        alloc_total = float(r.get("alloc_total") or 0)
         rec_row = _blank_row_periodic()
         rec_row["Due Date"] = vd
         ref = (r.get("customer_reference") or "").strip() or "Receipt"
         rec_row["Narration"] = f"Reversal of {ref}" if amount < 0 else ref
-        rec_row["Credits"] = _f3(amount)
+        rec_row["Credits"] = _f3(alloc_total)
         rec_row["Portion of Credit Allocated to Interest"] = _f3(float(r.get("alloc_interest_total") or 0))
         rec_row["Credit Allocated to Fees"] = _f3(float(r.get("alloc_fees_total") or 0))
         rec_row["Credit Allocated to Capital"] = _f3(float(r.get("alloc_principal_total") or 0))
@@ -398,7 +423,7 @@ def _generate_periodic_statement(
         else:
             rec_row["Total Outstanding Balance"] = 0.0
             rec_row["Arrears"] = 0.0
-        rec_row["Unapplied funds"] = _unapplied_at(vd)
+        rec_row["Unapplied funds"] = _unapplied_at(vd, repayment_id=int(r.get("id") or 0))
         rows.append(rec_row)
 
     # Unapplied ledger movements as explicit periodic rows.
@@ -435,7 +460,7 @@ def _generate_periodic_statement(
         if bal:
             row["Total Outstanding Balance"] = _f3(_total_outstanding(bal))
             row["Arrears"] = _f3(float(bal.get("principal_arrears") or 0))
-        row["Unapplied funds"] = _unapplied_at(vd)
+        row["Unapplied funds"] = _f3(float(u.get("unapplied_running_balance") or 0))
         rows.append(row)
 
     # Current (incomplete) period interest -- emitted BEFORE the non-cash residual
@@ -541,6 +566,19 @@ def generate_customer_facing_statement(
                 "Narration": narration or "",
                 "Debits": 0.0,
                 "Credits": _f3(credits),
+                "Balance": 0.0,
+                "Arrears": arrears,
+                "Unapplied funds": unapplied,
+            })
+        elif narration.startswith("Liquidation of unapplied") or narration.startswith("Unapplied from receipt"):
+            credits_alloc = _to_dec(r.get("Portion of Credit Allocated to Interest") or 0) + \
+                            _to_dec(r.get("Credit Allocated to Fees") or 0) + \
+                            _to_dec(r.get("Credit Allocated to Capital") or 0)
+            out.append({
+                "Due Date": r.get("Due Date"),
+                "Narration": narration,
+                "Debits": 0.0,
+                "Credits": _f3(credits_alloc),
                 "Balance": 0.0,
                 "Arrears": arrears,
                 "Unapplied funds": unapplied,
