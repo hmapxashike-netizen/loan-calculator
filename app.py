@@ -4029,18 +4029,100 @@ def accounting_ui():
             grouped = defaultdict(list)
             for t in templates:
                 grouped[t["event_type"]].append(t)
+            
+            def get_computation_logic(event):
+                logic_map = {
+                    "LOAN_APPROVAL": "Based on Principal, Fees, and Disbursed amounts at Loan Approval.",
+                    "FEE_AMORTISATION": "Monthly amortised portion of deferred fees.",
+                    "DEFERRED_FEE_INCOME_RECOGNITION": "Monthly amortised portion of deferred fees.",
+                    "BILLING_PRINCIPAL_ARREARS": "Computed as (Today's Principal Arrears - Yesterday's + Allocations).",
+                    "PAYMENT_PRINCIPAL": "Actual receipt amount allocated to principal.",
+                    "PAYMENT_PRINCIPAL_NOT_YET_DUE": "Actual receipt amount allocated to principal not yet due.",
+                    "ACCRUAL_REGULAR_INTEREST": "Daily Regular Interest amount from engine.",
+                    "ACCRUAL_PENALTY_INTEREST": "Daily Penalty Interest amount from engine.",
+                    "ACCRUAL_DEFAULT_INTEREST": "Daily Default Interest amount from engine.",
+                    "CLEAR_DAILY_ACCRUAL": "Cleared matching the billed interest amount.",
+                    "BILLING_REGULAR_INTEREST": "Computed as (Today's Interest Arrears - Yesterday's + Allocations).",
+                    "PAYMENT_REGULAR_INTEREST": "Actual receipt amount allocated to regular interest.",
+                    "PAYMENT_REGULAR_INTEREST_NOT_YET_DUE": "Actual receipt amount allocated to regular interest not yet due.",
+                    "PAYMENT_PENALTY_INTEREST": "Actual receipt amount allocated to penalty interest.",
+                    "REVERSAL_PENALTY_INTEREST": "Reversal of previously recorded penalty interest.",
+                    "PAYMENT_DEFAULT_INTEREST": "Actual receipt amount allocated to default interest.",
+                    "REVERSAL_DEFAULT_INTEREST": "Reversal of previously recorded default interest.",
+                    "PROVISION_RAISE": "Computed based on risk bucket provisioning rules.",
+                    "PROVISION_REVERSAL": "Reversal based on improved risk bucket.",
+                    "PRINCIPAL_WRITEOFF": "Amount written off at end of recovery process.",
+                    "INTEREST_WRITEOFF": "Interest amount written off at end of recovery process.",
+                    "WRITEOFF_RECOVERY": "Receipt amount recovered from a previously written-off loan.",
+                    "LOAN_RESTRUCTURE_CAPITALISE": "Capitalisation of arrears during a restructure.",
+                    "RESTRUCTURE_FEE_CHARGE": "Restructure fee applied to the loan.",
+                    "RESTRUCTURE_FEE_AMORTISATION": "Monthly amortised portion of restructure fees.",
+                    "PASS_THROUGH_COST_DISBURSEMENT": "Amount disbursed for third-party costs.",
+                    "PASS_THROUGH_COST_RECOVERY": "Amount recovered for third-party costs.",
+                    "FEES_CHARGES_WRITEOFF": "Fees and charges amount written off.",
+                    "AGENT_COMMISSION_PAYMENT": "Amount paid to agent as commission.",
+                    "COMMISSION_AMORTISATION": "Monthly amortised portion of agent commission.",
+                    "BORROWING_DRAWDOWN": "Drawdown amount from financier.",
+                    "INTEREST_EXPENSE_ACCRUAL": "Monthly accrual of interest expense on borrowings.",
+                    "BORROWING_FEES_AMORTISATION": "Monthly amortization of borrowing fees.",
+                    "BORROWING_REPAYMENT": "Repayment amount of borrowings.",
+                }
+                return logic_map.get(event, "System calculated based on payload.")
+
+            html = [
+                '<style>',
+                '.journal-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-family: sans-serif; font-size: 14px; }',
+                '.journal-table th, .journal-table td { border: 1px solid #ddd !important; padding: 8px !important; text-align: left !important; }',
+                '.journal-table th { background-color: #f2f2f2 !important; font-weight: bold !important; color: #333 !important; }',
+                '.journal-table tr.row-group-start td { border-top: 3px solid #333 !important; }',
+                '.td-dr { color: #0055ff !important; font-weight: bold !important; }',
+                '.td-cr { color: #008800 !important; font-weight: bold !important; }',
+                '</style>',
+                '<table class="journal-table">',
+                '<thead>',
+                '<tr>',
+                '<th>#</th>',
+                '<th>Event</th>',
+                '<th>Trigger</th>',
+                '<th>Computation Logic</th>',
+                '<th>System Tag</th>',
+                '<th>Dr / Cr</th>',
+                '<th>Description</th>',
+                '</tr>',
+                '</thead>',
+                '<tbody>'
+            ]
+            
+            idx = 1
+            for event_type, items in grouped.items():
+                t_type = items[0].get("trigger_type", "EVENT") if items else "EVENT"
+                computation = get_computation_logic(event_type)
                 
-                for event_type, items in grouped.items():
-                    # Get trigger type from the first item (it should be the same for all items in an event)
-                    t_type = items[0].get("trigger_type", "EVENT") if items else "EVENT"
-                    with st.expander(f"⚙️ Event Trigger: {event_type} (Type: {t_type})"):
-                        df_group = pd.DataFrame([{
-                            "System Tag": t["system_tag"],
-                            "Direction": t["direction"],
-                            "Description": t["description"],
-                            "Trigger Type": t.get("trigger_type", "EVENT")
-                        } for t in items])
-                        st.dataframe(df_group, use_container_width=True, hide_index=True)
+                # Sort DEBIT first, then CREDIT
+                items_sorted = sorted(items, key=lambda x: 0 if x["direction"] == "DEBIT" else 1)
+                
+                rowspan = len(items_sorted)
+                
+                for i, t in enumerate(items_sorted):
+                    tr_class = ' class="row-group-start"' if i == 0 else ''
+                    html.append(f'<tr{tr_class}>')
+                    if i == 0:
+                        html.append(f'<td rowspan="{rowspan}">{idx}</td>')
+                        html.append(f'<td rowspan="{rowspan}"><b>{event_type}</b></td>')
+                        html.append(f'<td rowspan="{rowspan}">{t_type}</td>')
+                        html.append(f'<td rowspan="{rowspan}"><i>{computation}</i></td>')
+                        
+                    dr_cr = "Dr" if t["direction"] == "DEBIT" else "Cr"
+                    dr_cr_class = "td-dr" if dr_cr == "Dr" else "td-cr"
+                    html.append(f'<td>{t["system_tag"]}</td>')
+                    html.append(f'<td class="{dr_cr_class}">{dr_cr}</td>')
+                    html.append(f'<td>{t["description"]}</td>')
+                    html.append('</tr>')
+                idx += 1
+                
+            html.append('</tbody></table>')
+            
+            st.markdown("\n".join(html), unsafe_allow_html=True)
         else:
             st.info("No transaction templates defined.")
             
