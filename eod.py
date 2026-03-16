@@ -908,7 +908,7 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                 "ACCRUAL_REGULAR_INTEREST": reg_daily,
                 "ACCRUAL_PENALTY_INTEREST": pen_daily,
                 "ACCRUAL_DEFAULT_INTEREST": def_daily,
-                "ACCRUAL_REGULAR_INTEREST_SUSPENSE": reg_daily,
+                # "ACCRUAL_REGULAR_INTEREST_SUSPENSE": reg_daily, # Disabled until interest_in_suspense flag is implemented to prevent double accrual
                 "BILLING_PRINCIPAL_ARREARS": billed_prin,
                 "BILLING_REGULAR_INTEREST": billed_int,
                 "CLEAR_DAILY_ACCRUAL": billed_int,
