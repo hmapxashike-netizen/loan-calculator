@@ -832,13 +832,106 @@ def _reallocate_receipts_after_reversals(as_of_date: date, sys_cfg: Dict[str, An
 
 def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     """
-    Placeholder for future accounting postings that depend on EOD.
-
-    For now this is a no-op; organisations can plug in their own accounting
-    integration here (e.g. posting journals to a GL system) while keeping
-    the EOD orchestrator stable.
+    Posts accounting journals for end of day activities based on transaction_templates.
+    Dynamically executes templates marked with 'EOD', and 'EOM' if it is the last day of the month.
     """
-    _ = (as_of_date, sys_cfg)  # unused for now
+    try:
+        from accounting_service import AccountingService
+        from decimal import Decimal
+        from datetime import timedelta
+        import calendar
+        
+        svc = AccountingService()
+        yesterday = as_of_date - timedelta(days=1)
+        
+        # Determine if today is EOM
+        _, last_day = calendar.monthrange(as_of_date.year, as_of_date.month)
+        is_eom = (as_of_date.day == last_day)
+        
+        with _get_conn() as conn:
+            with conn.cursor() as cur:
+                # 1. Get events to run today
+                triggers = ['EOD']
+                if is_eom:
+                    triggers.append('EOM')
+                cur.execute("SELECT DISTINCT event_type FROM transaction_templates WHERE trigger_type = ANY(%s)", (triggers,))
+                events_to_run = {row['event_type'] for row in cur.fetchall()}
+
+                if not events_to_run:
+                    return # Nothing to run
+                
+                # 2. Query data needed for amounts
+                cur.execute("""
+                    SELECT t.loan_id, t.regular_interest_daily, t.penalty_interest_daily, t.default_interest_daily,
+                           t.principal_arrears as t_prin_arr, y.principal_arrears as y_prin_arr,
+                           t.interest_arrears_balance as t_int_arr, y.interest_arrears_balance as y_int_arr,
+                           COALESCE(a.alloc_principal_arrears, 0) as alloc_prin_arr,
+                           COALESCE(a.alloc_interest_arrears, 0) as alloc_int_arr,
+                           COALESCE(a.alloc_interest_accrued, 0) as alloc_int_accrued
+                    FROM loan_daily_state t
+                    LEFT JOIN loan_daily_state y ON t.loan_id = y.loan_id AND y.as_of_date = %s
+                    LEFT JOIN (
+                        SELECT lr.loan_id, 
+                               SUM(lra.alloc_principal_arrears) as alloc_principal_arrears,
+                               SUM(lra.alloc_interest_arrears) as alloc_interest_arrears,
+                               SUM(lra.alloc_interest_accrued) as alloc_interest_accrued
+                        FROM loan_repayments lr
+                        JOIN loan_repayment_allocation lra ON lr.id = lra.repayment_id
+                        WHERE COALESCE(lr.value_date, lr.payment_date) = %s
+                        GROUP BY lr.loan_id
+                    ) a ON t.loan_id = a.loan_id
+                    WHERE t.as_of_date = %s
+                """, (yesterday, as_of_date, as_of_date))
+                
+                rows = cur.fetchall()
+        
+        for row in rows:
+            loan_id = row["loan_id"]
+            
+            # Calculate amounts
+            reg_daily = Decimal(str(row["regular_interest_daily"] or 0))
+            pen_daily = Decimal(str(row["penalty_interest_daily"] or 0))
+            def_daily = Decimal(str(row["default_interest_daily"] or 0))
+            
+            y_prin_arr = Decimal(str(row["y_prin_arr"] or 0))
+            t_prin_arr = Decimal(str(row["t_prin_arr"] or 0))
+            alloc_prin_arr = Decimal(str(row["alloc_prin_arr"] or 0))
+            billed_prin = t_prin_arr - y_prin_arr + alloc_prin_arr
+            
+            y_int_arr = Decimal(str(row["y_int_arr"] or 0))
+            t_int_arr = Decimal(str(row["t_int_arr"] or 0))
+            alloc_int_arr = Decimal(str(row["alloc_int_arr"] or 0))
+            billed_int = t_int_arr - y_int_arr + alloc_int_arr
+
+            # Map amounts to dynamic events
+            amounts_map = {
+                "ACCRUAL_REGULAR_INTEREST": reg_daily,
+                "ACCRUAL_PENALTY_INTEREST": pen_daily,
+                "ACCRUAL_DEFAULT_INTEREST": def_daily,
+                "ACCRUAL_REGULAR_INTEREST_SUSPENSE": reg_daily,
+                "BILLING_PRINCIPAL_ARREARS": billed_prin,
+                "BILLING_REGULAR_INTEREST": billed_int,
+                "CLEAR_DAILY_ACCRUAL": billed_int,
+            }
+
+            for event_type in events_to_run:
+                amt = amounts_map.get(event_type, Decimal('0'))
+                if amt > 0:
+                    desc_parts = event_type.replace('_', ' ').title()
+                    svc.post_event(
+                        event_type=event_type,
+                        reference=f"EOD-{as_of_date}-LOAN-{loan_id}",
+                        description=f"{desc_parts} for Loan {loan_id}",
+                        event_id=f"EOD-{as_of_date}-{loan_id}-{event_type}",
+                        created_by="system",
+                        entry_date=as_of_date,
+                        amount=amt
+                    )
+                
+    except Exception as e:
+        import traceback
+        print(f"Failed to post EOD accounting events for {as_of_date}: {e}")
+        traceback.print_exc()
 
 
 def _run_statement_batch(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
