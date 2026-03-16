@@ -638,6 +638,21 @@ def _run_loan_engine_for_date(
             else:
                 days_overdue_save = 1
 
+        # Auto-Suspense Logic
+        suspense_logic = effective_cfg.get("suspension_logic", "Manual")
+        suspense_days = int(effective_cfg.get("suspension_auto_days", 90))
+        is_in_suspense = loan_row.get("interest_in_suspense", False)
+        
+        if suspense_logic == "Automatic" and not is_in_suspense and days_overdue_save >= suspense_days:
+            # Auto-flag the loan
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE loans SET interest_in_suspense = TRUE WHERE id = %s", (loan_id_int,))
+                conn.commit()
+                is_in_suspense = True
+            except Exception as e:
+                print(f"Failed to auto-flag loan {loan_id_int} for suspense: {e}")
+
         # Grace period: only accrue default/penalty when *saved* days_overdue > grace_period_days.
         # When no arrears or within grace, persist 0 for default/penalty daily and balances.
         grace_days = config.grace_period_days
@@ -867,8 +882,10 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                            t.interest_arrears_balance as t_int_arr, y.interest_arrears_balance as y_int_arr,
                            COALESCE(a.alloc_principal_arrears, 0) as alloc_prin_arr,
                            COALESCE(a.alloc_interest_arrears, 0) as alloc_int_arr,
-                           COALESCE(a.alloc_interest_accrued, 0) as alloc_int_accrued
+                           COALESCE(a.alloc_interest_accrued, 0) as alloc_int_accrued,
+                           l.interest_in_suspense
                     FROM loan_daily_state t
+                    JOIN loans l ON t.loan_id = l.id
                     LEFT JOIN loan_daily_state y ON t.loan_id = y.loan_id AND y.as_of_date = %s
                     LEFT JOIN (
                         SELECT lr.loan_id, 
@@ -887,6 +904,7 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
         
         for row in rows:
             loan_id = row["loan_id"]
+            is_in_suspense = row.get("interest_in_suspense", False)
             
             # Calculate amounts
             reg_daily = Decimal(str(row["regular_interest_daily"] or 0))
@@ -905,14 +923,18 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
 
             # Map amounts to dynamic events
             amounts_map = {
-                "ACCRUAL_REGULAR_INTEREST": reg_daily,
                 "ACCRUAL_PENALTY_INTEREST": pen_daily,
                 "ACCRUAL_DEFAULT_INTEREST": def_daily,
-                # "ACCRUAL_REGULAR_INTEREST_SUSPENSE": reg_daily, # Disabled until interest_in_suspense flag is implemented to prevent double accrual
                 "BILLING_PRINCIPAL_ARREARS": billed_prin,
                 "BILLING_REGULAR_INTEREST": billed_int,
                 "CLEAR_DAILY_ACCRUAL": billed_int,
             }
+            
+            # Branch accrual logic based on suspense flag
+            if is_in_suspense:
+                amounts_map["ACCRUAL_REGULAR_INTEREST_SUSPENSE"] = reg_daily
+            else:
+                amounts_map["ACCRUAL_REGULAR_INTEREST"] = reg_daily
 
             for event_type in events_to_run:
                 amt = amounts_map.get(event_type, Decimal('0'))

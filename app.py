@@ -202,6 +202,7 @@ def _get_system_config() -> dict:
         "penalty_balance_basis": "Arrears",
         "payment_waterfall": "Standard",
         "suspension_logic": "Manual",
+        "suspension_auto_days": 90,
         "curing_logic": "Curing",
         "capitalization_of_unpaid_interest": False,
         "penalty_rates": {
@@ -606,12 +607,21 @@ def system_configurations_ui():
                                     st.rerun()
                         with p_sus_tab:
                             sus = p_cfg.get("suspension_logic") or cfg.get("suspension_logic", "Manual")
+                            auto_days = p_cfg.get("suspension_auto_days") or cfg.get("suspension_auto_days", 90)
                             cur = p_cfg.get("curing_logic") or cfg.get("curing_logic", "Curing")
+                            
+                            st.markdown("### Interest in Suspense")
                             sus_choice = st.radio("Suspension logic", ["Manual", "Automatic"], index=0 if sus == "Manual" else 1, key=f"pedit_sus_{pid}")
+                            auto_days_choice = st.number_input("Days overdue for auto-suspension", min_value=1, value=int(auto_days), key=f"pedit_sus_days_{pid}") if sus_choice == "Automatic" else 90
+                            
+                            st.markdown("### Curing")
                             cur_choice = st.radio("Curing logic", ["Curing", "Yo-Yoing"], index=0 if cur == "Curing" else 1, key=f"pedit_cur_{pid}")
+                            
                             if st.button("Save Suspension & curing", key=f"pedit_save_sus_{pid}"):
                                 merge = dict(p_cfg)
                                 merge["suspension_logic"] = sus_choice
+                                if sus_choice == "Automatic":
+                                    merge["suspension_auto_days"] = auto_days_choice
                                 merge["curing_logic"] = cur_choice
                                 if save_product_config_to_db(prod["code"], merge):
                                     st.success("Saved.")
@@ -4686,6 +4696,7 @@ def main():
         [
             "Customers",
             "Loan management",
+            "Interest in Suspense",
             "Teller",
             "Reamortisation",
             "Statements",
@@ -4707,6 +4718,9 @@ def main():
         reamortisation_ui()
     elif nav == "Statements":
         statements_ui()
+    elif nav == "Interest in Suspense":
+        from interest_suspense_ui import render_suspense_ui
+        render_suspense_ui()
     elif nav == "Loan management":
         tab_capture, tab_schedule, tab_calculators = st.tabs(
             ["Loan capture", "View schedule", "Loan calculators"]
