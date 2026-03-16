@@ -13,10 +13,12 @@ def render_suspense_ui():
         with conn.cursor() as cur:
             # Get all active loans
             cur.execute("""
-                SELECT l.id, l.status, l.principal, c.first_name, c.last_name, c.company_name, l.interest_in_suspense
+                SELECT l.id,
+                       l.status,
+                       l.principal,
+                       l.customer_id,
+                       l.interest_in_suspense
                 FROM loans l
-                JOIN customers c ON l.customer_id = c.id
-                WHERE l.status IN ('ACTIVE', 'ARREARS')
                 ORDER BY l.id DESC
             """)
             loans = cur.fetchall()
@@ -29,8 +31,10 @@ def render_suspense_ui():
             options = []
             loan_map = {}
             for row in loans:
-                name = row['company_name'] if row['company_name'] else f"{row['first_name']} {row['last_name']}"
-                label = f"Loan {row['id']} - {name} - Status: {row['status']} - Suspense: {'YES' if row['interest_in_suspense'] else 'NO'}"
+                label = (
+                    f"Loan {row['id']} - Customer {row['customer_id']} "
+                    f"- Status: {row['status']} - Suspense: {'YES' if row['interest_in_suspense'] else 'NO'}"
+                )
                 options.append(label)
                 loan_map[label] = row
             
@@ -39,7 +43,7 @@ def render_suspense_ui():
             if selected:
                 loan = loan_map[selected]
                 st.subheader(f"Loan ID: {loan['id']}")
-                st.write(f"**Customer:** {loan['company_name'] if loan['company_name'] else f'{loan['first_name']} {loan['last_name']}'}")
+                st.write(f"**Customer ID:** {loan['customer_id']}")
                 st.write(f"**Principal:** ${loan['principal']:,.2f}")
                 st.write(f"**Current Status:** {loan['status']}")
                 st.write(f"**Interest in Suspense Flag:** {'YES' if loan['interest_in_suspense'] else 'NO'}")

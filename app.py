@@ -3959,6 +3959,9 @@ def accounting_ui():
     Database-backed Accounting Module.
     """
     from accounting_service import AccountingService
+    from config import get_database_url
+    import psycopg2
+    import psycopg2.extras
     import pandas as pd
     from datetime import datetime
     import streamlit as st
@@ -4414,7 +4417,7 @@ def journals_ui():
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab_manual, tab_templates = st.tabs(["Manual Journals", "Transaction Templates"])
+    tab_manual, tab_adjust = st.tabs(["Manual Journals", "Balance Adjustments"])
 
     with tab_manual:
         st.subheader("Post Manual Journal")
@@ -4490,32 +4493,101 @@ def journals_ui():
                     except Exception as e:
                         st.error(f"Error posting journal: {e}")
 
-    with tab_templates:
-        st.subheader("Transaction Templates (Journal Links)")
-        templates = svc.list_all_transaction_templates()
-        if templates:
-            from collections import defaultdict
-            import pandas as pd
+    with tab_adjust:
+        st.subheader("Balance Adjustment Journal")
+        st.info(
+            "Use this for one-off GL balance corrections. "
+            "Select posting (child) accounts only – parents cannot be posted to."
+        )
 
-            grouped = defaultdict(list)
-            for t in templates:
-                grouped[t["event_type"]].append(t)
+        with st.form("balance_adjust_form"):
+            col_dt, col_amt = st.columns([1, 1])
+            with col_dt:
+                value_date = st.date_input("Value Date", value=_get_system_date())
+            with col_amt:
+                amount = st.number_input("Amount", min_value=0.0, step=0.01)
 
-            for event_type, items in grouped.items():
-                with st.expander(f"⚙️ Event Trigger: {event_type}"):
-                    df_group = pd.DataFrame(
-                        [
-                            {
-                                "System Tag": t["system_tag"],
-                                "Direction": t["direction"],
-                                "Description": t["description"],
-                            }
-                            for t in items
-                        ]
-                    )
-                    st.dataframe(df_group, use_container_width=True, hide_index=True)
-        else:
-            st.info("No transaction templates defined.")
+            # Load GL accounts for selection
+            accounts = svc.list_accounts()
+            account_options = [f"{a['code']} - {a['name']}" for a in accounts]
+
+            col_dr, col_cr = st.columns(2)
+            with col_dr:
+                dr_sel = st.selectbox("Debit Account", account_options, key="bal_adj_dr")
+            with col_cr:
+                cr_sel = st.selectbox("Credit Account", account_options, key="bal_adj_cr")
+
+            narration = st.text_input("Narration / Description", key="bal_adj_narr")
+
+            submitted_adj = st.form_submit_button("Post Balance Adjustment")
+
+        if submitted_adj:
+            dr_code = dr_sel.split(" - ")[0] if dr_sel else None
+            cr_code = cr_sel.split(" - ")[0] if cr_sel else None
+
+            if not dr_code or not cr_code:
+                st.error("Please select both Debit and Credit accounts.")
+            elif dr_code == cr_code:
+                st.error("Debit and Credit accounts must be different.")
+            elif amount <= 0:
+                st.error("Amount must be greater than zero.")
+            elif svc.is_parent_account(dr_code) or svc.is_parent_account(cr_code):
+                st.error("You cannot post directly to parent accounts. Please select posting (child) accounts.")
+            else:
+                try:
+                    # Map codes to account IDs
+                    code_to_id = {a["code"]: a["id"] for a in accounts}
+                    dr_id = code_to_id.get(dr_code)
+                    cr_id = code_to_id.get(cr_code)
+                    if not dr_id or not cr_id:
+                        st.error("Selected accounts could not be resolved. Please refresh and try again.")
+                    else:
+                        conn = psycopg2.connect(
+                            get_database_url(), cursor_factory=psycopg2.extras.RealDictCursor
+                        )
+                        try:
+                            with conn.cursor() as cur:
+                                # Create journal entry header
+                                cur.execute(
+                                    """
+                                    INSERT INTO journal_entries (entry_date, reference, description, event_id, event_tag, created_by)
+                                    VALUES (%s, %s, %s, %s, %s, %s)
+                                    RETURNING id
+                                    """,
+                                    (
+                                        value_date,
+                                        "BAL_ADJ",
+                                        narration or "Balance adjustment journal",
+                                        None,
+                                        "BALANCE_ADJUSTMENT",
+                                        "ui_user",
+                                    ),
+                                )
+                                entry_id = cur.fetchone()["id"]
+
+                                # Debit line
+                                cur.execute(
+                                    """
+                                    INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
+                                    VALUES (%s, %s, %s, %s, %s)
+                                    """,
+                                    (entry_id, dr_id, Decimal(str(amount)), Decimal("0.0"), narration),
+                                )
+                                # Credit line
+                                cur.execute(
+                                    """
+                                    INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
+                                    VALUES (%s, %s, %s, %s, %s)
+                                    """,
+                                    (entry_id, cr_id, Decimal("0.0"), Decimal(str(amount)), narration),
+                                )
+                            conn.commit()
+                            st.success("Balance adjustment journal posted successfully.")
+                            st.experimental_rerun()
+                        finally:
+                            conn.close()
+                except Exception as e:
+                    st.error(f"Error posting balance adjustment journal: {e}")
 
 
 def document_management_ui():

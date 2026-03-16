@@ -870,7 +870,8 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                 if is_eom:
                     triggers.append('EOM')
                 cur.execute("SELECT DISTINCT event_type FROM transaction_templates WHERE trigger_type = ANY(%s)", (triggers,))
-                events_to_run = {row['event_type'] for row in cur.fetchall()}
+                events = cur.fetchall()
+                events_to_run = {row['event_type'] for row in events}
 
                 if not events_to_run:
                     return # Nothing to run
@@ -935,7 +936,6 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                 amounts_map["ACCRUAL_REGULAR_INTEREST_SUSPENSE"] = reg_daily
             else:
                 amounts_map["ACCRUAL_REGULAR_INTEREST"] = reg_daily
-
             for event_type in events_to_run:
                 amt = amounts_map.get(event_type, Decimal('0'))
                 if amt > 0:
