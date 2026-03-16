@@ -185,11 +185,11 @@ class AccountingService:
         finally:
             conn.close()
 
-    def link_journal(self, event_type, system_tag, direction, description):
+    def link_journal(self, event_type, system_tag, direction, description, trigger_type="EVENT"):
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
-            repo.link_journal(event_type, system_tag, direction, description)
+            repo.link_journal(event_type, system_tag, direction, description, trigger_type)
             return True
         finally:
             conn.close()

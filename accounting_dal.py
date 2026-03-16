@@ -142,12 +142,12 @@ class AccountingRepository:
             cur.execute("SELECT * FROM transaction_templates ORDER BY event_type")
             return cur.fetchall()
 
-    def link_journal(self, event_type, system_tag, direction, description):
+    def link_journal(self, event_type, system_tag, direction, description, trigger_type="EVENT"):
         with self.conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO transaction_templates (event_type, system_tag, direction, description)
-                VALUES (%s, %s, %s, %s)
-            """, (event_type, system_tag, direction, description))
+                INSERT INTO transaction_templates (event_type, system_tag, direction, description, trigger_type)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (event_type, system_tag, direction, description, trigger_type))
         self.conn.commit()
 
     def save_journal_entry(self, entry_date, reference, description, event_id, event_tag, created_by, lines):

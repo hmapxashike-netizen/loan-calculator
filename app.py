@@ -2296,14 +2296,60 @@ def capture_loan_ui():
                     st.rerun()
         else:
             st.subheader("Loan summary")
-            sum_col1, sum_col2 = st.columns(2)
+            sum_col1, sum_col2, sum_col3 = st.columns(3)
             with sum_col1:
                 st.markdown(f"**Customer:** {get_display_name(cid)} (ID {cid})")
                 st.markdown(f"**Product:** {st.session_state.get('capture_product_code') or '—'} · **Loan type:** {ltype}")
             with sum_col2:
                 st.markdown(f"**Principal:** {details.get('principal', 0):,.2f}")
                 st.markdown(f"**Disbursed amount:** {details.get('disbursed_amount', 0):,.2f} | **Term:** {details.get('term', 0)} months")
+            with sum_col3:
+                rate_val = details.get('annual_rate') if details.get('annual_rate') is not None else details.get('monthly_rate', 0)
+                st.markdown(f"**Interest Rate:** {rate_val*100:.2f}%")
+                pen_rate = details.get('metadata', {}).get('penalty_rate_pct', details.get('penalty_rate_pct', 0))
+                st.markdown(f"**Penalty Rate:** {pen_rate:.2f}%")
+                
+                # Try explicit amounts first, fallback to calculating from rates
+                d_fee_amt = details.get('drawdown_fee_amount')
+                a_fee_amt = details.get('arrangement_fee_amount')
+                adm_fee_amt = details.get('admin_fee_amount')
+                
+                prin_raw = details.get("principal", details.get("facility", 0))
+                if d_fee_amt is None: d_fee_amt = float(prin_raw) * float(details.get("drawdown_fee") or 0)
+                if a_fee_amt is None: a_fee_amt = float(prin_raw) * float(details.get("arrangement_fee") or 0)
+                if adm_fee_amt is None: adm_fee_amt = float(prin_raw) * float(details.get("admin_fee") or 0)
+                
+                fees = float(d_fee_amt) + float(a_fee_amt) + float(adm_fee_amt)
+                st.markdown(f"**Total Fees:** {fees:,.2f}")
             st.divider()
+            
+            st.subheader("Journal Preview (On Approval)")
+            from accounting_service import AccountingService
+            from decimal import Decimal
+            try:
+                prin_amt = Decimal(str(details.get("principal", details.get("facility", 0))))
+                disb_amt = Decimal(str(details.get("disbursed_amount", details.get("principal", 0))))
+                total_fees_dec = Decimal(str(fees))
+                
+                payload_preview = {
+                    "loan_principal": prin_amt,
+                    "cash_operating": disb_amt,
+                    "deferred_fee_liability": total_fees_dec
+                }
+                preview_lines = AccountingService().simulate_event("LOAN_APPROVAL", payload=payload_preview)
+                if preview_lines:
+                    df_preview = pd.DataFrame([{
+                        "Account": f"{line['account_name']} ({line['account_code']})",
+                        "Debit": float(line['debit']),
+                        "Credit": float(line['credit'])
+                    } for line in preview_lines])
+                    st.dataframe(df_preview, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No transaction templates found for LOAN_APPROVAL. No automated journals will be posted.")
+            except Exception as e:
+                st.warning(f"Could not preview journals: {e}")
+            st.divider()
+
             st.subheader("Schedule")
             st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
             st.divider()
@@ -3463,6 +3509,7 @@ def statements_ui():
     Customer loan statement: select customer/loan, date range; search by customer name or Loan ID.
     GL / ledger statements (later).
     """
+    import pandas as pd
     st.markdown(
         "<div style='background-color: #0F766E; color: white; padding: 8px 12px; "
         "font-weight: bold; font-size: 1.1rem;'>Statements</div>",
@@ -3490,7 +3537,7 @@ def statements_ui():
         "Credit Allocated to Capital": "Credit to Principal",
     }
 
-    tab_loan, tab_gl = st.tabs(["Customer loan statement", "General ledger (later)"])
+    tab_loan, tab_gl = st.tabs(["Customer loan statement", "General Ledger"])
     with tab_loan:
         st.subheader("Customer loan statement")
         st.caption(
@@ -3736,266 +3783,409 @@ def statements_ui():
                         st.exception(ex)
 
     with tab_gl:
-        st.caption("General ledger and ledger account statements will be added here.")
+        st.subheader("General Ledger Statement")
+        
+        from accounting_service import AccountingService
+        svc = AccountingService()
+        
+        gl_col1, gl_col2, gl_col3 = st.columns(3)
+        with gl_col1:
+            sys_date = _get_system_date()
+            gl_start = st.date_input("Start Date", value=sys_date.replace(day=1), key="stmt_gl_start")
+        with gl_col2:
+            gl_end = st.date_input("End Date", value=sys_date, key="stmt_gl_end")
+        with gl_col3:
+            all_accounts = svc.list_accounts()
+            account_options = ["All"] + [f"{a['code']} - {a['name']}" for a in all_accounts]
+            gl_account_sel = st.selectbox("Filter by Account", account_options, key="stmt_gl_acct")
+            
+        account_filter = None if gl_account_sel == "All" else gl_account_sel.split(" - ")[0]
+        
+        if account_filter:
+            # If a parent account is selected, show one summary line per child (net movement for the period).
+            if svc.is_parent_account(account_filter):
+                st.markdown(f"#### Account Statement (Parent Summary): {gl_account_sel}")
+                child_rows = svc.get_child_account_summaries(account_filter, gl_start, gl_end)
+
+                def _fmt_bal(d, c):
+                    net = float(d or 0) - float(c or 0)
+                    if net > 0:
+                        return f"{net:,.2f}", "Dr"
+                    elif net < 0:
+                        return f"{-net:,.2f}", "Cr"
+                    return "0.00", "-"
+
+                summary_rows = []
+                total_dr = 0.0
+                total_cr = 0.0
+                for ch in child_rows:
+                    d = float(ch["debit"] or 0)
+                    c = float(ch["credit"] or 0)
+                    total_dr += d
+                    total_cr += c
+                    bal_val, bal_side = _fmt_bal(d, c)
+                    summary_rows.append(
+                        {
+                            "Child Account": f"{ch['code']} - {ch['name']}",
+                            "Debit": f"{d:,.2f}" if d else "",
+                            "Credit": f"{c:,.2f}" if c else "",
+                            "Net Balance": bal_val,
+                            "Dr/Cr": bal_side,
+                        }
+                    )
+
+                import pandas as pd
+
+                df_summary = pd.DataFrame(summary_rows) if summary_rows else pd.DataFrame(
+                    columns=["Child Account", "Debit", "Credit", "Net Balance", "Dr/Cr"]
+                )
+                st.dataframe(df_summary, use_container_width=True, hide_index=True)
+                if summary_rows:
+                    st.caption(f"Totals for period: Debit {total_dr:,.2f} | Credit {total_cr:,.2f}")
+
+            else:
+                ledger = svc.get_account_ledger(account_filter, start_date=gl_start, end_date=gl_end)
+                if ledger:
+                    st.markdown(f"#### Account Statement: {ledger['account']['code']} - {ledger['account']['name']}")
+                
+                    rows = []
+                    # 1. Opening Balance Row
+                    ob_debit = float(ledger['opening_balance']['ob_debit'] or 0)
+                    ob_credit = float(ledger['opening_balance']['ob_credit'] or 0)
+                    
+                    running_net = ob_debit - ob_credit
+                    
+                    def format_bal(net):
+                        if net > 0:
+                            return f"{net:,.2f}", "Dr"
+                        elif net < 0:
+                            return f"{-net:,.2f}", "Cr"
+                        else:
+                            return "0.00", "-"
+                    
+                    ob_val, ob_type = format_bal(running_net)
+                    
+                    rows.append({
+                        "Date": gl_start.strftime("%Y-%m-%d") if gl_start else "",
+                        "Reference": "",
+                        "Description": "Opening Balance",
+                        "Debit": f"{ob_debit:,.2f}" if ob_debit else "",
+                        "Credit": f"{ob_credit:,.2f}" if ob_credit else "",
+                        "Balance": ob_val,
+                        "Dr/Cr": ob_type
+                    })
+                    
+                    total_dr = ob_debit
+                    total_cr = ob_credit
+                    
+                    for tx in ledger['transactions']:
+                        dr = float(tx['debit'] or 0)
+                        cr = float(tx['credit'] or 0)
+                        total_dr += dr
+                        total_cr += cr
+                        running_net += (dr - cr)
+                        
+                        b_val, b_type = format_bal(running_net)
+                        desc = tx['memo'] if tx['memo'] else tx['description']
+                        
+                        rows.append({
+                            "Date": tx['entry_date'].strftime("%Y-%m-%d") if tx['entry_date'] else "",
+                            "Reference": tx['reference'] or "",
+                            "Description": desc or "",
+                            "Debit": f"{dr:,.2f}" if dr else "",
+                            "Credit": f"{cr:,.2f}" if cr else "",
+                            "Balance": b_val,
+                            "Dr/Cr": b_type
+                        })
+                        
+                    # Calculate closing (only show balance & Dr/Cr, not totals as a row)
+                    cb_val, cb_type = format_bal(running_net)
+                    rows.append({
+                        "Date": gl_end.strftime("%Y-%m-%d") if gl_end else "",
+                        "Reference": "",
+                        "Description": "Closing Balance",
+                        "Debit": "",
+                        "Credit": "",
+                        "Balance": cb_val,
+                        "Dr/Cr": cb_type
+                    })
+                    
+                    df_ledger = pd.DataFrame(rows)
+                    st.dataframe(df_ledger, use_container_width=True, hide_index=True)
+                    st.caption(f"Totals for period: Debit {total_dr:,.2f} | Credit {total_cr:,.2f}")
+                    
+                else:
+                    st.info("Account not found.")
+        else:
+            entries = svc.get_journal_entries(start_date=gl_start, end_date=gl_end, account_code=account_filter)
+            if entries:
+                flat_rows = []
+                for entry in entries:
+                    for line in entry["lines"]:
+                        flat_rows.append({
+                            "Date": entry["entry_date"],
+                            "Reference": entry["reference"],
+                            "Event": entry["event_tag"],
+                            "Account": f"{line['account_name']} ({line['account_code']})",
+                            "Debit": float(line["debit"]),
+                            "Credit": float(line["credit"]),
+                        })
+
+                df_all = pd.DataFrame(flat_rows) if flat_rows else pd.DataFrame(
+                    columns=["Date", "Reference", "Event", "Account", "Debit", "Credit"]
+                )
+                st.dataframe(df_all, use_container_width=True, hide_index=True)
+
+                if not df_all.empty:
+                    st.caption(
+                        f"Totals for period: Debit {df_all['Debit'].sum():.2f} | Credit {df_all['Credit'].sum():.2f}"
+                    )
+            else:
+                st.info("No journal entries found for the selected filters.")
 
 
 def accounting_ui():
     """
-    Accounting configurations: Chart of Accounts, Event mappings, FX rates.
-    Backed by in-memory state (resets when app restarts).
+    Database-backed Accounting Module.
     """
-    registry = _get_mapping_registry()
+    from accounting_service import AccountingService
+    import pandas as pd
+    from datetime import datetime
+    import streamlit as st
+
+    svc = AccountingService()
 
     st.markdown(
         "<div style='background-color: #0F766E; color: white; padding: 8px 12px; "
-        "font-weight: bold; font-size: 1.1rem;'>Accounting</div>",
+        "font-weight: bold; font-size: 1.1rem;'>Accounting Module</div>",
         unsafe_allow_html=True,
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab_coa, tab_mappings, tab_fx = st.tabs(
-        ["Chart of Accounts", "Event mappings", "FX rates"]
+    tab_coa, tab_templates, tab_manual, tab_reports = st.tabs(
+        ["Chart of Accounts", "Transaction Templates", "Manual Journals", "Financial Reports"]
     )
 
-    # Chart of Accounts
+    # 1. Chart of Accounts
     with tab_coa:
         st.subheader("Chart of Accounts")
-        st.caption(
-            "Maintain accounting accounts used for postings. "
-            "Coding rules are enforced by the engine."
-        )
-
-        accounts_list = [
-            {
-                "Code": acc.id,
-                "Name": acc.name,
-                "Category": acc.category.value,
-                "Parent": acc.parent_id or "",
-                "Branch": acc.branch or "",
-                "Product line": acc.product_line or "",
-                "Active": "Yes" if acc.is_active else "No",
-            }
-            for acc in registry.accounts.values()
-        ]
-        if accounts_list:
-            st.dataframe(
-                pd.DataFrame(accounts_list).sort_values("Code"),
-                width="stretch",
-                hide_index=True,
-            )
-        else:
-            st.info("No accounts defined yet. Add the first account below.")
-
+        if not svc.is_coa_initialized():
+            st.warning("Chart of Accounts is not initialized.")
+            if st.button("Initialize Default Chart of Accounts"):
+                svc.initialize_default_coa()
+                st.success("Default Chart of Accounts initialized!")
+                st.rerun()
+        
+        accounts = svc.list_accounts()
+        if accounts:
+            df_accounts = pd.DataFrame([{
+                "Code": a["code"],
+                "Name": a["name"],
+                "Category": a["category"],
+                "System Tag": a["system_tag"] or "",
+                "Parent Code": a["parent_code"] or ""
+            } for a in accounts])
+            st.dataframe(df_accounts, use_container_width=True, hide_index=True)
+        
         st.divider()
-        st.subheader("Add / update account")
-
-        coa_col1, coa_col2 = st.columns(2)
-        with coa_col1:
-            new_code = st.text_input(
-                "Account code",
-                help="7 characters, e.g. A100000 for a parent asset account.",
-                key="acct_code",
-            ).strip()
-            new_name = st.text_input("Account name", key="acct_name").strip()
-        with coa_col2:
-            category_label_to_enum = {
-                c.value.title().replace("_", " "): c for c in AccountCategory
-            }
-            selected_cat_label = st.selectbox(
-                "Category",
-                list(category_label_to_enum.keys()),
-                key="acct_category",
-            )
-            selected_category = category_label_to_enum[selected_cat_label]
-
-            parent_options = ["(None – parent account)"] + sorted(
-                [acc.id for acc in registry.accounts.values() if acc.parent_id is None]
-            )
-            parent_choice = st.selectbox(
-                "Parent account",
-                parent_options,
-                key="acct_parent",
-            )
-            parent_id = None if parent_choice.startswith("(") else parent_choice
-
-        coa_col3, coa_col4 = st.columns(2)
-        with coa_col3:
-            branch = (
-                st.text_input("Branch (optional)", key="acct_branch").strip() or None
-            )
-        with coa_col4:
-            product_line = (
-                st.text_input("Product line (optional)", key="acct_product").strip()
-                or None
-            )
-
-        if st.button("Save account", type="primary", key="acct_save_btn"):
-            if not new_code or not new_name:
-                st.error("Please provide both account code and name.")
-            else:
-                try:
-                    account = Account(
-                        id=new_code,
-                        name=new_name,
-                        category=selected_category,
-                        parent_id=parent_id,
-                        branch=branch,
-                        product_line=product_line,
-                    )
-                    registry.add_or_update_account(account)
-                    st.success(f"Account {new_code} saved.")
-                    st.experimental_rerun()
-                except Exception as e:
-                    st.error(f"Could not save account: {e}")
-
-    # Event mappings
-    with tab_mappings:
-        st.subheader("Event mappings")
-        st.caption(
-            "Map loan lifecycle events to debit/credit accounts. "
-            "These mappings are used by the posting engine."
-        )
-
-        if not registry.accounts:
-            st.warning("Define at least one account in the Chart of Accounts tab first.")
-        else:
-            mapping_rows = [
-                {
-                    "Event": m.event_tag.value,
-                    "Side": m.side.value,
-                    "Role": m.mapping_category.value,
-                    "Account": m.account_id,
-                }
-                for m in registry.mappings
-            ]
-            if mapping_rows:
-                st.dataframe(
-                    pd.DataFrame(mapping_rows),
-                    width="stretch",
-                    hide_index=True,
-                )
-            else:
-                st.info("No event mappings configured yet. Add one below.")
-
-            st.divider()
-            st.subheader("Add / update mapping")
-
-            col_ev1, col_ev2 = st.columns(2)
-            with col_ev1:
-                event_label_to_enum = {
-                    t.value.replace("_", " ").title(): t for t in SystemEventTag
-                }
-                selected_event_label = st.selectbox(
-                    "System event",
-                    list(event_label_to_enum.keys()),
-                    key="map_event",
-                )
-                selected_event = event_label_to_enum[selected_event_label]
-
-                side_label_to_enum = {
-                    "Debit": PostingSide.DEBIT,
-                    "Credit": PostingSide.CREDIT,
-                }
-                selected_side_label = st.radio(
-                    "Posting side",
-                    list(side_label_to_enum.keys()),
-                    key="map_side",
-                )
-                selected_side = side_label_to_enum[selected_side_label]
-
-            with col_ev2:
-                role_label_to_enum = {
-                    r.value.replace("_", " ").title(): r for r in MappingCategory
-                }
-                selected_role_label = st.selectbox(
-                    "Logical role",
-                    list(role_label_to_enum.keys()),
-                    key="map_role",
-                )
-                selected_role = role_label_to_enum[selected_role_label]
-
-                account_ids = sorted(registry.accounts.keys())
-                selected_account_id = st.selectbox(
-                    "Account code",
-                    account_ids,
-                    key="map_account",
-                )
-
-            if st.button("Save mapping", type="primary", key="map_save_btn"):
-                try:
-                    mapping = EventAccountMapping(
-                        event_tag=selected_event,
-                        side=selected_side,
-                        mapping_category=selected_role,
-                        account_id=selected_account_id,
-                    )
-                    registry.add_or_update_mapping(mapping, user_id="ui_admin")
-                    st.success("Mapping saved.")
-                    st.experimental_rerun()
-                except Exception as e:
-                    st.error(f"Could not save mapping: {e}")
-
-    # FX rates
-    with tab_fx:
-        st.subheader("FX rates")
-        st.caption(
-            "Maintain simple FX rates to a base currency (e.g. USD). "
-            "These are stored in memory only and reset when the app restarts."
-        )
-
-        fx_rates = _get_fx_rates()
-        if fx_rates:
-            st.dataframe(
-                pd.DataFrame(fx_rates),
-                width="stretch",
-                hide_index=True,
-            )
-        else:
-            st.info("No FX rates configured yet.")
-
-        st.divider()
-        fx_c1, fx_c2, fx_c3 = st.columns(3)
-        with fx_c1:
-            cur = st.text_input(
-                "Currency code", placeholder="e.g. ZWL", key="fx_currency"
-            ).upper()
-        with fx_c2:
-            rate = st.number_input(
-                "Rate to base",
-                min_value=0.0,
-                value=0.0,
-                step=0.0001,
-                format="%.4f",
-                key="fx_rate",
-            )
-        with fx_c3:
-            as_of = st.date_input(
-                "As of date",
-                value=datetime.today().date(),
-                key="fx_as_of",
-            )
-
-        if st.button("Add / update FX rate", type="primary", key="fx_save_btn"):
-            if not cur:
-                st.error("Please enter a currency code.")
-            elif rate <= 0:
-                st.error("Rate must be greater than zero.")
-            else:
-                existing = next((r for r in fx_rates if r["currency"] == cur), None)
-                if existing:
-                    existing["rate_to_base"] = float(rate)
-                    existing["as_of"] = as_of.isoformat()
+        st.subheader("Add Custom Account")
+        with st.form("add_account_form"):
+            code = st.text_input("Account Code (e.g. A100003)")
+            name = st.text_input("Account Name")
+            category = st.selectbox("Category", ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"])
+            system_tag = st.text_input("System Tag (Optional)")
+            submitted = st.form_submit_button("Create Account")
+            if submitted:
+                if code and name:
+                    svc.create_account(code, name, category, system_tag if system_tag else None)
+                    st.success("Account created!")
+                    st.rerun()
                 else:
-                    fx_rates.append(
-                        {
-                            "currency": cur,
-                            "rate_to_base": float(rate),
-                            "as_of": as_of.isoformat(),
-                        }
-                    )
-                st.session_state["accounting_fx_rates"] = fx_rates
-                st.success(f"FX rate for {cur} saved.")
+                    st.error("Code and Name are required.")
 
+    # 2. Transaction Templates
+    with tab_templates:
+        st.subheader("Transaction Templates (Journal Links)")
+
+        # Show current template counts (helps confirm reset)
+        _templates_now = svc.list_all_transaction_templates()
+        _event_count = len(set([t["event_type"] for t in _templates_now])) if _templates_now else 0
+        st.caption(f"Currently loaded: {_event_count} event types / {len(_templates_now)} journal legs.")
+
+        if st.button("Reset Default Transaction Templates"):
+            try:
+                svc.initialize_default_transaction_templates()
+                st.session_state["tt_reset_ok"] = True
+            except Exception as e:
+                st.session_state["tt_reset_ok"] = False
+                st.error(f"Reset failed: {e}")
+
+        if st.session_state.get("tt_reset_ok"):
+            st.success("Default Transaction Templates reset successfully.")
+                
+        templates = svc.list_all_transaction_templates()
+        if templates:
+            from collections import defaultdict
+            grouped = defaultdict(list)
+            for t in templates:
+                grouped[t["event_type"]].append(t)
+                
+                for event_type, items in grouped.items():
+                    # Get trigger type from the first item (it should be the same for all items in an event)
+                    t_type = items[0].get("trigger_type", "EVENT") if items else "EVENT"
+                    with st.expander(f"⚙️ Event Trigger: {event_type} (Type: {t_type})"):
+                        df_group = pd.DataFrame([{
+                            "System Tag": t["system_tag"],
+                            "Direction": t["direction"],
+                            "Description": t["description"],
+                            "Trigger Type": t.get("trigger_type", "EVENT")
+                        } for t in items])
+                        st.dataframe(df_group, use_container_width=True, hide_index=True)
+        else:
+            st.info("No transaction templates defined.")
+            
+        st.divider()
+        st.subheader("Link New Journal (Double Entry)")
+        with st.form("add_template_form"):
+            evt = st.text_input("Event Type (e.g., LOAN_DISBURSEMENT)")
+            trigger_type = st.selectbox("Trigger Type", ["EVENT", "EOD", "EOM"], index=0)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Debit Leg**")
+                debit_tag = st.text_input("System Tag to Debit (e.g., loan_principal)")
+            
+            with col2:
+                st.markdown("**Credit Leg**")
+                credit_tag = st.text_input("System Tag to Credit (e.g., cash_operating)")
+                
+            desc = st.text_input("Description / Memo")
+            submitted2 = st.form_submit_button("Add Journal Link")
+            
+            if submitted2 and evt and debit_tag and credit_tag:
+                # Add the debit leg
+                svc.link_journal(evt, debit_tag, "DEBIT", desc, trigger_type)
+                # Add the credit leg
+                svc.link_journal(evt, credit_tag, "CREDIT", desc, trigger_type)
+                st.success(f"Double-entry journal for {evt} added successfully!")
+                st.rerun()
+            elif submitted2:
+                st.error("Please provide the Event Type, Debit Tag, and Credit Tag.")
+
+    # 3. Manual Journals
+    with tab_manual:
+        st.subheader("Manual Journals")
+        st.info("Day-to-day manual postings should now be done via the standalone **Journals** menu in the left navigation.")
+
+    # 5. Reports
+    with tab_reports:
+        st.subheader("Financial Reports")
+        rep_tb, rep_pl, rep_bs, rep_eq, rep_cf = st.tabs([
+            "Trial Balance", "Profit & Loss", "Balance Sheet", "Statement of Equity", "Cash Flow"
+        ])
+        
+        with rep_tb:
+            st.markdown("### Trial Balance")
+            sys_date = _get_system_date()
+            tb_as_of = st.date_input("As of Date", value=sys_date, key="tb_as_of")
+            
+            if st.button("Generate Trial Balance"):
+                tb = svc.get_trial_balance(tb_as_of)
+                if tb:
+                    df_tb = pd.DataFrame([{
+                        "Code": r["code"], "Name": r["name"], "Category": r["category"],
+                        "Debit": float(r["debit"]), "Credit": float(r["credit"])
+                    } for r in tb])
+                    st.dataframe(df_tb, use_container_width=True, hide_index=True)
+                    st.write(f"**Total Debits:** {df_tb['Debit'].sum():.2f} | **Total Credits:** {df_tb['Credit'].sum():.2f}")
+                else:
+                    st.info("No data.")
+                
+        with rep_pl:
+            st.markdown("### Profit and Loss")
+            sys_date = _get_system_date()
+            pl_dates = st.date_input(
+                "Date Range", 
+                value=(sys_date.replace(day=1), sys_date), 
+                key="pl_dates"
+            )
+            
+            if st.button("Generate P&L"):
+                if isinstance(pl_dates, (tuple, list)):
+                    pl_start = pl_dates[0] if len(pl_dates) > 0 else sys_date
+                    pl_as_of = pl_dates[1] if len(pl_dates) > 1 else pl_start
+                else:
+                    pl_start = pl_as_of = pl_dates
+                    
+                pl = svc.get_profit_and_loss(pl_start, pl_as_of)
+                if pl:
+                    df_pl = pd.DataFrame([{
+                        "Code": r["code"], "Name": r["name"], "Category": r["category"],
+                        "Balance": float(r["credit"] - r["debit"]) if r["category"] == "INCOME" else float(r["debit"] - r["credit"])
+                    } for r in pl])
+                    st.dataframe(df_pl, use_container_width=True)
+                else:
+                    st.info("No data.")
+
+        with rep_bs:
+            st.markdown("### Balance Sheet")
+            sys_date = _get_system_date()
+            bs_as_of = st.date_input("As of Date", value=sys_date, key="bs_as_of")
+            if st.button("Generate Balance Sheet"):
+                bs = svc.get_balance_sheet(bs_as_of)
+                if bs:
+                    df_bs = pd.DataFrame([{
+                        "Code": r["code"], "Name": r["name"], "Category": r["category"],
+                        "Balance": float(r["debit"] - r["credit"]) if r["category"] == "ASSET" else float(r["credit"] - r["debit"])
+                    } for r in bs])
+                    st.dataframe(df_bs, use_container_width=True)
+                else:
+                    st.info("No data.")
+
+        with rep_eq:
+            st.markdown("### Statement of Changes in Equity")
+            sys_date = _get_system_date()
+            eq_dates = st.date_input(
+                "Date Range", 
+                value=(sys_date.replace(day=1), sys_date), 
+                key="eq_dates"
+            )
+                
+            if st.button("Generate Statement of Equity"):
+                if isinstance(eq_dates, (tuple, list)):
+                    eq_start = eq_dates[0] if len(eq_dates) > 0 else sys_date
+                    eq_as_of = eq_dates[1] if len(eq_dates) > 1 else eq_start
+                else:
+                    eq_start = eq_as_of = eq_dates
+                    
+                eq = svc.get_statement_of_changes_in_equity(eq_start, eq_as_of)
+                if eq:
+                    df_eq = pd.DataFrame([{
+                        "Code": r["code"], "Name": r["name"], "Category": r["category"],
+                        "Balance": float(r["credit"] - r["debit"])
+                    } for r in eq])
+                    st.dataframe(df_eq, use_container_width=True)
+                else:
+                    st.info("No data.")
+
+        with rep_cf:
+            st.markdown("### Statement of Cash Flows (Indirect)")
+            sys_date = _get_system_date()
+            cf_dates = st.date_input(
+                "Date Range", 
+                value=(sys_date.replace(day=1), sys_date), 
+                key="cf_dates"
+            )
+                
+            if st.button("Generate Cash Flow"):
+                if isinstance(cf_dates, (tuple, list)):
+                    cf_start = cf_dates[0] if len(cf_dates) > 0 else sys_date
+                    cf_as_of = cf_dates[1] if len(cf_dates) > 1 else cf_start
+                else:
+                    cf_start = cf_as_of = cf_dates
+                    
+                cf = svc.get_cash_flow_statement(cf_start, cf_as_of)
+                st.json(cf)
 
 def notifications_ui():
     st.header("Notifications Module")
@@ -4112,6 +4302,128 @@ def notifications_ui():
                 df_history = df_history[df_history["status"] == filter_status]
                 
             st.dataframe(df_history, hide_index=True, use_container_width=True)
+
+
+def journals_ui():
+    """
+    Standalone Journals module for operational users.
+    Focuses on posting manual journals using configured templates.
+    """
+    from accounting_service import AccountingService
+    from datetime import datetime
+    from decimal import Decimal
+
+    svc = AccountingService()
+
+    st.markdown(
+        "<div style='background-color: #0F766E; color: white; padding: 8px 12px; "
+        "font-weight: bold; font-size: 1.1rem;'>Journals</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    tab_manual, tab_templates = st.tabs(["Manual Journals", "Transaction Templates"])
+
+    with tab_manual:
+        st.subheader("Post Manual Journal")
+        with st.form("journals_manual_journal_form"):
+            col_cust, col_loan = st.columns(2)
+            with col_cust:
+                st.info("Ensure the loan ID belongs to the target customer if posting to a loan.")
+            with col_loan:
+                loan_id = st.text_input("Loan ID (Optional)", help="Leave blank for general journals")
+
+            templates_all = svc.list_all_transaction_templates()
+            event_types = sorted(list(set([t["event_type"] for t in templates_all])))
+
+            event_type = st.selectbox("Journal Template (Event Type)", event_types)
+
+            amount = st.number_input("Amount", min_value=0.0, step=0.01)
+            description = st.text_input("Narration (Description)")
+            is_reversal = st.checkbox("Reverse Entry (Swaps Debits and Credits)", value=False)
+
+            journal_to_reverse = None
+            if is_reversal:
+                # Allow user to pick the exact journal entry to reverse (by event and optional loan id)
+                all_entries = svc.get_journal_entries()
+                candidates = [
+                    e
+                    for e in all_entries
+                    if e["event_tag"] == event_type
+                    and (not loan_id or (e.get("event_id") == loan_id))
+                ]
+                if candidates:
+                    labels = [
+                        f"{e['entry_date']} | {e.get('reference') or ''} | {e['event_tag']} (ID: {e['id']})"
+                        for e in candidates
+                    ]
+                    sel = st.selectbox(
+                        "Journal to reverse",
+                        labels,
+                        help="Pick the original journal entry you want to reverse.",
+                    )
+                    journal_to_reverse = candidates[labels.index(sel)]
+                else:
+                    st.info(
+                        "No matching journals found to reverse for this template "
+                        "and (if provided) Loan ID."
+                    )
+
+            submitted3 = st.form_submit_button("Post Journal")
+            if submitted3:
+                if not event_type or amount <= 0:
+                    st.error("Please select a template and enter an amount > 0.")
+                elif is_reversal and journal_to_reverse is None:
+                    st.error("Please select the original journal you want to reverse.")
+                else:
+                    ref = f"MANUAL-{int(datetime.now().timestamp())}"
+                    # If reversing, tag description/reference with original entry
+                    if is_reversal and journal_to_reverse:
+                        ref = f"REV-{journal_to_reverse.get('reference') or journal_to_reverse['id']}"
+                        if not description:
+                            description = f"Reversal of entry {journal_to_reverse['id']}"
+                    try:
+                        svc.post_event(
+                            event_type=event_type,
+                            reference=ref,
+                            description=description,
+                            event_id=loan_id or (journal_to_reverse.get("event_id") if journal_to_reverse else "MANUAL"),
+                            created_by="ui_user",
+                            entry_date=datetime.today().date(),
+                            amount=Decimal(str(amount)),
+                            is_reversal=is_reversal,
+                        )
+                        st.success("Manual Journal Posted Successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error posting journal: {e}")
+
+    with tab_templates:
+        st.subheader("Transaction Templates (Journal Links)")
+        templates = svc.list_all_transaction_templates()
+        if templates:
+            from collections import defaultdict
+            import pandas as pd
+
+            grouped = defaultdict(list)
+            for t in templates:
+                grouped[t["event_type"]].append(t)
+
+            for event_type, items in grouped.items():
+                with st.expander(f"⚙️ Event Trigger: {event_type}"):
+                    df_group = pd.DataFrame(
+                        [
+                            {
+                                "System Tag": t["system_tag"],
+                                "Direction": t["direction"],
+                                "Description": t["description"],
+                            }
+                            for t in items
+                        ]
+                    )
+                    st.dataframe(df_group, use_container_width=True, hide_index=True)
+        else:
+            st.info("No transaction templates defined.")
 
 
 def document_management_ui():
@@ -4296,6 +4608,7 @@ def main():
             "Reamortisation",
             "Statements",
             "Accounting",
+            "Journals",
             "Notifications",
             "Document Management",
             "End of day",
@@ -4337,6 +4650,8 @@ def main():
                 customised_repayments_ui()
     elif nav == "Accounting":
         accounting_ui()
+    elif nav == "Journals":
+        journals_ui()
     elif nav == "Notifications":
         notifications_ui()
     elif nav == "Document Management":

@@ -445,6 +445,40 @@ def save_loan(
                     (schedule_id, period, period_date, payment, principal, interest, principal_balance, total_outstanding),
                 )
 
+    try:
+        from accounting_service import AccountingService
+        from decimal import Decimal
+        svc = AccountingService()
+        
+        prin_amt = Decimal(str(as_10dp(details.get("principal", details.get("facility", 0)))))
+        disb_amt = Decimal(str(as_10dp(details.get("disbursed_amount", details.get("principal", 0)))))
+        
+        drawdown_fee = Decimal(str(as_10dp(details.get("drawdown_fee_amount") or (float(prin_amt) * float(details.get("drawdown_fee") or 0)))))
+        arrangement_fee = Decimal(str(as_10dp(details.get("arrangement_fee_amount") or (float(prin_amt) * float(details.get("arrangement_fee") or 0)))))
+        admin_fee = Decimal(str(as_10dp(details.get("admin_fee_amount") or (float(prin_amt) * float(details.get("admin_fee") or 0)))))
+        total_fees = drawdown_fee + arrangement_fee + admin_fee
+        
+        payload = {
+            "loan_principal": prin_amt,
+            "cash_operating": disb_amt,
+            "deferred_fee_liability": total_fees
+        }
+        
+        disb_date_str = details.get("disbursement_date") or details.get("start_date")
+        e_date = _date_conv(disb_date_str) if disb_date_str else None
+        
+        svc.post_event(
+            event_type="LOAN_APPROVAL",
+            reference=f"LOAN-{loan_id}",
+            description=f"Loan Approval and Disbursement for {loan_id}",
+            event_id=str(loan_id),
+            created_by="system",
+            entry_date=e_date,
+            payload=payload
+        )
+    except Exception as e:
+        print(f"Failed to post LOAN_APPROVAL journal for loan {loan_id}: {e}")
+
     return loan_id
 
 
@@ -2549,6 +2583,72 @@ def allocate_repayment_waterfall(
                     event_type,
                 ),
             )
+
+            try:
+                from accounting_service import AccountingService
+                from decimal import Decimal
+                svc = AccountingService()
+                
+                payload = {
+                    "cash_operating": Decimal(str(amount)),
+                    "loan_principal": Decimal(str(alloc_principal_not_due)),
+                    "principal_arrears": Decimal(str(alloc_principal_arrears)),
+                    "regular_interest_accrued": Decimal(str(alloc_interest_accrued)),
+                    "regular_interest_arrears": Decimal(str(alloc_interest_arrears)),
+                    "penalty_interest_asset": Decimal(str(alloc_penalty_interest)),
+                    "penalty_interest_suspense": Decimal(str(alloc_penalty_interest)),
+                    "penalty_interest_income": Decimal(str(alloc_penalty_interest)),
+                    "default_interest_asset": Decimal(str(alloc_default_interest)),
+                    "default_interest_suspense": Decimal(str(alloc_default_interest)),
+                    "default_interest_income": Decimal(str(alloc_default_interest)),
+                }
+                
+                if alloc_principal_total > 0:
+                    svc.post_event(
+                        event_type="PAYMENT_PRINCIPAL",
+                        reference=f"REPAY-{repayment_id}",
+                        description=f"Principal Payment for Repayment {repayment_id}",
+                        event_id=f"REPAY-{repayment_id}-PRIN",
+                        created_by="system",
+                        entry_date=eff_date,
+                        payload=payload
+                    )
+                
+                if alloc_interest_total > 0:
+                    svc.post_event(
+                        event_type="PAYMENT_REGULAR_INTEREST",
+                        reference=f"REPAY-{repayment_id}",
+                        description=f"Interest Payment for Repayment {repayment_id}",
+                        event_id=f"REPAY-{repayment_id}-INT",
+                        created_by="system",
+                        entry_date=eff_date,
+                        payload=payload
+                    )
+                    
+                if alloc_penalty_interest > 0:
+                    svc.post_event(
+                        event_type="PAYMENT_PENALTY_INTEREST",
+                        reference=f"REPAY-{repayment_id}",
+                        description=f"Penalty Payment for Repayment {repayment_id}",
+                        event_id=f"REPAY-{repayment_id}-PEN",
+                        created_by="system",
+                        entry_date=eff_date,
+                        payload=payload
+                    )
+
+                if alloc_default_interest > 0:
+                    svc.post_event(
+                        event_type="PAYMENT_DEFAULT_INTEREST",
+                        reference=f"REPAY-{repayment_id}",
+                        description=f"Default Interest Payment for Repayment {repayment_id}",
+                        event_id=f"REPAY-{repayment_id}-DEF",
+                        created_by="system",
+                        entry_date=eff_date,
+                        payload=payload
+                    )
+                
+            except Exception as e:
+                print(f"Failed to post repayment journals for {repayment_id}: {e}")
 
             new_interest_accrued = max(0.0, balances["interest_accrued_balance"] - alloc_interest_accrued)
             new_interest_arrears = max(0.0, balances["interest_arrears_balance"] - alloc_interest_arrears)
