@@ -116,15 +116,17 @@ class AccountingService:
             ("COMMISSION_AMORTISATION", "fees_commission_expense", "DEBIT", "Monthly amortisation of commission", "EOM"),
             ("COMMISSION_AMORTISATION", "deferred_fee_commission_asset", "CREDIT", "Monthly amortisation of commission", "EOM"),
 
-            # 34–37. Borrowings (configured for completeness)
-            ("BORROWING_DRAWDOWN", "cash_operating", "DEBIT", "Drawdown on a borrowing from a financier", "EVENT"),
-            ("BORROWING_DRAWDOWN", "borrowings_loan_principal", "CREDIT", "Drawdown on a borrowing from a financier", "EVENT"),
-            ("INTEREST_EXPENSE_ACCRUAL", "interest_expense", "DEBIT", "Monthly accrual of interest expense", "EOM"),
-            ("INTEREST_EXPENSE_ACCRUAL", "interest_payable", "CREDIT", "Monthly accrual of interest expense", "EOM"),
-            ("BORROWING_FEES_AMORTISATION", "amortization_borrowing_fees", "DEBIT", "Amortization of borrowing fees", "EOM"),
-            ("BORROWING_FEES_AMORTISATION", "deferred_fee_asset_borrowings", "CREDIT", "Amortization of borrowing fees", "EOM"),
+            # 34–37. Borrowings (aligned with GL mapping sheet)
+            ("BORROWING_DRAWDOWN", "cash_operating", "DEBIT", "Drawdown on a borrowing from a Financier", "EVENT"),
+            ("BORROWING_DRAWDOWN", "deferred_fee_asset_borrowings", "DEBIT", "Drawdown on a borrowing from a Financier - fees paid", "EVENT"),
+            ("BORROWING_DRAWDOWN", "borrowings_loan_principal", "CREDIT", "Drawdown on a borrowing from a Financier - principal owed", "EVENT"),
+            ("INTEREST_EXPENSE_ACCRUAL", "interest_expense", "DEBIT", "Monthly Accrual of interest expense", "EOM"),
+            ("INTEREST_EXPENSE_ACCRUAL", "interest_payable", "CREDIT", "Monthly Accrual of interest expense", "EOM"),
+            ("BORROWING_FEES_AMORTISATION", "amortization_borrowing_fees", "DEBIT", "Amortization of Loan Fees", "EOM"),
+            ("BORROWING_FEES_AMORTISATION", "deferred_fee_asset_borrowings", "CREDIT", "Amortization of Loan Fees", "EOM"),
             ("BORROWING_REPAYMENT", "borrowings_loan_principal", "DEBIT", "Payment of borrowings", "EVENT"),
-            ("BORROWING_REPAYMENT", "cash_operating", "CREDIT", "Payment of borrowings", "EVENT"),
+            ("BORROWING_REPAYMENT", "interest_payable", "DEBIT", "Payment of borrowings - interest component", "EVENT"),
+            ("BORROWING_REPAYMENT", "cash_operating", "CREDIT", "Payment of borrowings - cash outflow", "EVENT"),
         ]
         conn = get_conn()
         try:
@@ -182,6 +184,22 @@ class AccountingService:
         try:
             repo = AccountingRepository(conn)
             return repo.list_all_transaction_templates()
+        finally:
+            conn.close()
+
+    def update_transaction_template(self, template_id: str, **fields) -> None:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.update_transaction_template(template_id, **fields)
+        finally:
+            conn.close()
+
+    def delete_transaction_template(self, template_id: str) -> None:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.delete_transaction_template(template_id)
         finally:
             conn.close()
 
@@ -267,6 +285,117 @@ class AccountingService:
         finally:
             conn.close()
 
+    # Receipt GL mapping helpers
+
+    def is_receipt_gl_mapping_initialized(self) -> bool:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.is_receipt_gl_mapping_initialized()
+        finally:
+            conn.close()
+
+    def _build_default_receipt_gl_mappings(self):
+        """Build default allocation→event mappings (originals + reversals)."""
+        ORIGINALS = [
+            ("alloc_principal_arrears", "PAYMENT_PRINCIPAL"),
+            ("alloc_principal_not_due", "PAYMENT_PRINCIPAL_NOT_YET_DUE"),
+            ("alloc_interest_arrears", "PAYMENT_REGULAR_INTEREST"),
+            ("alloc_interest_accrued", "PAYMENT_REGULAR_INTEREST_NOT_YET_DUE"),
+            ("alloc_penalty_interest", "PAYMENT_PENALTY_INTEREST"),
+            ("alloc_default_interest", "PAYMENT_DEFAULT_INTEREST"),
+            ("alloc_regular_interest", "PAYMENT_REGULAR_INTEREST_SUSPENSE"),
+            ("alloc_regular_interest", "PAYMENT_REGULAR_INTEREST_ACCRUED"),
+            ("alloc_fees_charges", "PASS_THROUGH_COST_RECOVERY"),
+        ]
+        rows = []
+        for i, (alloc_key, evt) in enumerate(ORIGINALS):
+            rows.append(("SAVE_RECEIPT", alloc_key, evt, alloc_key, 1, 10 + i))
+        for i, (alloc_key, evt) in enumerate(ORIGINALS):
+            rows.append(("SAVE_REVERSAL", alloc_key, evt, alloc_key, -1, 100 + i))
+        return rows
+
+    def initialize_default_receipt_gl_mappings(self) -> bool:
+        """
+        Load default allocation→event mappings. Only runs if table is empty.
+        Returns True if defaults were loaded, False if already initialized.
+        """
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            if repo.is_receipt_gl_mapping_initialized():
+                return False
+            repo.initialize_default_receipt_gl_mappings(self._build_default_receipt_gl_mappings())
+            return True
+        finally:
+            conn.close()
+
+    def reset_receipt_gl_mappings_to_defaults(self) -> None:
+        """
+        Clear all mappings and reload defaults. Use to see updated default definitions.
+        """
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.reset_receipt_gl_mappings(self._build_default_receipt_gl_mappings())
+        finally:
+            conn.close()
+
+    def list_receipt_gl_mappings(self):
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.list_receipt_gl_mappings()
+        finally:
+            conn.close()
+
+    def upsert_receipt_gl_mapping(
+        self,
+        *,
+        mapping_id=None,
+        trigger_source,
+        allocation_key,
+        event_type,
+        amount_source,
+        amount_sign=1,
+        is_active=True,
+        priority=100,
+    ):
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.upsert_receipt_gl_mapping(
+                mapping_id=mapping_id,
+                trigger_source=trigger_source,
+                allocation_key=allocation_key,
+                event_type=event_type,
+                amount_source=amount_source,
+                amount_sign=amount_sign,
+                is_active=is_active,
+                priority=priority,
+            )
+        finally:
+            conn.close()
+
+    def delete_receipt_gl_mapping(self, mapping_id: int):
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.delete_receipt_gl_mapping(mapping_id)
+        finally:
+            conn.close()
+
+    def get_account_hybrid_balance(self, account_code: str, start_date: date, end_date: date):
+        """
+        Service wrapper for the hybrid balance / hierarchy report for a given account code.
+        """
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.get_account_hybrid_balance(account_code, start_date, end_date)
+        finally:
+            conn.close()
+
     def simulate_event(self, event_type: str, amount: Decimal = None, payload: dict = None, is_reversal: bool = False):
         if payload is None:
             payload = {}
@@ -345,10 +474,67 @@ class AccountingService:
                         "credit": credit,
                         "memo": tmpl["description"] or description
                     })
-            
+
+            # Defensive check: ensure we are not posting to parent accounts
+            # after they have transitioned to parent mode. The database trigger
+            # will enforce this, but we fail fast here for clearer error
+            # messages at the service layer.
+            if lines:
+                self._validate_not_posting_to_parent_after_transition(conn, entry_date, lines)
+
             if lines:
                 repo.save_journal_entry(entry_date, reference, description, event_id, event_type, created_by, lines)
         except Exception as e:
             raise e
+        finally:
+            conn.close()
+
+    def _validate_not_posting_to_parent_after_transition(self, conn, entry_date: date, lines):
+        """
+        Service‑level guard that mirrors the database trigger preventing
+        postings to parent accounts after their transition timestamp.
+        """
+        if not lines:
+            return
+
+        account_ids = [line["account_id"] for line in lines]
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, code, is_parent, transitioned_to_parent_at
+                FROM accounts
+                WHERE id = ANY(%s)
+                """,
+                (account_ids,),
+            )
+            rows = cur.fetchall()
+
+        accounts = {row["id"]: row for row in rows}
+
+        # Compare using a date boundary; transitioned_to_parent_at is a timestamp.
+        for line in lines:
+            acc = accounts.get(line["account_id"])
+            if not acc:
+                continue
+            if acc["is_parent"] and acc["transitioned_to_parent_at"] is not None:
+                # If the journal entry date is after the transition timestamp's date,
+                # treat it as a forbidden posting.
+                if entry_date > acc["transitioned_to_parent_at"].date():
+                    raise ValueError(
+                        f"Account {acc['code']} is a parent and cannot accept postings "
+                        f"after {acc['transitioned_to_parent_at'].date()}."
+                    )
+
+    def convert_to_parent(self, account_id: str) -> bool:
+        """
+        Service wrapper for the convert_to_parent(account_id) helper, which
+        transitions a standalone account into a parent account.
+        """
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.convert_to_parent(account_id)
+            return True
         finally:
             conn.close()

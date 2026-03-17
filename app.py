@@ -2918,7 +2918,21 @@ def teller_ui():
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab_single, tab_batch, tab_reverse = st.tabs(["Single repayment", "Batch payments", "Reverse receipt"])
+    # Extend Teller module with dedicated GL tabs for borrowings and write‑off recoveries.
+    from accounting_service import AccountingService
+    from decimal import Decimal
+
+    acct_svc = AccountingService()
+
+    tab_single, tab_batch, tab_reverse, tab_borrowing_payment, tab_writeoff_recovery = st.tabs(
+        [
+            "Single repayment",
+            "Batch payments",
+            "Reverse receipt",
+            "Payment of borrowings",
+            "Receipt from fully written-off loan",
+        ]
+    )
 
     with tab_single:
         st.subheader("Single repayment capture")
@@ -3177,6 +3191,163 @@ def teller_ui():
                                     )
                                 except Exception as e:
                                     st.error(f"Could not reverse receipt {target_id}: {e}")
+                                    st.exception(e)
+
+    with tab_borrowing_payment:
+        st.subheader("Payment of borrowings")
+        st.caption(
+            "Use this tab to post payments made to external lenders/borrowings. "
+            "This uses the configured 'BORROWING_REPAYMENT' journal template."
+        )
+
+        from datetime import datetime
+
+        _sys = _get_system_date()
+        now = datetime.now()
+
+        with st.form("teller_borrowing_payment_form"):
+            value_date = st.date_input("Payment value date", value=_sys, key="teller_borrowing_value_date")
+            system_date = st.date_input("System date", value=_sys, key="teller_borrowing_system_date")
+            amount = st.number_input(
+                "Payment amount",
+                min_value=0.01,
+                value=1000.00,
+                step=100.00,
+                format="%.2f",
+                key="teller_borrowing_amount",
+            )
+            reference = st.text_input(
+                "Reference",
+                placeholder="e.g. Borrowing repayment ref",
+                key="teller_borrowing_ref",
+            )
+            description = st.text_input(
+                "Narration (Description)",
+                placeholder="e.g. Payment of borrowing to financier X",
+                key="teller_borrowing_desc",
+            )
+
+            submitted = st.form_submit_button("Post borrowing payment")
+            if submitted:
+                try:
+                    acct_svc.post_event(
+                        event_type="BORROWING_REPAYMENT",
+                        reference=reference.strip() or None,
+                        description=description.strip() or "Payment of borrowings",
+                        event_id="BORROWING",  # high-level tag; not a customer loan
+                        created_by="teller_ui",
+                        entry_date=value_date,
+                        amount=Decimal(str(amount)),
+                        payload=None,
+                        is_reversal=False,
+                    )
+                    st.success("Borrowing payment journal posted successfully.")
+                except Exception as e:
+                    st.error(f"Error posting borrowing payment journal: {e}")
+                    st.exception(e)
+
+    with tab_writeoff_recovery:
+        st.subheader("Receipt from a fully written-off loan")
+        st.caption(
+            "Use this tab when you receive a recovery on a loan that has been fully written off. "
+            "This uses the configured 'WRITEOFF_RECOVERY' journal template "
+            "(Debit: CASH AND CASH EQUIVALENTS, Credit: BAD DEBTS RECOVERED)."
+        )
+
+        customers_list = list_customers(status="active") or []
+        if not customers_list:
+            st.info("No active customers. Add customers first.")
+        else:
+            options = [(c["id"], get_display_name(c["id"])) for c in customers_list]
+            labels = [f"{name} (ID {cid})" for cid, name in options]
+            idx = 0
+            if "teller_wr_customer_id" in st.session_state:
+                try:
+                    idx = next(
+                        i for i, (cid, _) in enumerate(options) if cid == st.session_state["teller_wr_customer_id"]
+                    )
+                except StopIteration:
+                    pass
+            sel = st.selectbox("Select customer", labels, index=idx, key="teller_wr_cust_select")
+            cid = options[labels.index(sel)][0] if sel and labels else None
+            st.session_state["teller_wr_customer_id"] = cid
+
+            if cid:
+                loans_list = get_loans_by_customer(cid)
+                # Include all loans; recoveries can apply to closed/written-off loans.
+                if not loans_list:
+                    st.info("No loans found for this customer.")
+                else:
+                    loan_options = [
+                        (
+                            l["id"],
+                            f"Loan #{l['id']} | Status: {l.get('status', 'unknown')} | Principal: {l.get('principal', 0):,.2f}",
+                        )
+                        for l in loans_list
+                    ]
+                    loan_labels = [t[1] for t in loan_options]
+                    loan_sel = st.selectbox(
+                        "Select written-off loan (or target loan)", loan_labels, key="teller_wr_loan"
+                    )
+                    loan_id = loan_options[loan_labels.index(loan_sel)][0] if loan_sel and loan_labels else None
+
+                    if loan_id:
+                        from datetime import datetime
+
+                        _sys = _get_system_date()
+                        now = datetime.now()
+
+                        with st.form("teller_writeoff_recovery_form"):
+                            value_date = st.date_input(
+                                "Receipt value date", value=_sys, key="teller_wr_value_date"
+                            )
+                            system_date = st.date_input(
+                                "System date", value=_sys, key="teller_wr_system_date"
+                            )
+                            amount = st.number_input(
+                                "Recovery amount",
+                                min_value=0.01,
+                                value=100.00,
+                                step=10.00,
+                                format="%.2f",
+                                key="teller_wr_amount",
+                            )
+                            customer_ref = st.text_input(
+                                "Customer reference (optional)",
+                                placeholder="e.g. Recovery receipt #123",
+                                key="teller_wr_cust_ref",
+                            )
+                            company_ref = st.text_input(
+                                "Company reference (optional)",
+                                placeholder="e.g. GL ref",
+                                key="teller_wr_company_ref",
+                            )
+                            submitted = st.form_submit_button("Post recovery receipt")
+
+                            if submitted and amount > 0:
+                                try:
+                                    acct_svc.post_event(
+                                        event_type="WRITEOFF_RECOVERY",
+                                        reference=company_ref.strip() or customer_ref.strip() or None,
+                                        description=(
+                                            f"Recovery on written-off loan #{loan_id}"
+                                            if not company_ref and not customer_ref
+                                            else (company_ref or customer_ref)
+                                        ),
+                                        event_id=str(loan_id),
+                                        created_by="teller_ui",
+                                        entry_date=value_date,
+                                        amount=Decimal(str(amount)),
+                                        payload=None,
+                                        is_reversal=False,
+                                    )
+                                    st.success(
+                                        f"Recovery receipt posted successfully for loan #{loan_id}. "
+                                        "The GL will debit CASH AND CASH EQUIVALENTS and credit BAD DEBTS RECOVERED."
+                                    )
+                                except Exception as e:
+                                    st.error(f"Error posting recovery receipt journal: {e}")
+                                    st.exception(e)
 
 
 def reamortisation_ui():
@@ -3975,8 +4146,8 @@ def accounting_ui():
     )
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab_coa, tab_templates, tab_manual, tab_reports = st.tabs(
-        ["Chart of Accounts", "Transaction Templates", "Manual Journals", "Financial Reports"]
+    tab_coa, tab_templates, tab_mapping, tab_manual, tab_reports = st.tabs(
+        ["Chart of Accounts", "Transaction Templates", "Receipt → GL Mapping", "Manual Journals", "Financial Reports"]
     )
 
     # 1. Chart of Accounts
@@ -4038,125 +4209,149 @@ def accounting_ui():
                 
         templates = svc.list_all_transaction_templates()
         if templates:
-            from collections import defaultdict
-            grouped = defaultdict(list)
-            for t in templates:
-                grouped[t["event_type"]].append(t)
-            
-            def get_computation_logic(event):
-                logic_map = {
-                    "LOAN_APPROVAL": "Based on Principal, Fees, and Disbursed amounts at Loan Approval.",
-                    "FEE_AMORTISATION": "Monthly amortised portion of deferred fees.",
-                    "DEFERRED_FEE_INCOME_RECOGNITION": "Monthly amortised portion of deferred fees.",
-                    "BILLING_PRINCIPAL_ARREARS": "Computed as (Today's Principal Arrears - Yesterday's + Allocations).",
-                    "PAYMENT_PRINCIPAL": "Actual receipt amount allocated to principal.",
-                    "PAYMENT_PRINCIPAL_NOT_YET_DUE": "Actual receipt amount allocated to principal not yet due.",
-                    "ACCRUAL_REGULAR_INTEREST": "Daily Regular Interest amount from engine.",
-                    "ACCRUAL_PENALTY_INTEREST": "Daily Penalty Interest amount from engine.",
-                    "ACCRUAL_DEFAULT_INTEREST": "Daily Default Interest amount from engine.",
-                    "CLEAR_DAILY_ACCRUAL": "Cleared matching the billed interest amount.",
-                    "BILLING_REGULAR_INTEREST": "Computed as (Today's Interest Arrears - Yesterday's + Allocations).",
-                    "PAYMENT_REGULAR_INTEREST": "Actual receipt amount allocated to regular interest.",
-                    "PAYMENT_REGULAR_INTEREST_NOT_YET_DUE": "Actual receipt amount allocated to regular interest not yet due.",
-                    "PAYMENT_PENALTY_INTEREST": "Actual receipt amount allocated to penalty interest.",
-                    "REVERSAL_PENALTY_INTEREST": "Reversal of previously recorded penalty interest.",
-                    "PAYMENT_DEFAULT_INTEREST": "Actual receipt amount allocated to default interest.",
-                    "REVERSAL_DEFAULT_INTEREST": "Reversal of previously recorded default interest.",
-                    "PROVISION_RAISE": "Computed based on risk bucket provisioning rules.",
-                    "PROVISION_REVERSAL": "Reversal based on improved risk bucket.",
-                    "PRINCIPAL_WRITEOFF": "Amount written off at end of recovery process.",
-                    "INTEREST_WRITEOFF": "Interest amount written off at end of recovery process.",
-                    "WRITEOFF_RECOVERY": "Receipt amount recovered from a previously written-off loan.",
-                    "LOAN_RESTRUCTURE_CAPITALISE": "Capitalisation of arrears during a restructure.",
-                    "RESTRUCTURE_FEE_CHARGE": "Restructure fee applied to the loan.",
-                    "RESTRUCTURE_FEE_AMORTISATION": "Monthly amortised portion of restructure fees.",
-                    "PASS_THROUGH_COST_DISBURSEMENT": "Amount disbursed for third-party costs.",
-                    "PASS_THROUGH_COST_RECOVERY": "Amount recovered for third-party costs.",
-                    "FEES_CHARGES_WRITEOFF": "Fees and charges amount written off.",
-                    "AGENT_COMMISSION_PAYMENT": "Amount paid to agent as commission.",
-                    "COMMISSION_AMORTISATION": "Monthly amortised portion of agent commission.",
-                    "BORROWING_DRAWDOWN": "Drawdown amount from financier.",
-                    "INTEREST_EXPENSE_ACCRUAL": "Monthly accrual of interest expense on borrowings.",
-                    "BORROWING_FEES_AMORTISATION": "Monthly amortization of borrowing fees.",
-                    "BORROWING_REPAYMENT": "Repayment amount of borrowings.",
-                }
-                return logic_map.get(event, "System calculated based on payload.")
-
-            html = [
-                '<style>',
-                '.journal-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-family: sans-serif; font-size: 14px; }',
-                '.journal-table th, .journal-table td { border: 1px solid #ddd !important; padding: 8px !important; text-align: left !important; }',
-                '.journal-table th { background-color: #f2f2f2 !important; font-weight: bold !important; color: #333 !important; }',
-                '.journal-table tr.row-group-start td { border-top: 3px solid #333 !important; }',
-                '.td-dr { color: #0055ff !important; font-weight: bold !important; }',
-                '.td-cr { color: #008800 !important; font-weight: bold !important; }',
-                '</style>',
-                '<table class="journal-table">',
-                '<thead>',
-                '<tr>',
-                '<th>#</th>',
-                '<th>Event</th>',
-                '<th>Trigger</th>',
-                '<th>Computation Logic</th>',
-                '<th>System Tag</th>',
-                '<th>Dr / Cr</th>',
-                '<th>Description</th>',
-                '</tr>',
-                '</thead>',
-                '<tbody>'
+            evt_options = sorted(list({t["event_type"] for t in templates}))
+            evt_sel = st.selectbox("Filter by Event Type", ["(All)"] + evt_options, key="tt_edit_evt")
+            rows = [
+                t
+                for t in templates
+                if evt_sel == "(All)" or t["event_type"] == evt_sel
             ]
-            
-            idx = 1
-            for event_type, items in grouped.items():
-                t_type = items[0].get("trigger_type", "EVENT") if items else "EVENT"
-                computation = get_computation_logic(event_type)
-                
-                # Sort DEBIT first, then CREDIT
-                items_sorted = sorted(items, key=lambda x: 0 if x["direction"] == "DEBIT" else 1)
-                
-                rowspan = len(items_sorted)
-                
-                for i, t in enumerate(items_sorted):
-                    tr_class = ' class="row-group-start"' if i == 0 else ''
-                    html.append(f'<tr{tr_class}>')
-                    if i == 0:
-                        html.append(f'<td rowspan="{rowspan}">{idx}</td>')
-                        html.append(f'<td rowspan="{rowspan}"><b>{event_type}</b></td>')
-                        html.append(f'<td rowspan="{rowspan}">{t_type}</td>')
-                        html.append(f'<td rowspan="{rowspan}"><i>{computation}</i></td>')
-                        
-                    dr_cr = "Dr" if t["direction"] == "DEBIT" else "Cr"
-                    dr_cr_class = "td-dr" if dr_cr == "Dr" else "td-cr"
-                    html.append(f'<td>{t["system_tag"]}</td>')
-                    html.append(f'<td class="{dr_cr_class}">{dr_cr}</td>')
-                    html.append(f'<td>{t["description"]}</td>')
-                    html.append('</tr>')
-                idx += 1
-                
-            html.append('</tbody></table>')
-            
-            st.markdown("\n".join(html), unsafe_allow_html=True)
+
+            # Build dropdown options from DB for edit form
+            accounts = svc.list_accounts() or []
+            system_tags_from_accounts = sorted({a["system_tag"] for a in accounts if a.get("system_tag")})
+            system_tags_from_templates = sorted({t["system_tag"] for t in templates})
+            all_system_tags = sorted(set(system_tags_from_accounts) | set(system_tags_from_templates))
+
+            # Table header
+            h1, h2, h3, h4, h5, h6, h7 = st.columns([2, 2, 1, 2, 1, 1, 1])
+            with h1:
+                st.markdown("**Event Type**")
+            with h2:
+                st.markdown("**System Tag**")
+            with h3:
+                st.markdown("**Dr/Cr**")
+            with h4:
+                st.markdown("**Description**")
+            with h5:
+                st.markdown("**Trigger**")
+            with h6:
+                st.markdown("**Edit**")
+            with h7:
+                st.markdown("**Delete**")
+
+            editing_id = st.session_state.get("tt_editing_id")
+
+            for t in rows:
+                col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 1, 2, 1, 1, 1])
+                with col1:
+                    st.text(t["event_type"])
+                with col2:
+                    st.text(t["system_tag"])
+                with col3:
+                    st.text(t["direction"][:1] if t.get("direction") else "-")
+                with col4:
+                    st.text((t.get("description") or "")[:40] + ("..." if len(t.get("description") or "") > 40 else ""))
+                with col5:
+                    st.text(t.get("trigger_type") or "EVENT")
+                with col6:
+                    if st.button("Edit", key=f"tt_edit_{t['id']}"):
+                        st.session_state["tt_editing_id"] = str(t["id"])
+                        st.rerun()
+                with col7:
+                    if st.button("Delete", key=f"tt_del_{t['id']}"):
+                        svc.delete_transaction_template(t["id"])
+                        st.session_state.pop("tt_editing_id", None)
+                        st.success("Template deleted.")
+                        st.rerun()
+
+            # Edit form (shown when editing a template)
+            if editing_id:
+                t_edit = next((x for x in templates if str(x["id"]) == editing_id), None)
+                if t_edit:
+                    st.divider()
+                    st.markdown("**Edit template**")
+                    with st.form("tt_edit_form"):
+                        new_desc = st.text_input(
+                            "Description",
+                            value=t_edit.get("description") or "",
+                            key="tt_edit_desc",
+                        )
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            new_trigger = st.selectbox(
+                                "Trigger Type",
+                                ["EVENT", "EOD", "EOM"],
+                                index=["EVENT", "EOD", "EOM"].index(t_edit.get("trigger_type", "EVENT")),
+                                key="tt_edit_trig",
+                            )
+                            current_tag = t_edit["system_tag"]
+                            tag_options = [current_tag] if current_tag and current_tag not in all_system_tags else []
+                            tag_options.extend(all_system_tags)
+                            tag_idx = tag_options.index(current_tag) if current_tag in tag_options else 0
+                            new_system_tag = st.selectbox(
+                                "System Tag (GL account)",
+                                tag_options,
+                                index=tag_idx,
+                                key="tt_edit_tag",
+                            )
+                        with col_b:
+                            new_direction = st.selectbox(
+                                "Direction",
+                                ["DEBIT", "CREDIT"],
+                                index=0 if t_edit["direction"] == "DEBIT" else 1,
+                                key="tt_edit_dir",
+                            )
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            save_btn = st.form_submit_button("Save")
+                        with col_cancel:
+                            cancel_btn = st.form_submit_button("Cancel")
+                        if save_btn:
+                            svc.update_transaction_template(
+                                t_edit["id"],
+                                system_tag=new_system_tag.strip(),
+                                direction=new_direction,
+                                description=new_desc.strip() or None,
+                                trigger_type=new_trigger,
+                            )
+                            st.session_state.pop("tt_editing_id", None)
+                            st.success("Template updated.")
+                            st.rerun()
+                        elif cancel_btn:
+                            st.session_state.pop("tt_editing_id", None)
+                            st.rerun()
         else:
             st.info("No transaction templates defined.")
-            
+
         st.divider()
         st.subheader("Link New Journal (Double Entry)")
+        # Dropdown options from DB for Link New Journal form
+        _accounts = svc.list_accounts() or []
+        _all_system_tags = sorted(set(a["system_tag"] for a in _accounts if a.get("system_tag")))
+        _all_system_tags = _all_system_tags or ["cash_operating", "loan_principal", "deferred_fee_liability"]
+        _event_types = sorted(set(t["event_type"] for t in templates)) if templates else []
+
         with st.form("add_template_form"):
-            evt = st.text_input("Event Type (e.g., LOAN_DISBURSEMENT)")
+            evt_options = _event_types + ["(new event type)"]
+            evt_sel = st.selectbox("Event Type", evt_options, key="link_evt_sel")
+            if evt_sel == "(new event type)":
+                evt = st.text_input("New event type name", placeholder="e.g. LOAN_DISBURSEMENT", key="link_evt_new")
+            else:
+                evt = evt_sel
             trigger_type = st.selectbox("Trigger Type", ["EVENT", "EOD", "EOM"], index=0)
-            
+
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**Debit Leg**")
-                debit_tag = st.text_input("System Tag to Debit (e.g., loan_principal)")
-            
+                debit_tag = st.selectbox("System Tag to Debit", _all_system_tags, key="link_debit_tag")
             with col2:
                 st.markdown("**Credit Leg**")
-                credit_tag = st.text_input("System Tag to Credit (e.g., cash_operating)")
-                
+                credit_tag = st.selectbox("System Tag to Credit", _all_system_tags, key="link_credit_tag")
+
             desc = st.text_input("Description / Memo")
             submitted2 = st.form_submit_button("Add Journal Link")
-            
+
             if submitted2 and evt and debit_tag and credit_tag:
                 # Add the debit leg
                 svc.link_journal(evt, debit_tag, "DEBIT", desc, trigger_type)
@@ -4167,7 +4362,200 @@ def accounting_ui():
             elif submitted2:
                 st.error("Please provide the Event Type, Debit Tag, and Credit Tag.")
 
-    # 3. Manual Journals
+    # 3. Receipt → GL Mapping (dedicated tab)
+    with tab_mapping:
+        st.subheader("Receipt Allocation → Accounting Events")
+        st.caption(
+            "This table tells the system how to translate repayment allocations "
+            "into accounting events (and therefore GL postings)."
+        )
+
+        _table_exists = True
+        try:
+            mappings = svc.list_receipt_gl_mappings()
+        except Exception as e:
+            if "receipt_gl_mapping" in str(e) and "does not exist" in str(e).lower():
+                _table_exists = False
+                st.warning(
+                    "The `receipt_gl_mapping` table has not been created yet. "
+                    "Click the button below to create it (uses the same database connection as the app)."
+                )
+                if st.button("Create receipt_gl_mapping table"):
+                    try:
+                        import psycopg2
+                        from pathlib import Path
+                        sql_path = Path(__file__).parent / "schema" / "38_receipt_gl_mapping.sql"
+                        if not sql_path.exists():
+                            st.error(f"Migration file not found: {sql_path}")
+                        else:
+                            sql = sql_path.read_text(encoding="utf-8")
+                            from config import get_database_url
+                            conn = psycopg2.connect(get_database_url())
+                            try:
+                                with conn.cursor() as cur:
+                                    cur.execute(sql)
+                                conn.commit()
+                                st.success("Table created. Refreshing...")
+                                st.rerun()
+                            finally:
+                                conn.close()
+                    except Exception as ex:
+                        st.error(f"Could not create table: {ex}")
+                        st.exception(ex)
+                mappings = []
+            else:
+                raise
+
+        # Initialize defaults when table exists but is empty
+        if _table_exists and mappings is not None and len(mappings) == 0:
+            if st.button("Initialize Default Mappings"):
+                try:
+                    if svc.initialize_default_receipt_gl_mappings():
+                        st.success("Default receipt mappings loaded.")
+                        st.rerun()
+                    else:
+                        st.info("Mappings already initialized.")
+                except Exception as ex:
+                    st.error(f"Could not initialize: {ex}")
+                    st.exception(ex)
+
+        # Reset to defaults when mappings exist (reload updated definitions)
+        if _table_exists and mappings and len(mappings) > 0:
+            if st.button("Reset to Defaults", type="secondary"):
+                try:
+                    svc.reset_receipt_gl_mappings_to_defaults()
+                    st.success("Mappings reset to defaults.")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Could not reset: {ex}")
+                    st.exception(ex)
+
+        if mappings:
+            df_map = pd.DataFrame(mappings)
+            st.dataframe(
+                df_map[
+                    [
+                        "id",
+                        "trigger_source",
+                        "allocation_key",
+                        "event_type",
+                        "amount_source",
+                        "amount_sign",
+                        "is_active",
+                        "priority",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No receipt GL mappings defined yet.")
+
+        st.divider()
+        st.subheader("Add / Edit Mapping")
+
+        # Dropdown options from DB for Receipt GL Mapping form
+        _templates_for_events = svc.list_all_transaction_templates()
+        _event_types_for_mapping = sorted(set(t["event_type"] for t in (_templates_for_events or [])))
+        _predefined_allocation_keys = [
+            "alloc_principal_arrears", "alloc_principal_not_due",
+            "alloc_interest_arrears", "alloc_interest_accrued",
+            "alloc_penalty_interest", "alloc_default_interest",
+            "alloc_regular_interest", "alloc_fees_charges", "amount",
+        ]
+        _allocation_keys_from_db = sorted(set(m["allocation_key"] for m in (mappings or [])))
+        _amount_sources_from_db = sorted(set(m["amount_source"] for m in (mappings or [])))
+        _allocation_key_options = sorted(set(_predefined_allocation_keys + _allocation_keys_from_db))
+        _amount_source_options = sorted(set(_predefined_allocation_keys + _amount_sources_from_db))
+
+        with st.form("receipt_gl_mapping_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                mapping_options = ["New mapping"]
+                mapping_options += [f"Edit id={m['id']} ({m['trigger_source']} / {m['allocation_key']} → {m['event_type']})" for m in (mappings or [])]
+                edit_sel = st.selectbox(
+                    "Mapping (choose existing to update or New mapping to create)",
+                    mapping_options,
+                    key="rgl_edit_sel",
+                )
+                edit_id = ""
+                if edit_sel != "New mapping" and "id=" in edit_sel:
+                    edit_id = edit_sel.replace("Edit id=", "").split(" (")[0].strip()
+                trigger_source = st.selectbox(
+                    "Trigger Source",
+                    ["SAVE_RECEIPT", "SAVE_REVERSAL", "APPLY_UNAPPLIED"],
+                    index=0,
+                    key="rgl_trigger",
+                )
+            with col2:
+                allocation_key = st.selectbox(
+                    "Allocation Key",
+                    _allocation_key_options,
+                    key="rgl_alloc_key",
+                    help="Allocation bucket from repayment engine.",
+                )
+                event_type = st.selectbox(
+                    "Accounting Event Type",
+                    _event_types_for_mapping if _event_types_for_mapping else ["PAYMENT_PRINCIPAL", "PAYMENT_REGULAR_INTEREST", "WRITEOFF_RECOVERY"],
+                    key="rgl_event_type",
+                )
+            with col3:
+                amount_source = st.selectbox(
+                    "Amount Source",
+                    _amount_source_options,
+                    key="rgl_amount_source",
+                    help="Usually same as allocation key.",
+                )
+                amount_sign = st.selectbox(
+                    "Sign",
+                    [1, -1],
+                    index=0,
+                    format_func=lambda x: "Normal (+1)" if x == 1 else "Reversal (-1)",
+                    key="rgl_sign",
+                )
+
+            col4, col5 = st.columns(2)
+            with col4:
+                is_active = st.checkbox("Active", value=True, key="rgl_active")
+            with col5:
+                priority = st.number_input(
+                    "Priority (lower runs first)",
+                    min_value=0,
+                    max_value=1000,
+                    value=100,
+                    step=10,
+                    key="rgl_priority",
+                )
+
+            col_save, col_del = st.columns(2)
+            with col_save:
+                submit_map = st.form_submit_button("Save Mapping")
+            with col_del:
+                delete_map = st.form_submit_button("Delete Mapping")
+
+            if submit_map:
+                if not allocation_key or not event_type or not amount_source:
+                    st.error("Allocation Key, Event Type, and Amount Source are required.")
+                else:
+                    mapping_id = int(edit_id) if edit_id.strip() else None
+                    svc.upsert_receipt_gl_mapping(
+                        mapping_id=mapping_id,
+                        trigger_source=trigger_source,
+                        allocation_key=allocation_key.strip(),
+                        event_type=event_type.strip(),
+                        amount_source=amount_source.strip(),
+                        amount_sign=int(amount_sign),
+                        is_active=is_active,
+                        priority=int(priority),
+                    )
+                    st.success("Mapping saved.")
+                    st.rerun()
+            if delete_map and edit_id.strip():
+                svc.delete_receipt_gl_mapping(int(edit_id))
+                st.success("Mapping deleted.")
+                st.rerun()
+
+    # 4. Manual Journals
     with tab_manual:
         st.subheader("Manual Journals")
         st.info("Day-to-day manual postings should now be done via the standalone **Journals** menu in the left navigation.")
