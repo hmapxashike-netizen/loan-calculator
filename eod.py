@@ -874,6 +874,22 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                 events_to_run = {row['event_type'] for row in events}
 
                 if not events_to_run:
+                    # #region agent log
+                    try:
+                        log = {
+                            "sessionId": "f80945",
+                            "runId": "pre-fix",
+                            "hypothesisId": "H2",
+                            "location": "eod.py:_run_accounting_events",
+                            "message": "No EOD/EOM events_to_run",
+                            "data": {"as_of_date": as_of_date.isoformat(), "triggers": triggers},
+                            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                        }
+                        with open("debug-f80945.log", "a", encoding="utf-8") as f:
+                            f.write(json.dumps(log) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion agent log
                     return # Nothing to run
                 
                 # 2. Query data needed for amounts
@@ -936,10 +952,56 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                 amounts_map["ACCRUAL_REGULAR_INTEREST_SUSPENSE"] = reg_daily
             else:
                 amounts_map["ACCRUAL_REGULAR_INTEREST"] = reg_daily
+            # #region agent log
+            try:
+                log = {
+                    "sessionId": "f80945",
+                    "runId": "pre-fix",
+                    "hypothesisId": "H1",
+                    "location": "eod.py:_run_accounting_events",
+                    "message": "Computed EOD accrual amounts for loan",
+                    "data": {
+                        "as_of_date": as_of_date.isoformat(),
+                        "loan_id": int(loan_id),
+                        "events_to_run": sorted(list(events_to_run)),
+                        "reg_daily": float(reg_daily),
+                        "pen_daily": float(pen_daily),
+                        "def_daily": float(def_daily),
+                        "billed_prin": float(billed_prin),
+                        "billed_int": float(billed_int),
+                    },
+                    "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                }
+                with open("debug-f80945.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(log) + "\n")
+            except Exception:
+                pass
+            # #endregion agent log
             for event_type in events_to_run:
                 amt = amounts_map.get(event_type, Decimal('0'))
                 if amt > 0:
                     desc_parts = event_type.replace('_', ' ').title()
+                    # #region agent log
+                    try:
+                        log = {
+                            "sessionId": "f80945",
+                            "runId": "pre-fix",
+                            "hypothesisId": "H3",
+                            "location": "eod.py:_run_accounting_events",
+                            "message": "Posting EOD accounting event",
+                            "data": {
+                                "as_of_date": as_of_date.isoformat(),
+                                "loan_id": int(loan_id),
+                                "event_type": event_type,
+                                "amount": float(amt),
+                            },
+                            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                        }
+                        with open("debug-f80945.log", "a", encoding="utf-8") as f:
+                            f.write(json.dumps(log) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion agent log
                     svc.post_event(
                         event_type=event_type,
                         reference=f"EOD-{as_of_date}-LOAN-{loan_id}",
@@ -952,8 +1014,108 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                 
     except Exception as e:
         import traceback
+        # #region agent log
+        try:
+            log = {
+                "sessionId": "f80945",
+                "runId": "pre-fix",
+                "hypothesisId": "H4",
+                "location": "eod.py:_run_accounting_events",
+                "message": "Exception in _run_accounting_events",
+                "data": {"as_of_date": as_of_date.isoformat(), "error": str(e)},
+                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+            }
+            with open("debug-f80945.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps(log) + "\n")
+        except Exception:
+            pass
+        # #endregion agent log
         print(f"Failed to post EOD accounting events for {as_of_date}: {e}")
         traceback.print_exc()
+
+    # Month-end fee amortisation (loan origination fees).
+    if is_eom:
+        _run_fee_amortisation_month_end(as_of_date, events_to_run, svc)
+
+
+def _run_fee_amortisation_month_end(
+    as_of_date: date,
+    events_to_run: set[str],
+    svc,
+) -> None:
+    """
+    Straight-line month-end amortisation of origination fees
+    (drawdown, arrangement, admin) using loan-level fee columns.
+
+    Uses templates:
+    - FEE_AMORTISATION_DRAWDOWN (2)
+    - FEE_AMORTISATION_ARRANGEMENT (2a)
+    - FEE_AMORTISATION_ADMIN (2b)
+    """
+    # Only run if at least one of the templates is active.
+    needed_events = {
+        "FEE_AMORTISATION_DRAWDOWN",
+        "FEE_AMORTISATION_ARRANGEMENT",
+        "FEE_AMORTISATION_ADMIN",
+    }
+    active = needed_events.intersection(events_to_run)
+    if not active:
+        return
+
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # For each active loan, compute total origination fees.
+            # Prefer explicit *_amount columns when present; fall back to
+            # percentage * principal/facility.
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    term,
+                    COALESCE(drawdown_fee_amount,
+                             (principal * drawdown_fee)) AS drawdown_fee_amt,
+                    COALESCE(arrangement_fee_amount,
+                             (principal * arrangement_fee)) AS arrangement_fee_amt,
+                    COALESCE(admin_fee_amount,
+                             (principal * admin_fee)) AS admin_fee_amt
+                FROM loans
+                WHERE status = 'active'
+                """
+            )
+            loans = cur.fetchall()
+
+    for row in loans:
+        loan_id = int(row["id"])
+        term = int(row.get("term") or 0)
+        if term <= 0:
+            continue
+
+        draw_fee = float(as_10dp(row.get("drawdown_fee_amt") or 0))
+        arr_fee = float(as_10dp(row.get("arrangement_fee_amt") or 0))
+        adm_fee = float(as_10dp(row.get("admin_fee_amt") or 0))
+
+        # Component-wise straight-line amortisation.
+        def _post_if_positive(event_type: str, component_fee: float, label: str) -> None:
+            if event_type not in active:
+                return
+            if component_fee <= 0:
+                return
+            monthly_amt = float(as_10dp(component_fee / term))
+            if monthly_amt <= 0:
+                return
+            svc.post_event(
+                event_type=event_type,
+                reference=f"LOAN-{loan_id}",
+                description=f"Monthly {label} amortisation for Loan {loan_id}",
+                event_id=f"EOM-{as_of_date}-LOAN-{loan_id}-{event_type}",
+                created_by="system",
+                entry_date=as_of_date,
+                amount=monthly_amt,
+            )
+
+        _post_if_positive("FEE_AMORTISATION_DRAWDOWN", draw_fee, "drawdown fee")
+        _post_if_positive("FEE_AMORTISATION_ARRANGEMENT", arr_fee, "arrangement fee")
+        _post_if_positive("FEE_AMORTISATION_ADMIN", adm_fee, "administration fee")
 
 
 def _run_statement_batch(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:

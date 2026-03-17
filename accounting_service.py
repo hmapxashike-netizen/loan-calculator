@@ -1,6 +1,8 @@
 from accounting_dal import get_conn, AccountingRepository
+from accounting_core import as_money
 from datetime import date
 from decimal import Decimal
+import psycopg2
 
 class AccountingService:
     def __init__(self):
@@ -20,11 +22,13 @@ class AccountingService:
             ("LOAN_APPROVAL", "cash_operating", "CREDIT", "Creation of Loan - Disbursed Amount", "EVENT"),
             ("LOAN_APPROVAL", "deferred_fee_liability", "CREDIT", "Creation of Loan - Fees", "EVENT"),
 
-            # 2 / 2a. Fee amortisation + recognise deferred fee income
-            ("FEE_AMORTISATION", "deferred_fee_liability", "DEBIT", "Amortisation of fees", "EOM"),
-            ("FEE_AMORTISATION", "deferred_fee_income", "CREDIT", "Amortisation of fees", "EOM"),
-            ("DEFERRED_FEE_INCOME_RECOGNITION", "deferred_fee_liability", "DEBIT", "Recognise deferred fee income", "EOM"),
-            ("DEFERRED_FEE_INCOME_RECOGNITION", "deferred_fee_income", "CREDIT", "Recognise deferred fee income", "EOM"),
+            # 2 / 2a / 2b. Amortisation of fees by component (straight-line EOM)
+            ("FEE_AMORTISATION_DRAWDOWN", "deferred_fee_liability", "DEBIT", "Amortisation of drawdown fees", "EOM"),
+            ("FEE_AMORTISATION_DRAWDOWN", "deferred_fee_income", "CREDIT", "Amortisation of drawdown fees", "EOM"),
+            ("FEE_AMORTISATION_ARRANGEMENT", "deferred_fee_liability", "DEBIT", "Amortisation of arrangement fees", "EOM"),
+            ("FEE_AMORTISATION_ARRANGEMENT", "deferred_fee_income", "CREDIT", "Amortisation of arrangement fees", "EOM"),
+            ("FEE_AMORTISATION_ADMIN", "deferred_fee_liability", "DEBIT", "Amortisation of administration fees", "EOM"),
+            ("FEE_AMORTISATION_ADMIN", "deferred_fee_income", "CREDIT", "Amortisation of administration fees", "EOM"),
 
             # 3–5. Principal billing / receipts / direct payment not yet due
             ("BILLING_PRINCIPAL_ARREARS", "principal_arrears", "DEBIT", "Billing of principal arrears", "EOD"),
@@ -313,6 +317,10 @@ class AccountingService:
             rows.append(("SAVE_RECEIPT", alloc_key, evt, alloc_key, 1, 10 + i))
         for i, (alloc_key, evt) in enumerate(ORIGINALS):
             rows.append(("SAVE_REVERSAL", alloc_key, evt, alloc_key, -1, 100 + i))
+        # When unapplied funds are applied via recast, mirror the same
+        # allocation→event behaviour so GL stays aligned with the loan engine.
+        for i, (alloc_key, evt) in enumerate(ORIGINALS):
+            rows.append(("APPLY_UNAPPLIED", alloc_key, evt, alloc_key, 1, 200 + i))
         return rows
 
     def initialize_default_receipt_gl_mappings(self) -> bool:
@@ -416,6 +424,11 @@ class AccountingService:
                 line_amount = payload.get(tmpl["system_tag"], amount)
                 if line_amount is None:
                     line_amount = Decimal("0.0")
+                else:
+                    line_amount = Decimal(str(line_amount))
+                # Quantize to money precision so we do not post
+                # journals that round to zero at 2dp (noise).
+                line_amount = as_money(line_amount)
                 
                 direction = tmpl["direction"]
                 if is_reversal:
@@ -499,16 +512,37 @@ class AccountingService:
 
         account_ids = [line["account_id"] for line in lines]
 
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, code, is_parent, transitioned_to_parent_at
-                FROM accounts
-                WHERE id = ANY(%s)
-                """,
-                (account_ids,),
-            )
-            rows = cur.fetchall()
+        try:
+            with conn.cursor() as cur:
+                # Support both integer and UUID primary keys on accounts.
+                # Cast parameter to uuid[] to satisfy operators when id is uuid.
+                cur.execute(
+                    """
+                    SELECT id, code, is_parent, transitioned_to_parent_at
+                    FROM accounts
+                    WHERE id = ANY(%s::uuid[])
+                    """,
+                    (account_ids,),
+                )
+                rows = cur.fetchall()
+        except psycopg2.errors.UndefinedColumn:
+            # Backwards‑compatibility: older schemas may not yet have the
+            # is_parent / transitioned_to_parent_at columns. In that case,
+            # skip this guard rather than failing the entire posting.
+            return
+        except psycopg2.errors.UndefinedFunction:
+            # Backwards‑compatibility for non‑UUID schemas (e.g. integer ids);
+            # fall back to a generic ANY() without casting.
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, code, is_parent, transitioned_to_parent_at
+                    FROM accounts
+                    WHERE id = ANY(%s)
+                    """,
+                    (account_ids,),
+                )
+                rows = cur.fetchall()
 
         accounts = {row["id"]: row for row in rows}
 

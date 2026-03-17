@@ -732,6 +732,18 @@ def eod_ui():
                 "Re-running is idempotent but will not advance the system date again. "
                 "Confirm below to re-run."
             )
+        # Show outcome of the last EOD run (if any) so the user
+        # gets a clear confirmation message even after rerun.
+        last_eod = st.session_state.get("eod_last_result")
+        if last_eod and last_eod.get("success"):
+            st.success(
+                f"EOD completed for {last_eod['as_of_date']}. "
+                f"System date advanced to {last_eod['new_system_date']}. "
+                f"Real-world: {last_eod['real_world_time']}"
+            )
+        elif last_eod and not last_eod.get("success"):
+            st.error(f"EOD failed: {last_eod.get('error', 'Unknown error')}")
+
         confirm = st.checkbox(
             f"I confirm: EOD will process accruals for **{current_system_date.isoformat()}**. "
             f"On success, system date will advance to **{next_date.isoformat()}**.",
@@ -740,14 +752,13 @@ def eod_ui():
         if st.button("Run EOD now", type="primary", key="eod_run_now", disabled=not confirm):
             result = run_eod_process()
             if result["success"]:
-                st.success(
-                    f"EOD completed for {result['as_of_date']}. "
-                    f"System date advanced to {result['new_system_date']}. "
-                    f"Real-world: {result['real_world_time']}"
-                )
+                # Persist result so confirmation survives the rerun and is
+                # visible together with the updated system date.
+                st.session_state["eod_last_result"] = result
                 st.rerun()
             else:
-                st.error(f"EOD failed: {result.get('error', 'Unknown error')}")
+                st.session_state["eod_last_result"] = result
+                st.rerun()
 
         with st.expander("Run EOD for specific date (backfill, no advance)"):
             st.caption("Backfill only. Does not advance system date.")
@@ -3200,8 +3211,6 @@ def teller_ui():
             "This uses the configured 'BORROWING_REPAYMENT' journal template."
         )
 
-        from datetime import datetime
-
         _sys = _get_system_date()
         now = datetime.now()
 
@@ -3292,8 +3301,6 @@ def teller_ui():
                     loan_id = loan_options[loan_labels.index(loan_sel)][0] if loan_sel and loan_labels else None
 
                     if loan_id:
-                        from datetime import datetime
-
                         _sys = _get_system_date()
                         now = datetime.now()
 
@@ -4223,8 +4230,18 @@ def accounting_ui():
             system_tags_from_templates = sorted({t["system_tag"] for t in templates})
             all_system_tags = sorted(set(system_tags_from_accounts) | set(system_tags_from_templates))
 
+            # Journal number lookup for display only.
+            journal_numbers = {
+                "LOAN_APPROVAL": "1",
+                "FEE_AMORTISATION_DRAWDOWN": "2",
+                "FEE_AMORTISATION_ARRANGEMENT": "2a",
+                "FEE_AMORTISATION_ADMIN": "2b",
+            }
+
             # Table header
-            h1, h2, h3, h4, h5, h6, h7 = st.columns([2, 2, 1, 2, 1, 1, 1])
+            h0, h1, h2, h3, h4, h5, h6, h7 = st.columns([1, 2, 2, 1, 2, 1, 1, 1])
+            with h0:
+                st.markdown("**Journal #**")
             with h1:
                 st.markdown("**Event Type**")
             with h2:
@@ -4243,7 +4260,9 @@ def accounting_ui():
             editing_id = st.session_state.get("tt_editing_id")
 
             for t in rows:
-                col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 1, 2, 1, 1, 1])
+                col0, col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 2, 2, 1, 2, 1, 1, 1])
+                with col0:
+                    st.text(journal_numbers.get(t["event_type"], ""))
                 with col1:
                     st.text(t["event_type"])
                 with col2:
