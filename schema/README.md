@@ -31,6 +31,18 @@
    ```
    Creates `system_business_config` with `current_system_date`, `eod_auto_run_time`, `is_auto_eod_enabled`.
 
+6. **Financial statement snapshots** (immutable period-close history):
+   ```bash
+   psql -U postgres -d lms_db -f 39_financial_statement_snapshots.sql
+   ```
+   Creates `financial_statement_snapshots` and `financial_statement_snapshot_lines`.
+
+7. **EOD audit logging** (run/stage observability):
+   ```bash
+   psql -U postgres -d lms_db -f 43_eod_audit_log.sql
+   ```
+   Creates `eod_runs` and `eod_stage_events`.
+
 ## Tables
 
 | Table            | Purpose |
@@ -48,6 +60,10 @@
 | `loan_repayments` | Actual payments/receipts (payment date, amount, reference); distinct from planned schedule. |
 | `config`         | Optional key-value configuration. |
 | `system_business_config` | System business date, EOD auto-run time, is_auto_eod_enabled. Single row (id=1). |
+| `financial_statement_snapshots` | Header rows for persisted Trial Balance / P&L / Balance Sheet / Cash Flow / Equity snapshots at period close. |
+| `financial_statement_snapshot_lines` | Snapshot line-level balances (debit/credit/amount at 10dp precision). |
+| `eod_runs` | One row per EOD run with overall status and policy snapshot. |
+| `eod_stage_events` | Append-only stage events (`STARTED/OK/ERROR/SKIPPED`) for each EOD run. |
 
 ## Relationships
 

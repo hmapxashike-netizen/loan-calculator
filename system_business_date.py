@@ -156,14 +156,34 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
         "new_system_date": None,
         "real_world_time": real_before.isoformat(),
         "error": None,
+        "run_id": None,
+        "run_status": None,
+        "failed_stage": None,
     }
 
+    eod_result = None
     try:
-        run_eod_for_date(as_of)
+        eod_result = run_eod_for_date(as_of)
     except Exception as e:
         result["error"] = str(e)
+        if hasattr(e, "stage_name"):
+            result["failed_stage"] = getattr(e, "stage_name")
         logger.error("EOD failed for %s, system date NOT advanced: %s", as_of, e)
         return result
+
+    if eod_result is not None:
+        result["run_id"] = getattr(eod_result, "run_id", None)
+        result["run_status"] = getattr(eod_result, "run_status", None)
+        result["failed_stage"] = getattr(eod_result, "failed_stage", None)
+        if getattr(eod_result, "run_status", "SUCCESS") == "FAILED":
+            result["error"] = getattr(eod_result, "error_message", None) or "EOD failed."
+            return result
+        if not skip_tick and not getattr(eod_result, "should_advance_date", True):
+            result["error"] = (
+                f"EOD completed as {getattr(eod_result, 'run_status', 'DEGRADED')}; "
+                "policy forbids system date advance."
+            )
+            return result
 
     if not skip_tick:
         next_date = as_of + timedelta(days=1)

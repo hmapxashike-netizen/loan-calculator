@@ -31,6 +31,7 @@ try:
     from customers import (
         create_individual,
         create_corporate,
+        create_corporate_with_entities,
         list_customers,
         get_customer,
         set_active,
@@ -79,6 +80,36 @@ try:
 except Exception as e:
     _documents_available = False
     _documents_error = str(e)
+
+# Document type name whitelists per entity (must match document_categories.name)
+INDIVIDUAL_DOC_TYPES = {
+    "National ID",
+    "Payslip",
+    "Proof of Residence",
+    "Confirmation of Employment",
+    "Other",
+}
+
+CORPORATE_DOC_TYPES = {
+    "CR5",
+    "CR6",
+    "Memorandum and Articles",
+    "Certificate of Incorporation",
+    "CR2",
+    "Other",
+}
+
+AGENT_INDIVIDUAL_DOC_TYPES = INDIVIDUAL_DOC_TYPES.union({"Tax Clearance"})
+
+AGENT_CORPORATE_DOC_TYPES = CORPORATE_DOC_TYPES.union(
+    {
+        # Director KYC (same as individual)
+        "National ID",
+        "Payslip",
+        "Proof of Residence",
+        "Confirmation of Employment",
+    }
+)
 
 try:
     from loan_management import (
@@ -230,8 +261,26 @@ def _get_system_config() -> dict:
                 "run_loan_engine": True,
                 "post_accounting_events": False,
                 "generate_statements": False,
+                "snapshot_financial_statements": True,
                 "send_notifications": False,
             },
+            "stage_policy": {
+                "mode": "hybrid",  # strict | hybrid | best_effort
+                "blocking_stages": [
+                    "loan_engine",
+                    "reallocate_after_reversals",
+                    "apply_unapplied_to_arrears",
+                    "accounting_events",
+                    "statements",
+                ],
+                "advance_date_on_degraded": False,
+            },
+        },
+        "accounting_periods": {
+            "month_end_mode": "calendar",  # calendar | fixed_day
+            "month_end_day": 31,  # used only when month_end_mode=fixed_day
+            "fiscal_year_end_month": 12,  # 1=Jan ... 12=Dec
+            "snapshot_max_rows": 100,
         },
     }
     if "system_config" not in st.session_state:
@@ -258,7 +307,7 @@ def _get_system_config() -> dict:
 
 
 def system_configurations_ui():
-    """System configurations: Sectors, EOD, and Products. Loan/currency/waterfall/suspension are per product."""
+    """System configurations: sectors, EOD, accounting periods, and products."""
     st.markdown(
         "<div style='background-color: #16A34A; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.1rem;'>System configurations</div>",
         unsafe_allow_html=True,
@@ -273,15 +322,29 @@ def system_configurations_ui():
         "run_loan_engine": True,
         "post_accounting_events": False,
         "generate_statements": False,
+        "snapshot_financial_statements": True,
         "send_notifications": False,
     }
     existing_tasks = eod_cfg.get("tasks") or {}
     eod_tasks: dict[str, bool] = {
         k: bool(existing_tasks.get(k, default)) for k, default in eod_task_defaults.items()
     }
+    policy_cfg = eod_cfg.get("stage_policy", {}) or {}
+    policy_mode = str(policy_cfg.get("mode") or "hybrid")
+    blocking_stage_default = [
+        "loan_engine",
+        "reallocate_after_reversals",
+        "apply_unapplied_to_arrears",
+        "accounting_events",
+        "statements",
+    ]
+    blocking_stages = policy_cfg.get("blocking_stages")
+    if not isinstance(blocking_stages, list):
+        blocking_stages = list(blocking_stage_default)
+    advance_date_on_degraded = bool(policy_cfg.get("advance_date_on_degraded", False))
 
-    tab_sectors, tab_eod, tab_products = st.tabs(
-        ["Sectors & subsectors", "EOD configurations", "Products"],
+    tab_sectors, tab_eod, tab_accounting, tab_products = st.tabs(
+        ["Sectors & subsectors", "EOD configurations", "Accounting configurations", "Products"],
     )
 
     # ---------------- Sectors & subsectors tab ----------------
@@ -412,10 +475,102 @@ def system_configurations_ui():
             value=eod_tasks.get("generate_statements", False),
             key="syscfg_eod_task_stmt",
         )
+        eod_tasks["snapshot_financial_statements"] = st.checkbox(
+            "Save immutable month-end/year-end statement snapshots",
+            value=eod_tasks.get("snapshot_financial_statements", True),
+            key="syscfg_eod_task_stmt_snapshot",
+            help="On accounting period close, persist Trial Balance, P&L, Balance Sheet, Cash Flow, and Statement of Changes in Equity.",
+        )
         eod_tasks["send_notifications"] = st.checkbox(
             "Send notifications (e.g. SMS/email) based on EOD results",
             value=eod_tasks.get("send_notifications", False),
             key="syscfg_eod_task_notify",
+        )
+
+        st.markdown("**Stage failure policy**")
+        st.caption(
+            "Control which stage failures block EOD/date advance. "
+            "Hybrid mode uses blocking stages below; non-blocking failures become DEGRADED."
+        )
+        policy_mode = st.selectbox(
+            "Policy mode",
+            ["strict", "hybrid", "best_effort"],
+            index=["strict", "hybrid", "best_effort"].index(policy_mode)
+            if policy_mode in {"strict", "hybrid", "best_effort"}
+            else 1,
+            key="syscfg_eod_policy_mode",
+        )
+        stage_options = [
+            "loan_engine",
+            "reallocate_after_reversals",
+            "apply_unapplied_to_arrears",
+            "accounting_events",
+            "statements",
+            "notifications",
+        ]
+        blocking_stages = st.multiselect(
+            "Blocking stages",
+            options=stage_options,
+            default=[s for s in blocking_stages if s in stage_options],
+            key="syscfg_eod_blocking_stages",
+            help="If a blocking stage fails in hybrid mode, EOD run is FAILED and system date is not advanced.",
+        )
+        advance_date_on_degraded = st.checkbox(
+            "Advance system date when run is DEGRADED",
+            value=advance_date_on_degraded,
+            key="syscfg_eod_advance_on_degraded",
+            help="Use with care. Recommended OFF for conservative financial controls.",
+        )
+
+    with tab_accounting:
+        st.subheader("Accounting periods")
+        st.caption(
+            "Define accounting month-end and fiscal year-end. The system uses this for EOM/EOY decisions in EOD and financial reporting."
+        )
+        acc_cfg = cfg.get("accounting_periods", {}) or {}
+        month_mode = str(acc_cfg.get("month_end_mode") or "calendar")
+        month_day_default = int(acc_cfg.get("month_end_day") or 31)
+        fiscal_year_end_month_default = int(acc_cfg.get("fiscal_year_end_month") or 12)
+        snapshot_max_rows_default = int(acc_cfg.get("snapshot_max_rows") or 100)
+
+        mirror_calendar = st.checkbox(
+            "Accounting month mirrors calendar month",
+            value=(month_mode == "calendar"),
+            key="syscfg_acc_mirror_calendar",
+        )
+        if mirror_calendar:
+            month_mode = "calendar"
+            month_day = 31
+            st.caption("Month-end is the last calendar day of each month.")
+        else:
+            month_mode = "fixed_day"
+            month_day = st.number_input(
+                "Accounting month ends on day",
+                min_value=1,
+                max_value=31,
+                value=month_day_default if 1 <= month_day_default <= 31 else 5,
+                step=1,
+                key="syscfg_acc_month_end_day",
+                help="If a month has fewer days than this value, the month end is treated as that month's last day.",
+            )
+
+        month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        year_end_month_label = st.selectbox(
+            "Fiscal year-end month",
+            options=month_labels,
+            index=max(0, min(11, fiscal_year_end_month_default - 1)),
+            key="syscfg_acc_year_end_month",
+            help="Year closes on the accounting month-end date of this month.",
+        )
+        fiscal_year_end_month = month_labels.index(year_end_month_label) + 1
+        snapshot_max_rows = st.number_input(
+            "Max snapshot rows in history view",
+            min_value=10,
+            max_value=1000,
+            value=snapshot_max_rows_default if 10 <= snapshot_max_rows_default <= 1000 else 100,
+            step=10,
+            key="syscfg_acc_snapshot_max_rows",
+            help="Upper bound for rows returned when loading snapshot history. Controls performance only (does not affect what is stored).",
         )
 
     # ---------------- Products tab ----------------
@@ -656,8 +811,20 @@ def system_configurations_ui():
                 "run_loan_engine": True,
                 "post_accounting_events": eod_tasks.get("post_accounting_events", False),
                 "generate_statements": eod_tasks.get("generate_statements", False),
+                "snapshot_financial_statements": eod_tasks.get("snapshot_financial_statements", True),
                 "send_notifications": eod_tasks.get("send_notifications", False),
             },
+            "stage_policy": {
+                "mode": policy_mode,
+                "blocking_stages": blocking_stages,
+                "advance_date_on_degraded": bool(advance_date_on_degraded),
+            },
+        },
+        "accounting_periods": {
+            "month_end_mode": month_mode,
+            "month_end_day": int(month_day),
+            "fiscal_year_end_month": int(fiscal_year_end_month),
+            "snapshot_max_rows": int(snapshot_max_rows),
         },
     }
     st.divider()
@@ -736,13 +903,25 @@ def eod_ui():
         # gets a clear confirmation message even after rerun.
         last_eod = st.session_state.get("eod_last_result")
         if last_eod and last_eod.get("success"):
-            st.success(
-                f"EOD completed for {last_eod['as_of_date']}. "
+            status_txt = last_eod.get("run_status") or "SUCCESS"
+            msg = (
+                f"EOD completed for {last_eod['as_of_date']} "
+                f"(status: {status_txt}). "
                 f"System date advanced to {last_eod['new_system_date']}. "
                 f"Real-world: {last_eod['real_world_time']}"
             )
+            st.success(msg)
+            if last_eod.get("run_id"):
+                st.caption(f"Run ID: {last_eod['run_id']}")
         elif last_eod and not last_eod.get("success"):
-            st.error(f"EOD failed: {last_eod.get('error', 'Unknown error')}")
+            fail_stage = last_eod.get("failed_stage")
+            err = last_eod.get("error", "Unknown error")
+            if fail_stage:
+                st.error(f"EOD failed at stage `{fail_stage}`: {err}")
+            else:
+                st.error(f"EOD failed: {err}")
+            if last_eod.get("run_id"):
+                st.caption(f"Run ID: {last_eod['run_id']} | status: {last_eod.get('run_status') or 'FAILED'}")
 
         confirm = st.checkbox(
             f"I confirm: EOD will process accruals for **{current_system_date.isoformat()}**. "
@@ -769,8 +948,10 @@ def eod_ui():
                     duration = result.finished_at - result.started_at
                     st.success(
                         f"EOD completed for {result.as_of_date.isoformat()} – "
-                        f"processed {result.loans_processed} loans. System date unchanged."
+                        f"processed {result.loans_processed} loans. "
+                        f"Status: {result.run_status}. System date unchanged."
                     )
+                    st.caption(f"Run ID: {result.run_id} | Duration: {duration}")
                 except Exception as e:
                     st.error(f"EOD run failed: {e}")
     else:
@@ -2377,25 +2558,61 @@ def capture_loan_ui():
             
             st.subheader("Loan Documents")
             st.write("Upload supporting loan documents before saving.")
-            uploaded_loan_docs = []
+            if "loan_docs_staged" not in st.session_state:
+                st.session_state["loan_docs_staged"] = []
+            staged_loan_docs = st.session_state["loan_docs_staged"]
             if _documents_available:
                 doc_cats = list_document_categories(active_only=True)
-                if not doc_cats:
-                    st.info("No document categories configured.")
+                # Allowed loan document names (must exist as categories)
+                LOAN_DOC_TYPES = {
+                    "Signed Loan Agreement",
+                    "Facility Letter",
+                    "Term Sheet",
+                    "Business Plan",
+                    "Application Form",
+                    "Application Letter",
+                    "Purchase Orders",
+                    "Offtake Agreement",
+                    "Supply Agreement",
+                    "Other",
+                }
+                name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in LOAN_DOC_TYPES}
+                if not name_to_cat:
+                    st.info("No matching loan document categories configured.")
                 else:
-                    from collections import defaultdict
-                    cats_by_class = defaultdict(list)
-                    for cat in doc_cats:
-                        class_name = cat.get("class_name") or "Uncategorized"
-                        cats_by_class[class_name].append(cat)
-                    
-                    for class_name, cats in cats_by_class.items():
-                        st.markdown(f"**{class_name}**")
-                        for cat in cats:
-                            f = st.file_uploader(f"Upload {cat['name']}", type=["pdf", "png", "jpg", "jpeg"], key=f"loan_doc_{cat['id']}")
-                            if f is not None:
-                                uploaded_loan_docs.append((cat['id'], f))
-                        st.divider()
+                    doc_type = st.selectbox(
+                        "Document type",
+                        sorted(name_to_cat.keys()),
+                        key="loan_doc_type",
+                    )
+                    other_label = ""
+                    if doc_type == "Other":
+                        other_label = st.text_input(
+                            "If Other, describe the document",
+                            key="loan_doc_other_label",
+                        )
+                    f = st.file_uploader(
+                        "Choose file",
+                        type=["pdf", "png", "jpg", "jpeg"],
+                        key="loan_doc_file",
+                    )
+                    notes = st.text_input("Notes (optional)", key="loan_doc_notes")
+                    if st.button("Save document to list", key="loan_doc_add") and f is not None:
+                        cat = name_to_cat[doc_type]
+                        label = other_label.strip() if doc_type == "Other" else notes.strip()
+                        staged_loan_docs.append(
+                            {
+                                "category_id": cat["id"],
+                                "file": f,
+                                "notes": label or "",
+                            }
+                        )
+                        st.session_state["loan_docs_staged"] = staged_loan_docs
+                        st.success(f"Staged {f.name} as {doc_type}.")
+                if staged_loan_docs:
+                    st.markdown("**Staged documents:**")
+                    for idx, row in enumerate(staged_loan_docs, start=1):
+                        st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'no notes'})")
             else:
                 st.info("Document module is unavailable.")
             
@@ -2413,15 +2630,30 @@ def capture_loan_ui():
                         loan_id = save_loan_to_db(cid, ltype, details_with_agent, df_schedule, product_code=st.session_state.get("capture_product_code"))
                         
                         doc_count = 0
-                        if _documents_available and uploaded_loan_docs:
-                            for cat_id, f in uploaded_loan_docs:
+                        staged_loan_docs = st.session_state.get("loan_docs_staged") or []
+                        if _documents_available and staged_loan_docs:
+                            for row in staged_loan_docs:
+                                cat_id = row["category_id"]
+                                f = row["file"]
+                                notes = row.get("notes") or ""
                                 try:
-                                    upload_document("loan", loan_id, cat_id, f.name, f.type, f.size, f.getvalue(), uploaded_by="System User")
+                                    upload_document(
+                                        "loan",
+                                        loan_id,
+                                        cat_id,
+                                        f.name,
+                                        f.type,
+                                        f.size,
+                                        f.getvalue(),
+                                        uploaded_by="System User",
+                                        notes=notes,
+                                    )
                                     doc_count += 1
                                 except Exception as e:
                                     st.error(f"Failed to upload {f.name}: {e}")
                                     
                         st.session_state["capture_last_save_result"] = {"success": True, "loan_id": loan_id, "doc_count": doc_count}
+                        st.session_state["loan_docs_staged"] = []
                         for k in ["capture_loan_details", "capture_loan_schedule_df"]:
                             st.session_state.pop(k, None)
                         st.rerun()
@@ -2494,28 +2726,52 @@ def customers_ui():
                     country = st.text_input("Country", key="ind_addr_country")
                     use_addr = st.checkbox("Include this address", value=False, key="ind_use_addr")
                 
-                uploaded_files_data = []
+                # Individual customer documents: single dropdown + uploader + staged list
+                if "ind_docs_staged" not in st.session_state:
+                    st.session_state["ind_docs_staged"] = []
                 with st.expander("Documents (optional)"):
+                    staged_ind_docs = st.session_state["ind_docs_staged"]
                     if _documents_available:
-                        st.write("Upload customer documents here. Max size 200MB per file.")
+                        st.write("Upload individual KYC documents here. Max size 200MB per file.")
                         doc_cats = list_document_categories(active_only=True)
-                        if not doc_cats:
-                            st.info("No document categories configured.")
+                        name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
+                        if not name_to_cat:
+                            st.info("No matching document categories (Individual KYC) configured.")
                         else:
-                            # Group categories by class
-                            from collections import defaultdict
-                            cats_by_class = defaultdict(list)
-                            for cat in doc_cats:
-                                class_name = cat.get("class_name") or "Uncategorized"
-                                cats_by_class[class_name].append(cat)
-                            
-                            for class_name, cats in cats_by_class.items():
-                                st.markdown(f"**{class_name}**")
-                                for cat in cats:
-                                    f = st.file_uploader(f"Upload {cat['name']}", type=["pdf", "png", "jpg", "jpeg"], key=f"ind_doc_{cat['id']}")
-                                    if f is not None:
-                                        uploaded_files_data.append((cat['id'], f))
-                                st.divider()
+                            doc_type = st.selectbox(
+                                "Document type",
+                                sorted(name_to_cat.keys()),
+                                key="ind_doc_type",
+                            )
+                            other_label = ""
+                            if doc_type == "Other":
+                                other_label = st.text_input(
+                                    "If Other, describe the document",
+                                    key="ind_doc_other_label",
+                                )
+                            f = st.file_uploader(
+                                "Choose file",
+                                type=["pdf", "png", "jpg", "jpeg"],
+                                key="ind_doc_file",
+                            )
+                            notes = st.text_input("Notes (optional)", key="ind_doc_notes")
+                            doc_add = st.form_submit_button("Save document to list", key="ind_doc_add")
+                            if doc_add and f is not None:
+                                cat = name_to_cat[doc_type]
+                                label = other_label.strip() if doc_type == "Other" else notes.strip()
+                                staged_ind_docs.append(
+                                    {
+                                        "category_id": cat["id"],
+                                        "file": f,
+                                        "notes": label or "",
+                                    }
+                                )
+                                st.session_state["ind_docs_staged"] = staged_ind_docs
+                                st.success(f"Staged {f.name} as {doc_type}.")
+                        if staged_ind_docs:
+                            st.markdown("**Staged documents:**")
+                            for idx, row in enumerate(staged_ind_docs, start=1):
+                                st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'no notes'})")
                     else:
                         st.info("Document module is unavailable.")
 
@@ -2539,16 +2795,31 @@ def customers_ui():
                         )
                         st.success(f"Individual customer created. Customer ID: **{cid}**.")
                         
-                        if _documents_available and uploaded_files_data:
+                        staged_ind_docs = st.session_state.get("ind_docs_staged") or []
+                        if _documents_available and staged_ind_docs:
                             doc_count = 0
-                            for cat_id, f in uploaded_files_data:
+                            for row in staged_ind_docs:
+                                cat_id = row["category_id"]
+                                f = row["file"]
+                                notes = row.get("notes") or ""
                                 try:
-                                    upload_document("customer", cid, cat_id, f.name, f.type, f.size, f.getvalue(), uploaded_by="System User")
+                                    upload_document(
+                                        "customer",
+                                        cid,
+                                        cat_id,
+                                        f.name,
+                                        f.type,
+                                        f.size,
+                                        f.getvalue(),
+                                        uploaded_by="System User",
+                                        notes=notes,
+                                    )
                                     doc_count += 1
                                 except Exception as e:
                                     st.error(f"Failed to upload {f.name}: {e}")
                             if doc_count > 0:
                                 st.success(f"Successfully uploaded {doc_count} documents.")
+                        st.session_state["ind_docs_staged"] = []
                                 
                     except Exception as e:
                         st.error(f"Could not create customer: {e}")
@@ -2600,6 +2871,43 @@ def customers_ui():
                     cp_city = st.text_input("City", key="corp_cp_city")
                     cp_country = st.text_input("Country", key="corp_cp_country")
                     use_cp = st.checkbox("Include contact person", value=False, key="corp_use_cp")
+                    if "corp_contact_docs_staged" not in st.session_state:
+                        st.session_state["corp_contact_docs_staged"] = []
+                    staged_contact_docs = st.session_state["corp_contact_docs_staged"]
+                    if _documents_available:
+                        st.caption("Contact person documents")
+                        doc_cats = list_document_categories(active_only=True)
+                        name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
+                        if not name_to_cat:
+                            st.info("No matching document categories (Contact person KYC) configured.")
+                        else:
+                            cp_doc_type = st.selectbox(
+                                "Document type",
+                                sorted(name_to_cat.keys()),
+                                key="cp_doc_type",
+                            )
+                            cp_other_label = ""
+                            if cp_doc_type == "Other":
+                                cp_other_label = st.text_input(
+                                    "If Other, describe the document",
+                                    key="cp_doc_other_label",
+                                )
+                            cp_f = st.file_uploader(
+                                "Choose file",
+                                type=["pdf", "png", "jpg", "jpeg"],
+                                key="cp_doc_file",
+                            )
+                            cp_notes = st.text_input("Notes (optional)", key="cp_doc_notes")
+                            cp_add = st.form_submit_button("Save contact person document", key="cp_doc_add")
+                            if cp_add and cp_f is not None:
+                                cat = name_to_cat[cp_doc_type]
+                                label = cp_other_label.strip() if cp_doc_type == "Other" else cp_notes.strip()
+                                staged_contact_docs.append({"category_id": cat["id"], "file": cp_f, "notes": label or ""})
+                                st.session_state["corp_contact_docs_staged"] = staged_contact_docs
+                                st.success(f"Staged {cp_f.name} for contact person.")
+                        if staged_contact_docs:
+                            for idx, row in enumerate(staged_contact_docs, start=1):
+                                st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'no notes'})")
                 with st.expander("Directors (optional)"):
                     dir_name = st.text_input("Director full name", key="corp_dir_name")
                     dir_national_id = st.text_input("Director national ID", key="corp_dir_national_id")
@@ -2608,6 +2916,43 @@ def customers_ui():
                     dir_phone2 = st.text_input("Director phone 2", key="corp_dir_phone2")
                     dir_email = st.text_input("Director email", key="corp_dir_email")
                     use_dir = st.checkbox("Include this director", value=False, key="corp_use_dir")
+                    if "corp_director_docs_staged" not in st.session_state:
+                        st.session_state["corp_director_docs_staged"] = []
+                    staged_director_docs = st.session_state["corp_director_docs_staged"]
+                    if _documents_available:
+                        st.caption("Director documents")
+                        doc_cats = list_document_categories(active_only=True)
+                        name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
+                        if not name_to_cat:
+                            st.info("No matching document categories (Director KYC) configured.")
+                        else:
+                            dir_doc_type = st.selectbox(
+                                "Document type",
+                                sorted(name_to_cat.keys()),
+                                key="dir_doc_type",
+                            )
+                            dir_other_label = ""
+                            if dir_doc_type == "Other":
+                                dir_other_label = st.text_input(
+                                    "If Other, describe the document",
+                                    key="dir_doc_other_label",
+                                )
+                            dir_f = st.file_uploader(
+                                "Choose file",
+                                type=["pdf", "png", "jpg", "jpeg"],
+                                key="dir_doc_file",
+                            )
+                            dir_notes = st.text_input("Notes (optional)", key="dir_doc_notes")
+                            dir_add = st.form_submit_button("Save director document", key="dir_doc_add")
+                            if dir_add and dir_f is not None:
+                                cat = name_to_cat[dir_doc_type]
+                                label = dir_other_label.strip() if dir_doc_type == "Other" else dir_notes.strip()
+                                staged_director_docs.append({"category_id": cat["id"], "file": dir_f, "notes": label or ""})
+                                st.session_state["corp_director_docs_staged"] = staged_director_docs
+                                st.success(f"Staged {dir_f.name} for director.")
+                        if staged_director_docs:
+                            for idx, row in enumerate(staged_director_docs, start=1):
+                                st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'no notes'})")
                 with st.expander("Shareholders (optional)"):
                     sh_name = st.text_input("Shareholder full name", key="corp_sh_name")
                     sh_national_id = st.text_input("Shareholder national ID", key="corp_sh_national_id")
@@ -2618,27 +2963,52 @@ def customers_ui():
                     sh_pct = st.number_input("Shareholding %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, key="corp_sh_pct")
                     use_sh = st.checkbox("Include this shareholder", value=False, key="corp_use_sh")
                 
-                uploaded_files_data_corp = []
+                # Corporate customer documents: single dropdown + uploader + staged list
+                if "corp_docs_staged" not in st.session_state:
+                    st.session_state["corp_docs_staged"] = []
                 with st.expander("Documents (optional)"):
+                    staged_corp_docs = st.session_state["corp_docs_staged"]
                     if _documents_available:
-                        st.write("Upload corporate documents here. Max size 200MB per file.")
+                        st.write("Upload corporate registration documents here. Max size 200MB per file.")
                         doc_cats = list_document_categories(active_only=True)
-                        if not doc_cats:
-                            st.info("No document categories configured.")
+                        name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in CORPORATE_DOC_TYPES}
+                        if not name_to_cat:
+                            st.info("No matching document categories (Corporate KYC) configured.")
                         else:
-                            from collections import defaultdict
-                            cats_by_class = defaultdict(list)
-                            for cat in doc_cats:
-                                class_name = cat.get("class_name") or "Uncategorized"
-                                cats_by_class[class_name].append(cat)
-                            
-                            for class_name, cats in cats_by_class.items():
-                                st.markdown(f"**{class_name}**")
-                                for cat in cats:
-                                    f = st.file_uploader(f"Upload {cat['name']}", type=["pdf", "png", "jpg", "jpeg"], key=f"corp_doc_{cat['id']}")
-                                    if f is not None:
-                                        uploaded_files_data_corp.append((cat['id'], f))
-                                st.divider()
+                            doc_type = st.selectbox(
+                                "Document type",
+                                sorted(name_to_cat.keys()),
+                                key="corp_doc_type",
+                            )
+                            other_label = ""
+                            if doc_type == "Other":
+                                other_label = st.text_input(
+                                    "If Other, describe the document",
+                                    key="corp_doc_other_label",
+                                )
+                            f = st.file_uploader(
+                                "Choose file",
+                                type=["pdf", "png", "jpg", "jpeg"],
+                                key="corp_doc_file",
+                            )
+                            notes = st.text_input("Notes (optional)", key="corp_doc_notes")
+                            doc_add_corp = st.form_submit_button("Save document to list", key="corp_doc_add")
+                            if doc_add_corp and f is not None:
+                                cat = name_to_cat[doc_type]
+                                label = other_label.strip() if doc_type == "Other" else notes.strip()
+                                staged_corp_docs.append(
+                                    {
+                                        "category_id": cat["id"],
+                                        "file": f,
+                                        "notes": label or "",
+                                    }
+                                )
+                                st.session_state["corp_docs_staged"] = staged_corp_docs
+                                st.success(f"Staged {f.name} as {doc_type}.")
+                        if staged_corp_docs:
+                            st.markdown("**Staged documents:**")
+                            for idx, row in enumerate(staged_corp_docs, start=1):
+                                st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'no notes'})")
                     else:
                         st.info("Document module is unavailable.")
 
@@ -2651,7 +3021,7 @@ def customers_ui():
                     directors = [{"full_name": dir_name.strip(), "national_id": dir_national_id.strip() or None, "designation": dir_designation.strip() or None, "phone1": dir_phone1.strip() or None, "phone2": dir_phone2.strip() or None, "email": dir_email.strip() or None, "address_line1": None, "address_line2": None, "city": None, "country": None}] if use_dir and dir_name.strip() else None
                     shareholders = [{"full_name": sh_name.strip(), "national_id": sh_national_id.strip() or None, "designation": sh_designation.strip() or None, "phone1": sh_phone1.strip() or None, "phone2": sh_phone2.strip() or None, "email": sh_email.strip() or None, "address_line1": None, "address_line2": None, "city": None, "country": None, "shareholding_pct": sh_pct}] if use_sh and sh_name.strip() else None
                     try:
-                        cid = create_corporate(
+                        created = create_corporate_with_entities(
                             legal_name=legal_name.strip(),
                             trading_name=trading_name.strip() or None,
                             reg_number=reg_number.strip() or None,
@@ -2663,18 +3033,84 @@ def customers_ui():
                             sector_id=corp_sector_id,
                             subsector_id=corp_subsector_id,
                         )
+                        cid = int(created["customer_id"])
                         st.success(f"Corporate customer created. Customer ID: **{cid}**.")
                         
-                        if _documents_available and uploaded_files_data_corp:
+                        staged_corp_docs = st.session_state.get("corp_docs_staged") or []
+                        if _documents_available and staged_corp_docs:
                             doc_count = 0
-                            for cat_id, f in uploaded_files_data_corp:
+                            for row in staged_corp_docs:
+                                cat_id = row["category_id"]
+                                f = row["file"]
+                                notes = row.get("notes") or ""
                                 try:
-                                    upload_document("customer", cid, cat_id, f.name, f.type, f.size, f.getvalue(), uploaded_by="System User")
+                                    upload_document(
+                                        "customer",
+                                        cid,
+                                        cat_id,
+                                        f.name,
+                                        f.type,
+                                        f.size,
+                                        f.getvalue(),
+                                        uploaded_by="System User",
+                                        notes=notes,
+                                    )
                                     doc_count += 1
                                 except Exception as e:
                                     st.error(f"Failed to upload {f.name}: {e}")
                             if doc_count > 0:
                                 st.success(f"Successfully uploaded {doc_count} documents.")
+                        # Upload contact person docs to their own bucket/entity id.
+                        staged_contact_docs = st.session_state.get("corp_contact_docs_staged") or []
+                        contact_ids = created.get("contact_person_ids") or []
+                        if _documents_available and staged_contact_docs and contact_ids:
+                            cp_id = int(contact_ids[0])
+                            cp_count = 0
+                            for row in staged_contact_docs:
+                                try:
+                                    upload_document(
+                                        "contact_person",
+                                        cp_id,
+                                        row["category_id"],
+                                        row["file"].name,
+                                        row["file"].type,
+                                        row["file"].size,
+                                        row["file"].getvalue(),
+                                        uploaded_by="System User",
+                                        notes=row.get("notes") or "",
+                                    )
+                                    cp_count += 1
+                                except Exception as e:
+                                    st.error(f"Failed to upload contact person doc {row['file'].name}: {e}")
+                            if cp_count > 0:
+                                st.success(f"Uploaded {cp_count} contact person document(s).")
+                        # Upload director docs to their own bucket/entity id (first director from this form).
+                        staged_director_docs = st.session_state.get("corp_director_docs_staged") or []
+                        director_ids = created.get("director_ids") or []
+                        if _documents_available and staged_director_docs and director_ids:
+                            dir_id = int(director_ids[0])
+                            dir_count = 0
+                            for row in staged_director_docs:
+                                try:
+                                    upload_document(
+                                        "director",
+                                        dir_id,
+                                        row["category_id"],
+                                        row["file"].name,
+                                        row["file"].type,
+                                        row["file"].size,
+                                        row["file"].getvalue(),
+                                        uploaded_by="System User",
+                                        notes=row.get("notes") or "",
+                                    )
+                                    dir_count += 1
+                                except Exception as e:
+                                    st.error(f"Failed to upload director doc {row['file'].name}: {e}")
+                            if dir_count > 0:
+                                st.success(f"Uploaded {dir_count} director document(s).")
+                        st.session_state["corp_docs_staged"] = []
+                        st.session_state["corp_contact_docs_staged"] = []
+                        st.session_state["corp_director_docs_staged"] = []
                                 
                     except Exception as e:
                         st.error(f"Could not create customer: {e}")
@@ -2722,6 +3158,112 @@ def customers_ui():
                         st.session_state["cust_loaded_id"] = loaded_id
                         st.rerun()
 
+                    # Direct document upload to corporate sub-entities (separate buckets/IDs).
+                    if rec.get("type") == "corporate" and _documents_available:
+                        doc_cats = list_document_categories(active_only=True) or []
+                        # Contact person + directors share Individual KYC types plus Other.
+                        name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
+
+                        if not name_to_cat:
+                            st.info("No matching document categories configured for contact/director KYC.")
+                        else:
+                            cp_list = rec.get("contact_persons") or []
+                            dir_list = rec.get("directors") or []
+
+                            if cp_list:
+                                st.divider()
+                                st.subheader("Contact person documents")
+                                cp_options = [(cp["id"], cp.get("full_name") or f"Contact #{cp['id']}") for cp in cp_list]
+                                cp_id = st.selectbox(
+                                    "Select contact person",
+                                    options=[x[0] for x in cp_options],
+                                    format_func=lambda i: next((n for (cid, n) in cp_options if cid == i), str(i)),
+                                    key=f"cp_doc_pick_{loaded_id}",
+                                )
+
+                                cp_doc_type = st.selectbox(
+                                    "Document type",
+                                    sorted(name_to_cat.keys()),
+                                    key=f"cp_doc_type_{loaded_id}",
+                                )
+                                cp_other_desc = ""
+                                if cp_doc_type == "Other":
+                                    cp_other_desc = st.text_input(
+                                        "Other document name",
+                                        key=f"cp_doc_other_{loaded_id}",
+                                    )
+                                cp_notes = st.text_input(
+                                    "Notes (optional)",
+                                    key=f"cp_doc_notes_{loaded_id}",
+                                )
+                                cp_file = st.file_uploader(
+                                    "Choose file",
+                                    type=["pdf", "png", "jpg", "jpeg"],
+                                    key=f"cp_doc_file_{loaded_id}",
+                                )
+                                if st.button("Upload contact document", key=f"cp_doc_upload_{loaded_id}") and cp_file is not None:
+                                    cat = name_to_cat[cp_doc_type]
+                                    stored_notes = cp_other_desc.strip() if cp_doc_type == "Other" else cp_notes.strip()
+                                    upload_document(
+                                        "contact_person",
+                                        int(cp_id),
+                                        cat["id"],
+                                        cp_file.name,
+                                        cp_file.type,
+                                        cp_file.size,
+                                        cp_file.getvalue(),
+                                        uploaded_by="System User",
+                                        notes=stored_notes or "",
+                                    )
+                                    st.success("Contact person document uploaded.")
+
+                            if dir_list:
+                                st.divider()
+                                st.subheader("Director documents")
+                                dir_options = [(d["id"], d.get("full_name") or f"Director #{d['id']}") for d in dir_list]
+                                dir_id = st.selectbox(
+                                    "Select director",
+                                    options=[x[0] for x in dir_options],
+                                    format_func=lambda i: next((n for (did, n) in dir_options if did == i), str(i)),
+                                    key=f"dir_doc_pick_{loaded_id}",
+                                )
+
+                                dir_doc_type = st.selectbox(
+                                    "Document type",
+                                    sorted(name_to_cat.keys()),
+                                    key=f"dir_doc_type_{loaded_id}",
+                                )
+                                dir_other_desc = ""
+                                if dir_doc_type == "Other":
+                                    dir_other_desc = st.text_input(
+                                        "Other document name",
+                                        key=f"dir_doc_other_{loaded_id}",
+                                    )
+                                dir_notes = st.text_input(
+                                    "Notes (optional)",
+                                    key=f"dir_doc_notes_{loaded_id}",
+                                )
+                                dir_file = st.file_uploader(
+                                    "Choose file",
+                                    type=["pdf", "png", "jpg", "jpeg"],
+                                    key=f"dir_doc_file_{loaded_id}",
+                                )
+                                if st.button("Upload director document", key=f"dir_doc_upload_{loaded_id}") and dir_file is not None:
+                                    cat = name_to_cat[dir_doc_type]
+                                    stored_notes = dir_other_desc.strip() if dir_doc_type == "Other" else dir_notes.strip()
+                                    upload_document(
+                                        "director",
+                                        int(dir_id),
+                                        cat["id"],
+                                        dir_file.name,
+                                        dir_file.type,
+                                        dir_file.size,
+                                        dir_file.getvalue(),
+                                        uploaded_by="System User",
+                                        notes=stored_notes or "",
+                                    )
+                                    st.success("Director document uploaded.")
+
     with tab4:
         st.subheader("Agents")
         col_main4, _ = st.columns([1, 1])
@@ -2749,6 +3291,7 @@ def customers_ui():
                     col_a1, col_a2 = st.columns(2)
                     with col_a1:
                         aname = st.text_input("Agent name *", key="agent_name")
+                        atype_label = st.selectbox("Agent type", ["Individual", "Corporate"], key="agent_type")
                         aid_number = st.text_input("ID number", placeholder="e.g. 111111111x11", key="agent_id_number")
                         aaddr1 = st.text_input("Address line 1", key="agent_addr1")
                         acity = st.text_input("City", key="agent_city")
@@ -2761,11 +3304,63 @@ def customers_ui():
                     acommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, format="%.2f", key="agent_commission")
                     atin = st.text_input("TIN number", key="agent_tin")
                     atax_expiry = st.date_input("Tax clearance expiry", value=None, key="agent_tax_expiry")
+                    # Agent documents (optional)
+                    if "agent_docs_staged" not in st.session_state:
+                        st.session_state["agent_docs_staged"] = []
+                    staged_agent_docs = st.session_state["agent_docs_staged"]
+                    with st.expander("Agent documents (optional)"):
+                        if _documents_available:
+                            atype_internal = "individual" if atype_label.lower().startswith("individual") else "corporate"
+                            doc_cats = list_document_categories(active_only=True)
+                            allowed = AGENT_INDIVIDUAL_DOC_TYPES if atype_internal == "individual" else AGENT_CORPORATE_DOC_TYPES
+                            name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in allowed}
+                            if not name_to_cat:
+                                st.info("No matching document categories configured for agents.")
+                            else:
+                                doc_type = st.selectbox(
+                                    "Document type",
+                                    sorted(name_to_cat.keys()),
+                                    key="agent_doc_type",
+                                )
+                                other_label = ""
+                                if doc_type == "Other":
+                                    other_label = st.text_input(
+                                        "If Other, describe the document",
+                                        key="agent_doc_other_label",
+                                    )
+                                f = st.file_uploader(
+                                    "Choose file",
+                                    type=["pdf", "png", "jpg", "jpeg"],
+                                    key="agent_doc_file",
+                                )
+                                notes = st.text_input("Notes (optional)", key="agent_doc_notes")
+                                add_agent_doc = st.form_submit_button("Save document to list", key="agent_doc_add")
+                                if add_agent_doc and f is not None:
+                                    cat = name_to_cat[doc_type]
+                                    label = other_label.strip() if doc_type == "Other" else notes.strip()
+                                    staged_agent_docs.append(
+                                        {
+                                            "category_id": cat["id"],
+                                            "file": f,
+                                            "notes": label or "",
+                                        }
+                                    )
+                                    st.session_state["agent_docs_staged"] = staged_agent_docs
+                                    st.success(f"Staged {f.name} as {doc_type}.")
+                            if staged_agent_docs:
+                                st.markdown("**Staged documents:**")
+                                for idx, row in enumerate(staged_agent_docs, start=1):
+                                    st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'no notes'})")
+                        else:
+                            st.info("Document module is unavailable.")
+
                     submitted_create_agent = st.form_submit_button("Create agent")
                     if submitted_create_agent and aname.strip():
                         try:
+                            atype_internal = "individual" if atype_label.lower().startswith("individual") else "corporate"
                             aid = create_agent(
                                 name=aname.strip(),
+                                agent_type=atype_internal,
                                 id_number=aid_number.strip() or None,
                                 address_line1=aaddr1.strip() or None,
                                 address_line2=aaddr2.strip() or None,
@@ -2778,6 +3373,32 @@ def customers_ui():
                                 tin_number=atin.strip() or None,
                                 tax_clearance_expiry=atax_expiry,
                             )
+                            # Upload any staged agent documents
+                            staged_agent_docs = st.session_state.get("agent_docs_staged") or []
+                            if _documents_available and staged_agent_docs:
+                                doc_count = 0
+                                for row in staged_agent_docs:
+                                    cat_id = row["category_id"]
+                                    f = row["file"]
+                                    notes = row.get("notes") or ""
+                                    try:
+                                        upload_document(
+                                            "agent",
+                                            aid,
+                                            cat_id,
+                                            f.name,
+                                            f.type,
+                                            f.size,
+                                            f.getvalue(),
+                                            uploaded_by="System User",
+                                            notes=notes,
+                                        )
+                                        doc_count += 1
+                                    except Exception as e:
+                                        st.error(f"Failed to upload {f.name}: {e}")
+                                if doc_count > 0:
+                                    st.success(f"Successfully uploaded {doc_count} agent document(s).")
+                            st.session_state["agent_docs_staged"] = []
                             st.success(f"Agent created. Agent ID: **{aid}**.")
                             st.rerun()
                         except Exception as e:
@@ -2810,6 +3431,12 @@ def customers_ui():
                         etin = st.text_input("TIN number", value=arec.get("tin_number") or "", key="edit_agent_tin")
                         etax_expiry = st.date_input("Tax clearance expiry", value=arec.get("tax_clearance_expiry"), key="edit_agent_tax_expiry")
                         estatus = st.selectbox("Status", ["active", "inactive"], index=0 if (arec.get("status") or "active") == "active" else 1, key="edit_agent_status")
+                        e_agent_type_label = st.selectbox(
+                            "Agent type",
+                            ["Individual", "Corporate"],
+                            index=0 if (arec.get("agent_type") or "individual") == "individual" else 1,
+                            key="edit_agent_type",
+                        )
                         submitted_update_agent = st.form_submit_button("Update agent")
                         if submitted_update_agent and ename.strip():
                             try:
@@ -2828,6 +3455,7 @@ def customers_ui():
                                     tin_number=etin.strip() or None,
                                     tax_clearance_expiry=etax_expiry,
                                     status=estatus,
+                                    agent_type="individual" if e_agent_type_label.lower().startswith("individual") else "corporate",
                                 )
                                 st.success("Agent updated.")
                                 st.rerun()
@@ -4582,8 +5210,29 @@ def accounting_ui():
     # 5. Reports
     with tab_reports:
         st.subheader("Financial Reports")
-        rep_tb, rep_pl, rep_bs, rep_eq, rep_cf = st.tabs([
-            "Trial Balance", "Profit & Loss", "Balance Sheet", "Statement of Equity", "Cash Flow"
+        try:
+            from accounting_periods import (
+                normalize_accounting_period_config,
+                get_month_period_bounds,
+                is_eom,
+                is_eoy,
+            )
+            period_cfg = normalize_accounting_period_config(_get_system_config())
+            month_bounds = get_month_period_bounds(_get_system_date(), period_cfg)
+            close_flags = []
+            if is_eom(_get_system_date(), period_cfg):
+                close_flags.append("EOM")
+            if is_eoy(_get_system_date(), period_cfg):
+                close_flags.append("EOY")
+            st.caption(
+                "Accounting month: "
+                f"{month_bounds.start_date.isoformat()} to {month_bounds.end_date.isoformat()}"
+                + (f" | Today is {' & '.join(close_flags)}." if close_flags else "")
+            )
+        except Exception:
+            month_bounds = None
+        rep_tb, rep_pl, rep_bs, rep_eq, rep_cf, rep_snap = st.tabs([
+            "Trial Balance", "Profit & Loss", "Balance Sheet", "Statement of Equity", "Cash Flow", "Snapshots"
         ])
         
         with rep_tb:
@@ -4608,7 +5257,7 @@ def accounting_ui():
             sys_date = _get_system_date()
             pl_dates = st.date_input(
                 "Date Range", 
-                value=(sys_date.replace(day=1), sys_date), 
+                value=((month_bounds.start_date, sys_date) if month_bounds else (sys_date.replace(day=1), sys_date)),
                 key="pl_dates"
             )
             
@@ -4649,7 +5298,7 @@ def accounting_ui():
             sys_date = _get_system_date()
             eq_dates = st.date_input(
                 "Date Range", 
-                value=(sys_date.replace(day=1), sys_date), 
+                value=((month_bounds.start_date, sys_date) if month_bounds else (sys_date.replace(day=1), sys_date)),
                 key="eq_dates"
             )
                 
@@ -4675,7 +5324,7 @@ def accounting_ui():
             sys_date = _get_system_date()
             cf_dates = st.date_input(
                 "Date Range", 
-                value=(sys_date.replace(day=1), sys_date), 
+                value=((month_bounds.start_date, sys_date) if month_bounds else (sys_date.replace(day=1), sys_date)),
                 key="cf_dates"
             )
                 
@@ -4688,6 +5337,136 @@ def accounting_ui():
                     
                 cf = svc.get_cash_flow_statement(cf_start, cf_as_of)
                 st.json(cf)
+
+        with rep_snap:
+            st.markdown("### Statement Snapshot History")
+            st.caption(
+                "View immutable month-end and year-end financial statements captured at accounting period close."
+            )
+
+            stmt_type_display = {
+                "TRIAL_BALANCE": "Trial Balance",
+                "PROFIT_AND_LOSS": "Profit & Loss",
+                "BALANCE_SHEET": "Balance Sheet",
+                "CASH_FLOW": "Cash Flow",
+                "CHANGES_IN_EQUITY": "Statement of Changes in Equity",
+            }
+            stmt_types = ["(All)"] + [stmt_type_display[k] for k in stmt_type_display]
+            period_types = ["(All)", "MONTH", "YEAR"]
+
+            acc_cfg = _get_system_config().get("accounting_periods", {}) or {}
+            snap_default_limit = int(acc_cfg.get("snapshot_max_rows") or 100)
+
+            col_f1, col_f2, col_f3 = st.columns(3)
+            with col_f1:
+                stmt_choice = st.selectbox("Statement type", stmt_types, index=0, key="snap_stmt_type")
+            with col_f2:
+                period_choice = st.selectbox("Period type", period_types, index=0, key="snap_period_type")
+            with col_f3:
+                limit = st.number_input(
+                    "Max rows",
+                    min_value=10,
+                    max_value=1000,
+                    value=snap_default_limit if 10 <= snap_default_limit <= 1000 else 100,
+                    step=10,
+                    key="snap_limit",
+                )
+
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                date_from = st.date_input("Period end date from", value=None, key="snap_from")
+            with col_d2:
+                date_to = st.date_input("Period end date to", value=None, key="snap_to")
+
+            if st.button("Load snapshots", key="snap_load"):
+                stmt_key = None
+                if stmt_choice != "(All)":
+                    inv = {v: k for k, v in stmt_type_display.items()}
+                    stmt_key = inv.get(stmt_choice)
+                period_key = None if period_choice == "(All)" else period_choice
+
+                snaps = svc.list_statement_snapshots(
+                    statement_type=stmt_key,
+                    period_type=period_key,
+                    period_end_date_from=date_from if date_from else None,
+                    period_end_date_to=date_to if date_to else None,
+                    limit=int(limit),
+                )
+                if not snaps:
+                    st.info("No snapshots found for the selected filters.")
+                else:
+                    import pandas as pd
+
+                    df_snaps = pd.DataFrame(
+                        [
+                            {
+                                "ID": str(r["id"]),
+                                "Statement": stmt_type_display.get(r["statement_type"], r["statement_type"]),
+                                "Period type": r["period_type"],
+                                "Period start": r["period_start_date"],
+                                "Period end": r["period_end_date"],
+                                "Ledger cutoff": r["source_ledger_cutoff_date"],
+                                "Status": r["status"],
+                                "Generated at": r["generated_at"],
+                                "Generated by": r["generated_by"],
+                                "Calc version": r["calculation_version"],
+                            }
+                            for r in snaps
+                        ]
+                    )
+                    st.dataframe(df_snaps, use_container_width=True, hide_index=True)
+
+                    snap_ids = [str(r["id"]) for r in snaps]
+                    sel_id = st.selectbox(
+                        "Select snapshot to inspect",
+                        options=snap_ids,
+                        format_func=lambda x: next(
+                            (
+                                f"{stmt_type_display.get(r['statement_type'], r['statement_type'])} "
+                                f"({r['period_type']}) – {r['period_end_date']}"
+                                for r in snaps
+                                if str(r["id"]) == x
+                            ),
+                            x,
+                        ),
+                        key="snap_sel_id",
+                    )
+                    if sel_id and st.button("View snapshot details", key="snap_view"):
+                        snap = svc.get_statement_snapshot_with_lines(sel_id)
+                        if not snap:
+                            st.error("Snapshot not found.")
+                        else:
+                            header = snap["header"]
+                            lines = snap["lines"] or []
+                            st.markdown(
+                                f"**{stmt_type_display.get(header['statement_type'], header['statement_type'])}** "
+                                f"({header['period_type']}) for period "
+                                f"{header['period_start_date']} → {header['period_end_date']} "
+                                f"(ledger cutoff {header['source_ledger_cutoff_date']})"
+                            )
+                            st.caption(
+                                f"Generated by `{header['generated_by']}` at {header['generated_at']} "
+                                f"(calculation version: {header['calculation_version']})."
+                            )
+
+                            if lines:
+                                df_lines = pd.DataFrame(
+                                    [
+                                        {
+                                            "Code": r.get("line_code"),
+                                            "Name": r.get("line_name"),
+                                            "Category": r.get("line_category"),
+                                            "Debit": float(r.get("debit") or 0),
+                                            "Credit": float(r.get("credit") or 0),
+                                            "Amount": float(r.get("amount") or 0),
+                                            "Currency": r.get("currency_code"),
+                                        }
+                                        for r in lines
+                                    ]
+                                )
+                                st.dataframe(df_lines, use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No line items for this snapshot.")
 
 def notifications_ui():
     st.header("Notifications Module")
@@ -4709,7 +5488,11 @@ def notifications_ui():
                     cust_list = list_customers()
                     if cust_list:
                         # Map customers to format for dropdown
-                        cust_options = {c["id"]: f"{get_display_name(c)} (ID: {c['id']})" for c in cust_list}
+                        cust_options = {
+                            c["id"]: f"{get_display_name(int(c['id']))} (ID: {c['id']})"
+                            for c in cust_list
+                            if c.get("id") is not None
+                        }
                         customer_id = st.selectbox("Select Customer", options=list(cust_options.keys()), format_func=lambda x: cust_options[x])
                     else:
                         st.warning("No customers found.")

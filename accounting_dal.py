@@ -1,6 +1,7 @@
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from config import get_database_url
+import json
 
 def get_conn():
     return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
@@ -629,3 +630,131 @@ class AccountingRepository:
         with self.conn.cursor() as cur:
             cur.execute("SELECT convert_to_parent(%s)", (account_id,))
         self.conn.commit()
+
+    def create_statement_snapshot(
+        self,
+        *,
+        statement_type,
+        period_type,
+        period_start_date,
+        period_end_date,
+        source_ledger_cutoff_date,
+        generated_by="system",
+        calculation_version="v1",
+        lines=None,
+    ):
+        lines = lines or []
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO financial_statement_snapshots (
+                    statement_type, period_type, period_start_date, period_end_date,
+                    source_ledger_cutoff_date, generated_by, calculation_version
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    statement_type,
+                    period_type,
+                    period_start_date,
+                    period_end_date,
+                    source_ledger_cutoff_date,
+                    generated_by,
+                    calculation_version,
+                ),
+            )
+            snapshot_id = cur.fetchone()["id"]
+
+            for idx, line in enumerate(lines, start=1):
+                payload = line.get("payload", {})
+                cur.execute(
+                    """
+                    INSERT INTO financial_statement_snapshot_lines (
+                        snapshot_id, line_order, line_code, line_name, line_category,
+                        debit, credit, amount, currency_code, payload
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    """,
+                    (
+                        snapshot_id,
+                        idx,
+                        line.get("line_code"),
+                        line.get("line_name") or "Line",
+                        line.get("line_category"),
+                        line.get("debit", 0),
+                        line.get("credit", 0),
+                        line.get("amount", 0),
+                        line.get("currency_code"),
+                        json.dumps(payload),
+                    ),
+                )
+        self.conn.commit()
+        return snapshot_id
+
+    def get_latest_statement_snapshot(self, *, statement_type, period_type, period_end_date):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM financial_statement_snapshots
+                WHERE statement_type = %s
+                  AND period_type = %s
+                  AND period_end_date = %s
+                  AND status = 'FINAL'
+                ORDER BY generated_at DESC
+                LIMIT 1
+                """,
+                (statement_type, period_type, period_end_date),
+            )
+            return cur.fetchone()
+
+    def list_statement_snapshots(
+        self,
+        *,
+        statement_type: str | None = None,
+        period_type: str | None = None,
+        period_end_date_from=None,
+        period_end_date_to=None,
+        limit: int = 200,
+    ):
+        where = ["status = 'FINAL'"]
+        params = []
+        if statement_type:
+            where.append("statement_type = %s")
+            params.append(statement_type)
+        if period_type:
+            where.append("period_type = %s")
+            params.append(period_type)
+        if period_end_date_from is not None:
+            where.append("period_end_date >= %s")
+            params.append(period_end_date_from)
+        if period_end_date_to is not None:
+            where.append("period_end_date <= %s")
+            params.append(period_end_date_to)
+        where_sql = " AND ".join(where) if where else "TRUE"
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT *
+                FROM financial_statement_snapshots
+                WHERE {where_sql}
+                ORDER BY period_end_date DESC, statement_type, generated_at DESC
+                LIMIT %s
+                """,
+                tuple(params + [int(limit)]),
+            )
+            return cur.fetchall()
+
+    def get_statement_snapshot_lines(self, snapshot_id):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM financial_statement_snapshot_lines
+                WHERE snapshot_id = %s
+                ORDER BY line_order
+                """,
+                (snapshot_id,),
+            )
+            return cur.fetchall()

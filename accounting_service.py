@@ -3,6 +3,12 @@ from accounting_core import as_money
 from datetime import date
 from decimal import Decimal
 import psycopg2
+from loan_management import load_system_config_from_db
+from accounting_periods import (
+    normalize_accounting_period_config,
+    get_month_period_bounds,
+    get_year_period_bounds,
+)
 
 class AccountingService:
     def __init__(self):
@@ -286,6 +292,164 @@ class AccountingService:
             balances = repo.get_balances_by_category(['ASSET', 'LIABILITY'], start_date, end_date)
             pnl = repo.get_balances_by_category(['INCOME', 'EXPENSE'], start_date, end_date)
             return {"balances": balances, "pnl": pnl}
+        finally:
+            conn.close()
+
+    def list_statement_snapshots(
+        self,
+        *,
+        statement_type: str | None = None,
+        period_type: str | None = None,
+        period_end_date_from=None,
+        period_end_date_to=None,
+        limit: int = 200,
+    ):
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.list_statement_snapshots(
+                statement_type=statement_type,
+                period_type=period_type,
+                period_end_date_from=period_end_date_from,
+                period_end_date_to=period_end_date_to,
+                limit=limit,
+            )
+        finally:
+            conn.close()
+
+    def get_statement_snapshot_with_lines(self, snapshot_id: str):
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM financial_statement_snapshots WHERE id = %s",
+                    (snapshot_id,),
+                )
+                header = cur.fetchone()
+            if not header:
+                return None
+            lines = repo.get_statement_snapshot_lines(snapshot_id)
+            return {"header": header, "lines": lines}
+        finally:
+            conn.close()
+
+    def _rows_to_snapshot_lines(self, rows, *, mode: str):
+        lines = []
+        for row in rows or []:
+            debit = Decimal(str(row.get("debit") or 0))
+            credit = Decimal(str(row.get("credit") or 0))
+            if mode == "trial_balance":
+                amount = debit - credit
+            elif mode == "income_expense":
+                amount = (credit - debit) if row.get("category") == "INCOME" else (debit - credit)
+            elif mode == "balance_sheet":
+                amount = (debit - credit) if row.get("category") == "ASSET" else (credit - debit)
+            elif mode == "equity":
+                amount = credit - debit
+            else:
+                amount = debit - credit
+            lines.append(
+                {
+                    "line_code": row.get("code"),
+                    "line_name": row.get("name") or "",
+                    "line_category": row.get("category"),
+                    "debit": debit,
+                    "credit": credit,
+                    "amount": amount,
+                    "payload": {},
+                }
+            )
+        return lines
+
+    def save_period_close_snapshots(self, *, as_of_date: date, generated_by: str = "system"):
+        system_cfg = load_system_config_from_db() or {}
+        period_cfg = normalize_accounting_period_config(system_cfg)
+        month_bounds = get_month_period_bounds(as_of_date, period_cfg)
+        year_bounds = get_year_period_bounds(as_of_date, period_cfg)
+        is_month_close = as_of_date == month_bounds.end_date
+        is_year_close = as_of_date == year_bounds.end_date
+
+        if not is_month_close and not is_year_close:
+            return {"saved": [], "skipped": True}
+
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            saved = []
+
+            def _save_set(period_type: str, start_date: date, end_date: date):
+                period_label = {"period_type": period_type, "period_start": start_date, "period_end": end_date}
+
+                tb = repo.get_trial_balance(end_date)
+                repo.create_statement_snapshot(
+                    statement_type="TRIAL_BALANCE",
+                    period_type=period_type,
+                    period_start_date=start_date,
+                    period_end_date=end_date,
+                    source_ledger_cutoff_date=end_date,
+                    generated_by=generated_by,
+                    lines=self._rows_to_snapshot_lines(tb, mode="trial_balance"),
+                )
+                saved.append({"statement_type": "TRIAL_BALANCE", **period_label})
+
+                pl = repo.get_balances_by_category(["INCOME", "EXPENSE"], start_date, end_date)
+                repo.create_statement_snapshot(
+                    statement_type="PROFIT_AND_LOSS",
+                    period_type=period_type,
+                    period_start_date=start_date,
+                    period_end_date=end_date,
+                    source_ledger_cutoff_date=end_date,
+                    generated_by=generated_by,
+                    lines=self._rows_to_snapshot_lines(pl, mode="income_expense"),
+                )
+                saved.append({"statement_type": "PROFIT_AND_LOSS", **period_label})
+
+                bs = repo.get_balances_by_category(["ASSET", "LIABILITY", "EQUITY"], end_date=end_date)
+                repo.create_statement_snapshot(
+                    statement_type="BALANCE_SHEET",
+                    period_type=period_type,
+                    period_start_date=start_date,
+                    period_end_date=end_date,
+                    source_ledger_cutoff_date=end_date,
+                    generated_by=generated_by,
+                    lines=self._rows_to_snapshot_lines(bs, mode="balance_sheet"),
+                )
+                saved.append({"statement_type": "BALANCE_SHEET", **period_label})
+
+                equity = repo.get_balances_by_category(["EQUITY"], start_date, end_date)
+                repo.create_statement_snapshot(
+                    statement_type="CHANGES_IN_EQUITY",
+                    period_type=period_type,
+                    period_start_date=start_date,
+                    period_end_date=end_date,
+                    source_ledger_cutoff_date=end_date,
+                    generated_by=generated_by,
+                    lines=self._rows_to_snapshot_lines(equity, mode="equity"),
+                )
+                saved.append({"statement_type": "CHANGES_IN_EQUITY", **period_label})
+
+                cf_bal = repo.get_balances_by_category(["ASSET", "LIABILITY"], start_date, end_date)
+                cf_pnl = repo.get_balances_by_category(["INCOME", "EXPENSE"], start_date, end_date)
+                cf_lines = self._rows_to_snapshot_lines(cf_bal, mode="trial_balance")
+                cf_lines.extend(self._rows_to_snapshot_lines(cf_pnl, mode="income_expense"))
+                repo.create_statement_snapshot(
+                    statement_type="CASH_FLOW",
+                    period_type=period_type,
+                    period_start_date=start_date,
+                    period_end_date=end_date,
+                    source_ledger_cutoff_date=end_date,
+                    generated_by=generated_by,
+                    lines=cf_lines,
+                )
+                saved.append({"statement_type": "CASH_FLOW", **period_label})
+
+            if is_month_close:
+                _save_set("MONTH", month_bounds.start_date, month_bounds.end_date)
+            if is_year_close:
+                _save_set("YEAR", year_bounds.start_date, year_bounds.end_date)
+
+            return {"saved": saved, "skipped": False}
         finally:
             conn.close()
 

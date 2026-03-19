@@ -68,6 +68,7 @@ def get_agent(agent_id: int) -> dict | None:
 
 def create_agent(
     name: str,
+    agent_type: str = "individual",
     id_number: str | None = None,
     address_line1: str | None = None,
     address_line2: str | None = None,
@@ -87,15 +88,16 @@ def create_agent(
             cur.execute(
                 """
                 INSERT INTO agents (
-                    name, id_number, address_line1, address_line2, city, country,
+                    name, agent_type, id_number, address_line1, address_line2, city, country,
                     phone1, phone2, email, commission_rate_pct, tin_number,
                     tax_clearance_expiry, status
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
                     name,
+                    agent_type,
                     id_number,
                     address_line1,
                     address_line2,
@@ -128,17 +130,18 @@ def update_agent(
     tin_number: str | None = None,
     tax_clearance_expiry: date | None = None,
     status: str | None = None,
+    agent_type: str | None = None,
 ) -> None:
     """Update agent fields. Pass only fields to change."""
     allowed = {
-        "name", "id_number", "address_line1", "address_line2", "city", "country",
+        "name", "agent_type", "id_number", "address_line1", "address_line2", "city", "country",
         "phone1", "phone2", "email", "commission_rate_pct", "tin_number",
         "tax_clearance_expiry", "status",
     }
     updates = []
     vals = []
     for k, v in [
-        ("name", name), ("id_number", id_number), ("address_line1", address_line1),
+        ("name", name), ("agent_type", agent_type), ("id_number", id_number), ("address_line1", address_line1),
         ("address_line2", address_line2), ("city", city), ("country", country),
         ("phone1", phone1), ("phone2", phone2), ("email", email),
         ("commission_rate_pct", commission_rate_pct), ("tin_number", tin_number),

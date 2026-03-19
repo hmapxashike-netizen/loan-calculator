@@ -61,6 +61,11 @@ This runs EOD for 1.12.2025, then reallocates every receipt with value_date 1.12
 | `check_unapplied_funds.py` | Show unapplied funds (suspense) in DB (e.g. `python scripts/check_unapplied_funds.py` or `--loan 9 --status pending`). |
 | `bootstrap_admin.py` | Create or reset an admin user in the `users` table. Edit email/password in file. |
 | `check_admin_password.py` | Check if a password matches the stored hash for a user. Edit email/password in file. |
+| `reset_test_environment.py` | Test-only reset: truncates loan/GL transactional data and resets `system_business_config.current_system_date` (requires `--confirm`; use `--dry-run` first). |
+| `run_migration_40.py` | Add `agent_type` column to agents (individual/corporate). |
+| `run_migration_41.py` | Seed/ensure corporate KYC document categories (`CR5`, `CR6`, `Memorandum and Articles`, `Certificate of Incorporation`, `CR2`, `Other`). |
+| `run_migration_42.py` | Ensure required document categories exist for contact/director/agent/loan dropdowns. |
+| `run_migration_43.py` | Create `eod_runs` and `eod_stage_events` append-only audit tables for stage-level EOD observability. |
 
 **Run from project root:**
 

@@ -24,6 +24,7 @@ Security and scalability notes
 """
 
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -35,6 +36,8 @@ from psycopg2.extras import RealDictCursor
 from config import get_database_url
 from decimal_utils import as_10dp
 from loan_daily_engine import LoanConfig, ScheduleEntry, Loan
+from accounting_periods import normalize_accounting_period_config, is_eom, is_eoy
+from eod_audit import start_run as audit_start_run, finish_run as audit_finish_run, log_stage_event
 from loan_management import (
     get_allocation_totals_for_loan_date,
     get_net_allocation_for_loan_date,
@@ -433,11 +436,22 @@ def _build_schedule_entries(
 
 @dataclass
 class EODResult:
+    run_id: str
     as_of_date: date
     loans_processed: int
     started_at: datetime
     finished_at: datetime
     tasks_run: Tuple[str, ...] = ()
+    run_status: str = "SUCCESS"
+    failed_stage: str | None = None
+    error_message: str | None = None
+    should_advance_date: bool = True
+
+
+class StageExecutionError(RuntimeError):
+    def __init__(self, stage_name: str, message: str):
+        super().__init__(message)
+        self.stage_name = stage_name
 
 
 def get_engine_state_for_loan_date(loan_id: int, as_of_date: date) -> Dict[str, Any] | None:
@@ -850,24 +864,25 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     Posts accounting journals for end of day activities based on transaction_templates.
     Dynamically executes templates marked with 'EOD', and 'EOM' if it is the last day of the month.
     """
+    is_month_end = False
+    events_to_run: set[str] = set()
+    svc = None
     try:
         from accounting_service import AccountingService
         from decimal import Decimal
         from datetime import timedelta
-        import calendar
         
         svc = AccountingService()
         yesterday = as_of_date - timedelta(days=1)
         
-        # Determine if today is EOM
-        _, last_day = calendar.monthrange(as_of_date.year, as_of_date.month)
-        is_eom = (as_of_date.day == last_day)
+        period_cfg = normalize_accounting_period_config(sys_cfg)
+        is_month_end = is_eom(as_of_date, period_cfg)
         
         with _get_conn() as conn:
             with conn.cursor() as cur:
                 # 1. Get events to run today
                 triggers = ['EOD']
-                if is_eom:
+                if is_month_end:
                     triggers.append('EOM')
                 cur.execute("SELECT DISTINCT event_type FROM transaction_templates WHERE trigger_type = ANY(%s)", (triggers,))
                 events = cur.fetchall()
@@ -1034,7 +1049,7 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
         traceback.print_exc()
 
     # Month-end fee amortisation (loan origination fees).
-    if is_eom:
+    if is_month_end and svc is not None and events_to_run:
         _run_fee_amortisation_month_end(as_of_date, events_to_run, svc)
 
 
@@ -1120,9 +1135,15 @@ def _run_fee_amortisation_month_end(
 
 def _run_statement_batch(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     """
-    Placeholder for future statements batch generation.
+    Capture immutable statement snapshots on accounting month/year close.
     """
-    _ = (as_of_date, sys_cfg)
+    period_cfg = normalize_accounting_period_config(sys_cfg)
+    if not (is_eom(as_of_date, period_cfg) or is_eoy(as_of_date, period_cfg)):
+        return
+    from accounting_service import AccountingService
+
+    svc = AccountingService()
+    svc.save_period_close_snapshots(as_of_date=as_of_date, generated_by="system")
 
 
 def _run_notification_batch(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
@@ -1158,49 +1179,167 @@ def run_eod_for_date(
     )
     post_accounting = bool(tasks_cfg.get("post_accounting_events", False))
     generate_statements = bool(tasks_cfg.get("generate_statements", False))
+    snapshot_financial_statements = bool(tasks_cfg.get("snapshot_financial_statements", True))
     send_notifications = bool(tasks_cfg.get("send_notifications", False))
+    apply_unapplied = bool(tasks_cfg.get("apply_unapplied_to_arrears", True))
+
+    # Stage policy (config-driven)
+    policy_cfg = eod_settings.get("stage_policy", {}) if isinstance(eod_settings, dict) else {}
+    policy_mode = str(policy_cfg.get("mode") or "hybrid").strip().lower()
+    if policy_mode not in {"strict", "hybrid", "best_effort"}:
+        policy_mode = "hybrid"
+    blocking_default = [
+        "loan_engine",
+        "reallocate_after_reversals",
+        "apply_unapplied_to_arrears",
+        "accounting_events",
+        "statements",
+    ]
+    configured_blocking = policy_cfg.get("blocking_stages")
+    blocking_stages = set(configured_blocking) if isinstance(configured_blocking, list) else set(blocking_default)
+    advance_on_degraded = bool(policy_cfg.get("advance_date_on_degraded", False))
 
     started = datetime.now(timezone.utc)
+    run_id = str(uuid.uuid4())
     loans_processed = 0
     tasks_run: list[str] = []
+    run_status = "SUCCESS"
+    failed_stage: str | None = None
+    error_message: str | None = None
 
-    # 1. Loan engine – always first to ensure loan_daily_state is up to date.
-    if run_loan_engine:
-        loans_processed = _run_loan_engine_for_date(as_of_date, sys_cfg)
-        tasks_run.append("loan_engine")
+    try:
+        audit_start_run(
+            run_id=run_id,
+            as_of_date=as_of_date,
+            tasks_cfg=tasks_cfg,
+            policy_mode=policy_mode,
+            advance_on_degraded=advance_on_degraded,
+        )
+    except Exception:
+        # Audit must never block EOD; continue without DB audit row.
+        pass
 
-    # 1b. Reallocate posted receipts on loans that had reversals this date (waterfall fix).
-    if run_loan_engine and reallocate_after_reversals:
-        _reallocate_receipts_after_reversals(as_of_date, sys_cfg)
-        tasks_run.append("reallocate_after_reversals")
+    def _stage(stage_name: str, enabled: bool, fn):
+        nonlocal loans_processed, run_status, failed_stage, error_message
+        is_blocking = stage_name in blocking_stages
+        if not enabled:
+            try:
+                log_stage_event(
+                    run_id=run_id,
+                    stage_name=stage_name,
+                    is_blocking=is_blocking,
+                    status="SKIPPED",
+                )
+            except Exception:
+                pass
+            return
 
-    # 1c. Apply unapplied funds towards arrears (waterfall order) for loans with arrears.
-    apply_unapplied = bool(tasks_cfg.get("apply_unapplied_to_arrears", True))
-    if run_loan_engine and apply_unapplied:
-        _apply_unapplied_funds_to_arrears(as_of_date, sys_cfg)
-        tasks_run.append("apply_unapplied_to_arrears")
+        try:
+            log_stage_event(
+                run_id=run_id,
+                stage_name=stage_name,
+                is_blocking=is_blocking,
+                status="STARTED",
+            )
+        except Exception:
+            pass
 
-    # 2. Accounting postings that depend on updated buckets.
-    if post_accounting:
-        _run_accounting_events(as_of_date, sys_cfg)
-        tasks_run.append("accounting_events")
+        try:
+            stage_result = fn()
+            if stage_name == "loan_engine" and isinstance(stage_result, int):
+                loans_processed = stage_result
+            tasks_run.append(stage_name)
+            try:
+                log_stage_event(
+                    run_id=run_id,
+                    stage_name=stage_name,
+                    is_blocking=is_blocking,
+                    status="OK",
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            failed_stage = stage_name
+            error_message = str(e)
+            try:
+                log_stage_event(
+                    run_id=run_id,
+                    stage_name=stage_name,
+                    is_blocking=is_blocking,
+                    status="ERROR",
+                    error_message=error_message[:2000],
+                )
+            except Exception:
+                pass
 
-    # 3. Statements, then 4. Notifications.
-    if generate_statements:
-        _run_statement_batch(as_of_date, sys_cfg)
-        tasks_run.append("statements")
+            # strict: any failure fails run.
+            # hybrid: blocking stage failure fails run; non-blocking degrades.
+            # best_effort: continue as degraded.
+            if policy_mode == "strict" or (policy_mode == "hybrid" and is_blocking):
+                run_status = "FAILED"
+                raise StageExecutionError(stage_name, error_message)
+            run_status = "DEGRADED"
 
-    if send_notifications:
-        _run_notification_batch(as_of_date, sys_cfg)
-        tasks_run.append("notifications")
+    try:
+        _stage("loan_engine", run_loan_engine, lambda: _run_loan_engine_for_date(as_of_date, sys_cfg))
+        _stage(
+            "reallocate_after_reversals",
+            run_loan_engine and reallocate_after_reversals,
+            lambda: _reallocate_receipts_after_reversals(as_of_date, sys_cfg),
+        )
+        _stage(
+            "apply_unapplied_to_arrears",
+            run_loan_engine and apply_unapplied,
+            lambda: _apply_unapplied_funds_to_arrears(as_of_date, sys_cfg),
+        )
+        _stage("accounting_events", post_accounting, lambda: _run_accounting_events(as_of_date, sys_cfg))
+        _stage(
+            "statements",
+            generate_statements or snapshot_financial_statements,
+            lambda: _run_statement_batch(as_of_date, sys_cfg),
+        )
+        _stage("notifications", send_notifications, lambda: _run_notification_batch(as_of_date, sys_cfg))
+    except StageExecutionError:
+        finished = datetime.now(timezone.utc)
+        try:
+            audit_finish_run(
+                run_id=run_id,
+                run_status="FAILED",
+                failed_stage=failed_stage,
+                error_message=(error_message or "")[:2000] or None,
+            )
+        except Exception:
+            pass
+        # Keep failure behavior for blocking stages so callers can stop date advance.
+        raise
 
     finished = datetime.now(timezone.utc)
+    final_status = run_status if run_status in {"DEGRADED", "FAILED"} else "SUCCESS"
+    try:
+        audit_finish_run(
+            run_id=run_id,
+            run_status=final_status,
+            failed_stage=failed_stage,
+            error_message=(error_message or "")[:2000] or None,
+        )
+    except Exception:
+        pass
+
+    should_advance_date = final_status == "SUCCESS" or (
+        final_status == "DEGRADED" and advance_on_degraded
+    )
+
     return EODResult(
+        run_id=run_id,
         as_of_date=as_of_date,
         loans_processed=loans_processed,
         started_at=started,
         finished_at=finished,
         tasks_run=tuple(tasks_run),
+        run_status=final_status,
+        failed_stage=failed_stage,
+        error_message=error_message,
+        should_advance_date=should_advance_date,
     )
 
 

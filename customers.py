@@ -213,6 +213,96 @@ def create_corporate(
     return customer_id
 
 
+def create_corporate_with_entities(
+    legal_name: str,
+    trading_name: str | None = None,
+    reg_number: str | None = None,
+    tin: str | None = None,
+    addresses: list[dict] | None = None,
+    contact_person: dict | None = None,
+    directors: list[dict] | None = None,
+    shareholders: list[dict] | None = None,
+    sector_id: int | None = None,
+    subsector_id: int | None = None,
+) -> dict:
+    """
+    Create a corporate customer and return created entity IDs.
+    Returns:
+      {
+        "customer_id": int,
+        "contact_person_ids": list[int],
+        "director_ids": list[int],
+        "shareholder_ids": list[int],
+      }
+    """
+    out = {
+        "customer_id": None,
+        "contact_person_ids": [],
+        "director_ids": [],
+        "shareholder_ids": [],
+    }
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO customers (type, status, sector_id, subsector_id)
+                   VALUES ('corporate', 'active', %s, %s) RETURNING id""",
+                (sector_id, subsector_id),
+            )
+            customer_id = cur.fetchone()[0]
+            out["customer_id"] = customer_id
+            cur.execute(
+                """INSERT INTO corporates (customer_id, legal_name, trading_name, reg_number, tin)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                (customer_id, legal_name, trading_name, reg_number, tin),
+            )
+            if addresses:
+                for addr in addresses:
+                    cur.execute(
+                        """INSERT INTO customer_addresses (customer_id, address_type, line1, line2, city, region, postal_code, country)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            customer_id,
+                            addr.get("address_type"),
+                            addr.get("line1"),
+                            addr.get("line2"),
+                            addr.get("city"),
+                            addr.get("region"),
+                            addr.get("postal_code"),
+                            addr.get("country"),
+                        ),
+                    )
+            if contact_person:
+                t = _contact_row(contact_person)
+                cur.execute(
+                    """INSERT INTO corporate_contact_persons (customer_id, full_name, national_id, designation, phone1, phone2, email, address_line1, address_line2, city, country)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       RETURNING id""",
+                    (customer_id,) + t,
+                )
+                out["contact_person_ids"].append(cur.fetchone()[0])
+            if directors:
+                for d in directors:
+                    t = _contact_row(d)
+                    cur.execute(
+                        """INSERT INTO corporate_directors (customer_id, full_name, national_id, designation, phone1, phone2, email, address_line1, address_line2, city, country)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           RETURNING id""",
+                        (customer_id,) + t,
+                    )
+                    out["director_ids"].append(cur.fetchone()[0])
+            if shareholders:
+                for s in shareholders:
+                    t = _contact_row(s)
+                    cur.execute(
+                        """INSERT INTO corporate_shareholders (customer_id, full_name, national_id, designation, phone1, phone2, email, address_line1, address_line2, city, country, shareholding_pct)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           RETURNING id""",
+                        (customer_id,) + t + (s.get("shareholding_pct"),),
+                    )
+                    out["shareholder_ids"].append(cur.fetchone()[0])
+    return out
+
+
 def update_corporate(
     customer_id: int,
     legal_name: str | None = None,
