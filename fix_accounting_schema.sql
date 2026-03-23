@@ -31,6 +31,12 @@ ALTER TABLE journal_items
     ADD COLUMN IF NOT EXISTS credit NUMERIC(18,2) NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS memo TEXT;
 
+-- 4) Prevent duplicate journal headers for the same deterministic (event_id, event_tag).
+-- EOD uses stable event_id/event_tag; reruns should overwrite rather than duplicate.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_event_id_event_tag
+    ON journal_entries(event_id, event_tag)
+    WHERE event_id IS NOT NULL AND event_tag IS NOT NULL;
+
 -- Optional but recommended: foreign keys (comment out if you already have them)
 -- ALTER TABLE journal_items
 --     ADD CONSTRAINT fk_journal_items_entry

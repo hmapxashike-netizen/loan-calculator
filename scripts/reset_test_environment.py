@@ -89,11 +89,29 @@ def _validate_date(value: str) -> dt.date:
 
 
 def _existing_tables(cur, table_names: list[str]) -> list[str]:
+    """
+    Return only objects that are real tables in Postgres.
+
+    Using `to_regclass` alone will also match views, which then fail on
+    `TRUNCATE TABLE`. We filter by pg_class.relkind.
+    """
     existing: list[str] = []
     for tbl in table_names:
-        cur.execute("SELECT to_regclass(%s) AS reg", (f"public.{tbl}",))
+        cur.execute(
+            """
+            SELECT c.relkind
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s
+              AND c.relname = %s
+            """,
+            ("public", tbl),
+        )
         row = cur.fetchone()
-        if row and row[0]:
+        # relkind:
+        #  - r = ordinary table
+        #  - p = partitioned table
+        if row and row[0] in ("r", "p"):
             existing.append(tbl)
     return existing
 

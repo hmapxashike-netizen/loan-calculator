@@ -25,6 +25,8 @@ from loans import (
     get_bullet_schedule,
     recompute_customised_from_payments,
     parse_schedule_dates_from_table,
+    schedule_dataframe_to_csv_bytes,
+    schedule_dataframe_to_excel_bytes,
 )
 
 try:
@@ -126,6 +128,8 @@ try:
         load_system_config_from_db,
         get_loan_daily_state_balances,
         get_repayments_with_allocations,
+        reallocate_repayment,
+        get_repayment_ids_for_loan_and_date,
         list_products,
         get_product,
         get_product_by_code,
@@ -149,6 +153,36 @@ def _get_system_date():
         return get_effective_date()
     except ImportError:
         return __import__('datetime').datetime.now().date()
+
+
+def _schedule_export_downloads(df: pd.DataFrame, *, file_stem: str, key_prefix: str) -> None:
+    """
+    Schedule downloads: CSV (2dp) + Excel (.xlsx) with real numeric cells.
+
+    Use **Excel** if Microsoft flags CSV cells as “number stored as text” (green triangles).
+    """
+    if df is None or getattr(df, "empty", True):
+        return
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            label="Download CSV (2 decimals)",
+            data=schedule_dataframe_to_csv_bytes(df, amount_decimals=2),
+            file_name=f"{file_stem}.csv",
+            mime="text/csv",
+            key=f"{key_prefix}_csv",
+            help="UTF-8 with BOM; amounts rounded to 2dp for readability.",
+        )
+    with c2:
+        st.download_button(
+            label="Download Excel (.xlsx)",
+            data=schedule_dataframe_to_excel_bytes(df, amount_decimals=2),
+            file_name=f"{file_stem}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"{key_prefix}_xlsx",
+            help="Native Excel numbers (no text warnings).",
+        )
+
 
 def _get_mapping_registry() -> MappingRegistry:
     """Lazy-initialise an in-memory MappingRegistry stored in session state."""
@@ -175,6 +209,127 @@ def _get_consumer_schemes() -> list[dict]:
     ])
 
 
+def _consumer_schemes_admin_editor_ui(*, key_prefix: str) -> None:
+    """
+    Admin editor for `system_config.consumer_schemes`.
+
+    Kept off by default and only shown on consumer-loan add/edit screens
+    to avoid cluttering the rest of the UI.
+    """
+    expander_label = "Manage consumer loan schemes (admin)"
+    with st.expander(expander_label, expanded=False):
+        schemes_current = _get_consumer_schemes()
+        draft_key = f"{key_prefix}_consumer_schemes_draft"
+        if draft_key not in st.session_state:
+            st.session_state[draft_key] = list(schemes_current) if schemes_current else []
+
+        draft: list[dict] = st.session_state.get(draft_key, []) or []
+
+        st.caption("Each scheme is used as a predefined interest/admin rate pair.")
+
+        cs_add_name = st.text_input("Scheme name", key=f"{key_prefix}_cs_add_name")
+        cs_add_interest = st.number_input(
+            "Interest rate (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=7.0,
+            step=0.1,
+            key=f"{key_prefix}_cs_add_interest",
+        )
+        cs_add_admin = st.number_input(
+            "Admin fee (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=5.0,
+            step=0.1,
+            key=f"{key_prefix}_cs_add_admin",
+        )
+
+        if st.button("Add / Update scheme", key=f"{key_prefix}_cs_add_update_btn"):
+            name = (cs_add_name or "").strip()
+            if not name:
+                st.error("Scheme name is required.")
+            elif name.lower() == "other":
+                st.error("Scheme name 'Other' is reserved by the UI.")
+            else:
+                entry = {
+                    "name": name,
+                    "interest_rate_pct": float(cs_add_interest),
+                    "admin_fee_pct": float(cs_add_admin),
+                }
+                replaced = False
+                for i, s in enumerate(draft):
+                    if (s or {}).get("name") == name:
+                        draft[i] = entry
+                        replaced = True
+                        break
+                if not replaced:
+                    draft.append(entry)
+
+                # De-dup by name while preserving order.
+                seen: set[str] = set()
+                deduped: list[dict] = []
+                for s in draft:
+                    n = (s or {}).get("name")
+                    if n and n not in seen:
+                        deduped.append(s)
+                        seen.add(n)
+                st.session_state[draft_key] = deduped
+                st.success(f"Draft updated for scheme '{name}'.")
+                st.rerun()
+
+        if st.button("Reload from DB", key=f"{key_prefix}_cs_reload_btn"):
+            st.session_state[draft_key] = list(schemes_current) if schemes_current else []
+            st.success("Reloaded schemes from system config.")
+            st.rerun()
+
+        st.markdown("**Configured schemes:**")
+        if not draft:
+            st.info("No consumer schemes configured yet.")
+        else:
+            for s in draft:
+                name = (s or {}).get("name") or ""
+                if not name:
+                    continue
+                interest_pct = float((s or {}).get("interest_rate_pct", 0.0) or 0.0)
+                admin_fee_pct = float((s or {}).get("admin_fee_pct", 0.0) or 0.0)
+                cols = st.columns([3, 2, 2, 1])
+                cols[0].markdown(f"**{name}**")
+                cols[1].markdown(f"{interest_pct:.2f}%")
+                cols[2].markdown(f"{admin_fee_pct:.2f}%")
+                if cols[3].button("Remove", key=f"{key_prefix}_cs_remove_{name}"):
+                    st.session_state[draft_key] = [x for x in draft if (x or {}).get("name") != name]
+                    st.rerun()
+
+        if st.button("Save schemes to system config (DB)", type="primary", key=f"{key_prefix}_cs_save_btn"):
+            try:
+                clean: list[dict] = []
+                for s in st.session_state.get(draft_key, []) or []:
+                    n = (s or {}).get("name")
+                    if not n:
+                        continue
+                    clean.append(
+                        {
+                            "name": str(n),
+                            "interest_rate_pct": float((s or {}).get("interest_rate_pct", 0.0) or 0.0),
+                            "admin_fee_pct": float((s or {}).get("admin_fee_pct", 0.0) or 0.0),
+                        }
+                    )
+
+                from loan_management import save_system_config_to_db
+
+                sys_cfg_new = dict(_get_system_config())
+                sys_cfg_new["consumer_schemes"] = clean
+                if save_system_config_to_db(sys_cfg_new):
+                    st.session_state["system_config"] = sys_cfg_new
+                    st.success("Consumer schemes saved.")
+                    st.rerun()
+                else:
+                    st.error("Failed to save consumer schemes.")
+            except Exception as e:
+                st.error(f"Failed to save: {e}")
+
+
 def _get_global_loan_settings() -> dict:
     """Global assumptions: interest_method, interest_type, rate_basis (no principal_input - per loan)."""
     if "global_loan_settings" not in st.session_state:
@@ -184,6 +339,41 @@ def _get_global_loan_settings() -> dict:
             "rate_basis": "Per month",
         }
     return st.session_state["global_loan_settings"]
+
+
+def _get_product_rate_basis(
+    product_cfg: dict | None,
+    *,
+    fallback: str | None = None,
+) -> str:
+    """
+    Product-level rate basis for interest/penalty input interpretation.
+    - "Per month": values are already monthly.
+    - "Per annum": values must be converted to per-month for display and schedule math.
+    """
+    if not product_cfg:
+        if fallback is None:
+            st.error("Product config is missing; cannot resolve rate_basis.")
+            st.stop()
+        return fallback
+    gls = product_cfg.get("global_loan_settings") or {}
+    rb = gls.get("rate_basis")
+    if rb in {"Per month", "Per annum"}:
+        return rb
+    if fallback is None:
+        st.error(
+            "Selected product must define product_config:product_code.global_loan_settings.rate_basis "
+            "as either 'Per month' or 'Per annum'."
+        )
+        st.stop()
+    return fallback
+
+
+def _pct_to_monthly(pct: float | int | None, rate_basis: str) -> float | None:
+    if pct is None:
+        return None
+    pct_f = float(pct)
+    return (pct_f / 12.0) if rate_basis == "Per annum" else pct_f
 
 
 def _get_system_config() -> dict:
@@ -343,8 +533,14 @@ def system_configurations_ui():
         blocking_stages = list(blocking_stage_default)
     advance_date_on_degraded = bool(policy_cfg.get("advance_date_on_degraded", False))
 
-    tab_sectors, tab_eod, tab_accounting, tab_products = st.tabs(
-        ["Sectors & subsectors", "EOD configurations", "Accounting configurations", "Products"],
+    tab_sectors, tab_eod, tab_accounting, tab_consumer_schemes, tab_products = st.tabs(
+        [
+            "Sectors & subsectors",
+            "EOD configurations",
+            "Accounting configurations",
+            "Consumer schemes",
+            "Products",
+        ],
     )
 
     # ---------------- Sectors & subsectors tab ----------------
@@ -572,6 +768,14 @@ def system_configurations_ui():
             key="syscfg_acc_snapshot_max_rows",
             help="Upper bound for rows returned when loading snapshot history. Controls performance only (does not affect what is stored).",
         )
+
+    with tab_consumer_schemes:
+        st.subheader("Consumer schemes (admin)")
+        st.caption(
+            "Used for consumer loan schedule calculation. Normally you set rates at the product level; "
+            "this list is mainly for enabling/disabling scheme names (SSB/TPC/future)."
+        )
+        _consumer_schemes_admin_editor_ui(key_prefix="syscfg_consumer_schemes")
 
     # ---------------- Products tab ----------------
     with tab_products:
@@ -801,7 +1005,7 @@ def system_configurations_ui():
                             except Exception as e:
                                 st.error(str(e))
 
-    # Keep existing config from DB; only EOD is edited in this UI. Loan/currency/waterfall/suspension are per product.
+    # Keep existing config from DB; only EOD settings and accounting periods are edited directly in this UI.
     st.session_state["system_config"] = {
         **cfg,
         "eod_settings": {
@@ -843,7 +1047,8 @@ def system_configurations_ui():
 
 def eod_ui():
     """End-of-day processing configuration and manual run."""
-    from eod import run_eod_for_date
+    from eod import run_eod_for_date, run_single_loan_eod
+    from eod_audit import is_another_eod_session_active
     from system_business_date import get_system_business_config, run_eod_process
 
     st.markdown(
@@ -873,6 +1078,23 @@ def eod_ui():
 
     st.divider()
     if mode == "manual":
+        eod_busy = False
+        try:
+            eod_busy = is_another_eod_session_active()
+        except Exception:
+            eod_busy = False
+        if eod_busy:
+            st.info(
+                "**Probe:** another database session may be holding the EOD lock (run in progress elsewhere). "
+                "Buttons stay enabled — the server still allows only **one** EOD at a time; if a run is truly "
+                "active, **Run** will return immediately with “already in progress”. "
+                "If the UI wrongly thinks a run is active, you can still try **Run**; only a real conflict is blocked."
+            )
+            st.caption(
+                "If you get “already in progress” but nothing is running, **restart the Streamlit server** "
+                "so stale DB sessions release the advisory lock."
+            )
+
         st.subheader("Run EOD (advance system date)")
         st.caption(
             "Runs EOD for the current system date. On success, system date advances by +1 day. "
@@ -915,12 +1137,25 @@ def eod_ui():
                 st.caption(f"Run ID: {last_eod['run_id']}")
         elif last_eod and not last_eod.get("success"):
             fail_stage = last_eod.get("failed_stage")
-            err = last_eod.get("error", "Unknown error")
-            if fail_stage:
+            raw_err = last_eod.get("error")
+            err = (
+                "Unknown error"
+                if raw_err is None
+                else str(raw_err).strip() or "Unknown error"
+            )
+            is_concurrent = bool(last_eod.get("concurrent_eod")) or (
+                "already in progress" in err.lower()
+            )
+            if is_concurrent:
+                st.warning(f"**EOD did not start** (single-flight lock): {err}")
+                if st.button("Dismiss message", key="eod_dismiss_last"):
+                    st.session_state.pop("eod_last_result", None)
+                    st.rerun()
+            elif fail_stage:
                 st.error(f"EOD failed at stage `{fail_stage}`: {err}")
             else:
                 st.error(f"EOD failed: {err}")
-            if last_eod.get("run_id"):
+            if last_eod.get("run_id") and not is_concurrent:
                 st.caption(f"Run ID: {last_eod['run_id']} | status: {last_eod.get('run_status') or 'FAILED'}")
 
         confirm = st.checkbox(
@@ -928,8 +1163,18 @@ def eod_ui():
             f"On success, system date will advance to **{next_date.isoformat()}**.",
             key="eod_confirm",
         )
-        if st.button("Run EOD now", type="primary", key="eod_run_now", disabled=not confirm):
-            result = run_eod_process()
+        if st.button(
+            "Run EOD now",
+            type="primary",
+            key="eod_run_now",
+            disabled=not confirm,
+        ):
+            st.info(
+                f"**EOD in progress** — processing **{current_system_date.isoformat()}**. "
+                "Please wait; do not close or refresh this page until finished."
+            )
+            with st.spinner("Running EOD (loan engine, allocations, accounting)…"):
+                result = run_eod_process()
             if result["success"]:
                 # Persist result so confirmation survives the rerun and is
                 # visible together with the updated system date.
@@ -943,8 +1188,12 @@ def eod_ui():
             st.caption("Backfill only. Does not advance system date.")
             backfill_date = st.date_input("EOD as-of date", current_system_date, key="eod_backfill_date")
             if st.button("Run EOD for date only", key="eod_backfill_btn"):
+                st.info(
+                    f"**EOD backfill in progress** for **{backfill_date.isoformat()}**. Please wait…"
+                )
                 try:
-                    result = run_eod_for_date(backfill_date)
+                    with st.spinner("Running EOD for selected date…"):
+                        result = run_eod_for_date(backfill_date)
                     duration = result.finished_at - result.started_at
                     st.success(
                         f"EOD completed for {result.as_of_date.isoformat()} – "
@@ -960,6 +1209,155 @@ def eod_ui():
             "EOD is configured for **automatic** mode. Manual runs are disabled here. "
             "Use your scheduling/ops tooling to trigger EOD."
         )
+
+    # Available in both manual and automatic EOD modes — does not advance system date.
+    st.divider()
+    st.subheader("Reallocate receipts")
+    st.caption(
+        "Re-runs waterfall allocation for selected **posted** receipts and **writes results to the database**: "
+        "`loan_repayment_allocation` (updated in place) and `loan_daily_state` for each receipt’s **value date**, "
+        "plus unapplied-funds adjustments where applicable. "
+        "**Does not advance the system business date.**"
+    )
+    with st.expander("Open reallocate tool", expanded=False):
+        st.markdown(
+            "**When to use what**\n"
+            "- **Typical:** receipts with **value date = current system date** — fix same-day allocation without running full EOD.\n"
+            "- **Other dates / whole book for a day:** use **Run EOD for specific date (backfill, no advance)** above — "
+            "recomputes `loan_daily_state` for **all loans** for that as-of date (and runs other EOD stages per config).\n"
+            "- **Per-receipt** tool here still works for **any** value date if you enter repayment IDs or pick loan + date; "
+            "it only touches those receipts’ allocation rows and the related daily-state date(s)."
+        )
+        if not _loan_management_available:
+            st.warning(f"Loan management unavailable: {_loan_management_error}")
+        else:
+            rcol1, rcol2 = st.columns(2)
+            with rcol1:
+                realloc_loan = st.number_input(
+                    "Loan ID",
+                    min_value=1,
+                    step=1,
+                    value=1,
+                    key="eod_realloc_loan_id",
+                    help="Posted receipts for this loan on the value date will be reallocated.",
+                )
+                realloc_vd = st.date_input(
+                    "Value date",
+                    value=current_system_date,
+                    key="eod_realloc_value_date",
+                )
+            with rcol2:
+                realloc_ids_text = st.text_area(
+                    "Or repayment IDs (one per line or comma-separated)",
+                    height=100,
+                    placeholder="12\n15\n18",
+                    key="eod_realloc_ids_text",
+                    help="If provided with the button below, these IDs are used instead of loan+date.",
+                )
+
+            b1, b2 = st.columns(2)
+            with b1:
+                run_by_loan_date = st.button(
+                    "Reallocate all on loan + value date",
+                    key="eod_realloc_by_loan_date",
+                    type="secondary",
+                )
+            with b2:
+                run_by_ids = st.button(
+                    "Reallocate listed repayment IDs",
+                    key="eod_realloc_by_ids",
+                    type="secondary",
+                )
+
+            if run_by_loan_date:
+                cfg = load_system_config_from_db() or {}
+                try:
+                    ids = get_repayment_ids_for_loan_and_date(int(realloc_loan), realloc_vd)
+                    if not ids:
+                        st.warning(
+                            f"No posted receipts for loan_id={int(realloc_loan)} on {realloc_vd.isoformat()}."
+                        )
+                    else:
+                        with st.spinner(f"Reallocating {len(ids)} receipt(s)…"):
+                            ok, err = [], []
+                            for rid in ids:
+                                try:
+                                    reallocate_repayment(rid, system_config=cfg)
+                                    ok.append(rid)
+                                except Exception as ex:
+                                    err.append((rid, str(ex)))
+                        if ok:
+                            st.success(f"Reallocated repayment_id(s): {ok}")
+                        if err:
+                            for rid, msg in err:
+                                st.error(f"repayment_id={rid}: {msg}")
+                except Exception as e:
+                    st.error(str(e))
+
+            if run_by_ids:
+                raw = (realloc_ids_text or "").replace(",", "\n").splitlines()
+                parsed: list[int] = []
+                bad_token = None
+                for line in raw:
+                    s = line.strip()
+                    if not s:
+                        continue
+                    try:
+                        parsed.append(int(s))
+                    except ValueError:
+                        bad_token = s
+                        break
+                if bad_token is not None:
+                    st.error(f"Not an integer: {bad_token!r}")
+                elif not parsed:
+                    st.warning("Enter at least one repayment ID.")
+                else:
+                    cfg = load_system_config_from_db() or {}
+                    with st.spinner(f"Reallocating {len(parsed)} receipt(s)…"):
+                        ok, err = [], []
+                        for rid in parsed:
+                            try:
+                                reallocate_repayment(rid, system_config=cfg)
+                                ok.append(rid)
+                            except Exception as ex:
+                                err.append((rid, str(ex)))
+                    if ok:
+                        st.success(f"Reallocated repayment_id(s): {ok}")
+                    if err:
+                        for rid, msg in err:
+                            st.error(f"repayment_id={rid}: {msg}")
+
+    with st.expander("Recompute loan daily state (no receipts needed)", expanded=False):
+        st.caption(
+            "**Reallocate** only works when there is at least one receipt for that date. "
+            "If all receipts were deleted or you need to refresh `loan_daily_state` from the "
+            "engine and prior day, use this instead (runs `run_single_loan_eod`)."
+        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            rl_loan = st.number_input(
+                "Loan ID",
+                min_value=1,
+                value=1,
+                step=1,
+                key="eod_recompute_loan_id",
+            )
+        with col_b:
+            rl_date = st.date_input(
+                "As-of date (loan_daily_state row)",
+                value=current_system_date,
+                key="eod_recompute_as_of",
+            )
+        if st.button("Recompute loan daily state for this loan + date", key="eod_run_single_loan_eod"):
+            cfg = load_system_config_from_db() or {}
+            try:
+                with st.spinner(f"Running engine for loan_id={int(rl_loan)} on {rl_date}…"):
+                    run_single_loan_eod(int(rl_loan), rl_date, sys_cfg=cfg)
+                st.success(
+                    f"Updated `loan_daily_state` for loan_id={int(rl_loan)} as of {rl_date}."
+                )
+            except Exception as ex:
+                st.error(str(ex))
 
 
 def consumer_loan_ui():
@@ -1160,6 +1558,7 @@ def consumer_loan_ui():
     st.divider()
     st.subheader("Repayment Schedule")
     st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+    _schedule_export_downloads(df_schedule, file_stem="consumer_loan_schedule", key_prefix="dl_sched_consumer")
 
     # 6. Save button - DB-ready structure (from shared engine)
     loan_record = {**details, "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
@@ -1314,7 +1713,8 @@ def term_loan_ui():
     """
     st.markdown(calc_css, unsafe_allow_html=True)
 
-    st.markdown(f"**a. Net proceeds:** {loan_required:,.2f} US Dollars")
+    net_proceeds_to_display = float(details.get("disbursed_amount", loan_required) or 0.0)
+    st.markdown(f"**a. Net proceeds:** {net_proceeds_to_display:,.2f} US Dollars")
     st.markdown(f"**b. Interest Rate (annual, Actual/360):** {details['annual_rate'] * 100:.2f}%")
     st.markdown(
         "<p class='calc-desc'>Interest accrued on actual days / 360 basis</p>",
@@ -1340,6 +1740,7 @@ def term_loan_ui():
     st.divider()
     st.subheader("Repayment Schedule (Actual/360)")
     st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+    _schedule_export_downloads(df_schedule, file_stem="term_loan_schedule", key_prefix="dl_sched_term")
 
     loan_record = {**details, "loan_type": "term_loan", "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
     for k in ("disbursement_date", "start_date", "end_date", "first_repayment_date"):
@@ -1461,7 +1862,8 @@ def bullet_loan_ui():
     """
     st.markdown(calc_css, unsafe_allow_html=True)
 
-    st.markdown(f"**a. Net proceeds:** {loan_required:,.2f} US Dollars")
+    net_proceeds_to_display = float(details.get("disbursed_amount", loan_required) or 0.0)
+    st.markdown(f"**a. Net proceeds:** {net_proceeds_to_display:,.2f} US Dollars")
     st.markdown(f"**b. Interest Rate (annual, Actual/360):** {details['annual_rate'] * 100:.2f}%")
     st.markdown("<p class='calc-desc'>Interest on actual days / 360 basis</p>", unsafe_allow_html=True)
     st.markdown(f"**c. Drawdown fee (%):** {drawdown_fee_pct * 100:.2f}% | **Arrangement fee (%):** {arrangement_fee_pct * 100:.2f}%")
@@ -1480,6 +1882,7 @@ def bullet_loan_ui():
     st.divider()
     st.subheader("Repayment Schedule (Actual/360)")
     st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+    _schedule_export_downloads(df_schedule, file_stem="bullet_loan_schedule", key_prefix="dl_sched_bullet")
 
     loan_record = {**details, "loan_type": "bullet_loan", "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
     for k in ("disbursement_date", "end_date", "first_repayment_date"):
@@ -1488,7 +1891,7 @@ def bullet_loan_ui():
 
     st.divider()
     if st.button("Save Bullet Loan Record to System", type="primary", key="bullet_save"):
-        st.success(f"Bullet loan for ${loan_required:,.2f} has been prepared for database sync.")
+        st.success(f"Bullet loan for ${net_proceeds_to_display:,.2f} has been prepared for database sync.")
         with st.expander("Preview record (for DB insertion)"):
             st.json(loan_record)
 
@@ -1742,9 +2145,16 @@ def compute_term_schedule(
 ) -> tuple[dict, pd.DataFrame]:
     """Compute term loan schedule. Returns (details dict for DB, schedule DataFrame)."""
     total_fee = drawdown_fee_pct + arrangement_fee_pct
+    if total_fee >= 1.0:
+        raise ValueError("Total upfront fees must be < 100% to compute net disbursed amount.")
+
+    amount_display: float
     if input_total_facility:
         total_facility = loan_required
+        # When user enters total principal/facility, cash disbursed is net of upfront fees.
+        amount_display = total_facility * (1.0 - total_fee)
     else:
+        amount_display = loan_required
         total_facility = loan_required / (1.0 - total_fee)
     annual_rate = (rate_pct / 100.0) * 12.0 if rate_basis == "Per month" else (rate_pct / 100.0)
     schedule_dates = repayment_dates(disbursement_date, first_repayment_date, int(loan_term), use_anniversary)
@@ -1758,7 +2168,7 @@ def compute_term_schedule(
     )
     end_date = schedule_dates[-1] if schedule_dates else disbursement_date
     details = {
-        "principal": total_facility, "disbursed_amount": loan_required, "term": loan_term,
+        "principal": total_facility, "disbursed_amount": amount_display, "term": loan_term,
         "annual_rate": annual_rate, "drawdown_fee": drawdown_fee_pct, "arrangement_fee": arrangement_fee_pct,
         "disbursement_date": disbursement_date, "start_date": disbursement_date, "end_date": end_date,
         "first_repayment_date": first_repayment_date, "installment": installment, "grace_type": grace_type,
@@ -1783,9 +2193,16 @@ def compute_bullet_schedule(
 ) -> tuple[dict, pd.DataFrame]:
     """Compute bullet loan schedule. Returns (details dict for DB, schedule DataFrame)."""
     total_fee = drawdown_fee_pct + arrangement_fee_pct
+    if total_fee >= 1.0:
+        raise ValueError("Total upfront fees must be < 100% to compute net disbursed amount.")
+
+    amount_display: float
     if input_total_facility:
         total_facility = loan_required
+        # When user enters total principal/facility, cash disbursed is net of upfront fees.
+        amount_display = total_facility * (1.0 - total_fee)
     else:
+        amount_display = loan_required
         total_facility = loan_required / (1.0 - total_fee)
     annual_rate = (rate_pct / 100.0) * 12.0 if rate_basis == "Per month" else (rate_pct / 100.0)
     end_date = add_months(disbursement_date, loan_term)
@@ -1800,7 +2217,7 @@ def compute_bullet_schedule(
     )
     total_payment = float(df_schedule["Payment"].sum())
     details = {
-        "principal": total_facility, "disbursed_amount": loan_required, "term": loan_term,
+        "principal": total_facility, "disbursed_amount": amount_display, "term": loan_term,
         "annual_rate": annual_rate, "drawdown_fee": drawdown_fee_pct, "arrangement_fee": arrangement_fee_pct,
         "disbursement_date": disbursement_date, "start_date": disbursement_date, "end_date": end_date,
         "total_payment": total_payment, "bullet_type": "straight" if "Straight" in bullet_type else "with_interest",
@@ -1942,14 +2359,28 @@ def capture_loan_ui():
                     st.session_state.pop("capture_loan_details", None)
                     st.session_state.pop("capture_loan_schedule_df", None)
                     st.rerun()
-            glob = _get_global_loan_settings()
-            flat_rate = glob.get("interest_method") == "Flat rate"
+            product_cfg_for_basis = get_product_config_from_db(product_code) or {}
+            product_rate_basis = _get_product_rate_basis(product_cfg_for_basis, fallback=None)
+            product_gls = product_cfg_for_basis.get("global_loan_settings") or {}
+            interest_method = product_gls.get("interest_method")
+            if interest_method not in {"Reducing balance", "Flat rate"}:
+                st.error(
+                    f"Selected product `{product_code}` must define "
+                    f"product_config:{product_code}.global_loan_settings.interest_method as "
+                    f"'Reducing balance' or 'Flat rate'."
+                )
+                st.stop()
+            flat_rate = interest_method == "Flat rate"
+            rate_label = (
+                "Interest rate (% per annum)"
+                if product_rate_basis == "Per annum"
+                else "Interest rate (% per month)"
+            )
             payment_timing_anniversary = True  # will set from form
 
             if ltype == "Consumer Loan":
                 cfg = _get_system_config()
                 schemes = _get_consumer_schemes()
-                scheme_names = [s["name"] for s in schemes]
                 accepted_currencies = cfg.get("accepted_currencies", [cfg.get("base_currency", "USD")])
                 loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
                 default_ccy = loan_curr_cfg.get("consumer_loan", cfg.get("base_currency", "USD"))
@@ -1966,7 +2397,6 @@ def capture_loan_ui():
                         else 0,
                         key="cap_cl_currency",
                     )
-                    scheme = st.selectbox("Scheme", scheme_names + ["Other"], key="cap_cl_scheme")
                     principal_input = st.radio(
                         "What are you entering?",
                         ["Net proceeds", "Principal (total loan amount)"],
@@ -2003,59 +2433,143 @@ def capture_loan_ui():
                         "When repayments are on the **last day of each month**, the First Repayment Date must be the last day of its month. "
                         f"For {first_repayment_date.strftime('%B %Y')} the last day is **{example}**."
                     )
-                if scheme != "Other":
-                    sch = next((s for s in schemes if s["name"] == scheme), None)
-                    base_rate = (sch["interest_rate_pct"] / 100.0) if sch else 0.07
-                    admin_fee = (sch["admin_fee_pct"] / 100.0) if sch else 0.07
+                # Product-per-scheme: derive consumer schedule rates from selected product.
+                # This removes redundancy in the capture flow (scheme is implicit in product_code).
+                product_cfg = get_product_config_from_db(product_code) or {}
+                product_rate_basis = _get_product_rate_basis(product_cfg)
+                default_rates = (product_cfg.get("default_rates") or {}).get("consumer_loan") or {}
+                interest_pct = default_rates.get("interest_pct")
+                admin_fee_pct = default_rates.get("admin_fee_pct")
+
+                if interest_pct is not None and admin_fee_pct is not None:
+                    interest_pct_month = _pct_to_monthly(interest_pct, product_rate_basis)
+                    if interest_pct_month is None:
+                        st.error(
+                            f"Selected product `{product_code}` has invalid interest_pct for consumer_loan (must be numeric)."
+                        )
+                        st.stop()
+
+                    base_rate = float(interest_pct_month) / 100.0
+                    admin_fee = float(admin_fee_pct) / 100.0
+
+                    matched = next(
+                        (
+                            s
+                            for s in schemes
+                            if abs(float(s.get("interest_rate_pct", 0.0)) - float(interest_pct_month)) < 1e-6
+                            and abs(float(s.get("admin_fee_pct", 0.0)) - float(admin_fee_pct)) < 1e-6
+                        ),
+                        None,
+                    )
+                    scheme = str(matched["name"]) if matched and matched.get("name") else "Other"
                 else:
-                    def_rates = cfg.get("default_rates", {}).get("consumer_loan", {"interest_pct": 7.0, "admin_fee_pct": 5.0})
-                    rate_col1, rate_col2 = st.columns(2)
-                    with rate_col1:
-                        base_rate = (
-                            st.number_input(
-                                "Interest rate (%)",
-                                0.0,
-                                100.0,
-                                float(def_rates.get("interest_pct", 7.0)),
-                                step=0.1,
-                                key="cap_cl_rate",
-                            )
-                            / 100.0
-                        )
-                    with rate_col2:
-                        admin_fee = (
-                            st.number_input(
-                                "Admin fee (%)",
-                                0.0,
-                                100.0,
-                                float(def_rates.get("admin_fee_pct", 5.0)),
-                                step=0.1,
-                                key="cap_cl_admin",
-                            )
-                            / 100.0
-                        )
-                def_penalty = cfg.get("penalty_rates", {}).get("consumer_loan", 2.0)
-                pen_col1, _ = st.columns([1, 1])
-                with pen_col1:
-                    penalty_pct = st.number_input(
-                        "Penalty interest (%)",
-                        0.0,
-                        100.0,
-                        float(def_penalty),
-                        step=0.5,
-                        key="cap_cl_penalty",
-                        help="Required. 0% is acceptable. System uses only this value for penalty/default interest.",
+                    st.error(
+                        f"Selected product `{product_code}` must define "
+                        f"`product_config:{product_code}.default_rates.consumer_loan.interest_pct` and "
+                        f"`product_config:{product_code}.default_rates.consumer_loan.admin_fee_pct`."
+                    )
+                    st.stop()
+
+                # Product-per-scheme: regular interest/admin come from product defaults.
+                # Penalty/default interest is also derived from product config, but we do NOT expose
+                # a penalty override field in the consumer capture flow.
+                penalty_pct = (product_cfg.get("penalty_rates") or {}).get("consumer_loan")
+                if penalty_pct is None:
+                    st.error(
+                        f"Selected product `{product_code}` must define "
+                        f"`product_config:{product_code}.penalty_rates.consumer_loan`."
+                    )
+                    st.stop()
+
+                penalty_pct_month = _pct_to_monthly(penalty_pct, product_rate_basis)
+                if penalty_pct_month is None:
+                    st.error(
+                        f"Selected product `{product_code}` has invalid penalty_rates.consumer_loan (must be numeric)."
+                    )
+                    st.stop()
+
+                penalty_pct = float(penalty_pct_month or 0.0)
+                penalty_quotation_product = product_cfg.get("penalty_interest_quotation")
+                if not penalty_quotation_product:
+                    st.error(
+                        f"Selected product `{product_code}` must define "
+                        f"`product_config:{product_code}.penalty_interest_quotation`."
+                    )
+                    st.stop()
+
+                st.caption(f"Derived from product `{product_code}` → Scheme: `{scheme}`")
+
+                override_rates = st.checkbox(
+                    "Override regular interest rate and administration fee",
+                    value=False,
+                    key="cap_cl_override_rates",
+                )
+                if override_rates:
+                    override_interest_label = (
+                        "Regular interest rate (% per annum)"
+                        if product_rate_basis == "Per annum"
+                        else "Regular interest rate (% per month)"
+                    )
+                    override_interest_pct = st.number_input(
+                        override_interest_label,
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=round(float(interest_pct or 0.0), 4),
+                        step=0.1,
+                        key="cap_cl_override_interest_pct",
+                    )
+                    override_admin_fee_pct = st.number_input(
+                        "Administration fee (%)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=round(float(admin_fee) * 100.0, 4),
+                        step=0.1,
+                        key="cap_cl_override_admin_fee_pct",
+                    )
+
+                    # Convert the overridden rate into the internal "Per month" form
+                    # because the consumer schedule computation uses that basis internally.
+                    override_interest_pct_month = _pct_to_monthly(override_interest_pct, product_rate_basis)
+                    if override_interest_pct_month is None:
+                        st.error("Invalid override interest rate for the selected product rate basis.")
+                        st.stop()
+                    base_rate = float(override_interest_pct_month) / 100.0
+                    admin_fee = float(override_admin_fee_pct) / 100.0
+
+                    # Remap scheme name based on overridden rates (or use "Other").
+                    scheme_interest_pct_for_match = override_interest_pct_month
+                    matched_override = next(
+                        (
+                            s
+                            for s in schemes
+                            if abs(float(s.get("interest_rate_pct", 0.0)) - float(scheme_interest_pct_for_match)) < 1e-6
+                            and abs(float(s.get("admin_fee_pct", 0.0)) - float(override_admin_fee_pct)) < 1e-6
+                        ),
+                        None,
+                    )
+                    scheme = (
+                        str(matched_override["name"])
+                        if matched_override and matched_override.get("name")
+                        else "Other"
+                    )
+
+                    st.caption(
+                        f"Overrides applied → Scheme: `{scheme}` "
+                        f"(interest={override_interest_pct:.2f}%, admin={override_admin_fee_pct:.2f}%)."
                     )
                 if cl_schedule_valid:
                     details, df_schedule = compute_consumer_schedule(
                         loan_required, loan_term, disbursement_date, base_rate, admin_fee, input_tf,
-                        glob.get("rate_basis", "Per month"), flat_rate, scheme=scheme,
+                        "Per month", flat_rate, scheme=scheme,
                         first_repayment_date=first_repayment_date, use_anniversary=use_anniversary,
                     )
                     details["currency"] = currency
                     details["penalty_rate_pct"] = penalty_pct
-                    details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
+                    details["penalty_quotation"] = penalty_quotation_product
                     st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+                    _schedule_export_downloads(
+                        df_schedule, file_stem="capture_consumer_schedule", key_prefix="dl_cap_sched_consumer"
+                    )
                     if st.button("Use this schedule", key="cap_cl_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -2064,7 +2578,17 @@ def capture_loan_ui():
 
             elif ltype == "Term Loan":
                 cfg = _get_system_config()
-                dr = cfg.get("default_rates", {}).get("term_loan", {})
+                product_cfg = get_product_config_from_db(product_code) or {}
+                product_rate_basis = _get_product_rate_basis(product_cfg)
+                dr = (product_cfg.get("default_rates") or {}).get("term_loan") or {}
+                required = ["interest_pct", "drawdown_pct", "arrangement_pct"]
+                missing = [k for k in required if dr.get(k) is None]
+                if missing:
+                    st.error(
+                        f"Selected product `{product_code}` must define product_config:{product_code}.default_rates.term_loan "
+                        f"keys: {', '.join(missing)}."
+                    )
+                    st.stop()
                 accepted_currencies = cfg.get("accepted_currencies", [cfg.get("base_currency", "USD")])
                 loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
                 default_ccy = loan_curr_cfg.get("term_loan", cfg.get("base_currency", "USD"))
@@ -2102,10 +2626,10 @@ def capture_loan_ui():
                         datetime.min.time(),
                     )
                     rate_pct = st.number_input(
-                        "Interest rate (%)",
+                        rate_label,
                         0.0,
                         100.0,
-                        float(dr.get("interest_pct", 7.0)),
+                        float(dr.get("interest_pct") or 0.0),
                         step=0.1,
                         key="cap_term_rate",
                     )
@@ -2114,7 +2638,7 @@ def capture_loan_ui():
                             "Drawdown fee (%)",
                             0.0,
                             100.0,
-                            float(dr.get("drawdown_pct", 2.5)),
+                            float(dr.get("drawdown_pct")),
                             step=0.1,
                             key="cap_term_drawdown",
                         )
@@ -2125,23 +2649,39 @@ def capture_loan_ui():
                             "Arrangement fee (%)",
                             0.0,
                             100.0,
-                            float(dr.get("arrangement_pct", 2.5)),
+                            float(dr.get("arrangement_pct")),
                             step=0.1,
                             key="cap_term_arrangement",
                         )
                         / 100.0
                     )
-                def_penalty = cfg.get("penalty_rates", {}).get("term_loan", 2.0)
+                def_penalty = (product_cfg.get("penalty_rates") or {}).get("term_loan")
+                if def_penalty is None:
+                    st.error(
+                        f"Selected product `{product_code}` must define product_config:{product_code}.penalty_rates.term_loan."
+                    )
+                    st.stop()
+                penalty_quotation_product = product_cfg.get("penalty_interest_quotation")
+                if not penalty_quotation_product:
+                    st.error(
+                        f"Selected product `{product_code}` must define product_config:{product_code}.penalty_interest_quotation."
+                    )
+                    st.stop()
                 tpen1, tpen2 = st.columns(2)
                 with tpen1:
+                    penalty_label = (
+                        "Penalty interest (% per annum)"
+                        if product_rate_basis == "Per annum"
+                        else "Penalty interest (% per month)"
+                    )
                     penalty_pct = st.number_input(
-                        "Penalty interest (%)",
+                        penalty_label,
                         0.0,
                         100.0,
                         float(def_penalty),
                         step=0.5,
                         key="cap_term_penalty",
-                        help="Required. 0% is acceptable. System uses only this value for penalty/default interest.",
+                        help="Required. 0% is acceptable. Will be converted to a per-month penalty rate for EOD.",
                     )
                 with tpen2:
                     grace_type = st.radio(
@@ -2181,12 +2721,19 @@ def capture_loan_ui():
                     details, df_schedule = compute_term_schedule(
                         loan_required, loan_term, disbursement_date, rate_pct, drawdown_pct, arrangement_pct,
                         input_tf, grace_type, moratorium_months, first_rep, use_anniversary,
-                        glob.get("rate_basis", "Per month"), flat_rate,
+                        product_rate_basis, flat_rate,
                     )
                     details["currency"] = currency
-                    details["penalty_rate_pct"] = penalty_pct
-                    details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
+                    penalty_pct_monthly = _pct_to_monthly(penalty_pct, product_rate_basis)
+                    if penalty_pct_monthly is None:
+                        st.error("Invalid penalty interest for the selected product rate basis.")
+                        st.stop()
+                    details["penalty_rate_pct"] = float(penalty_pct_monthly)
+                    details["penalty_quotation"] = penalty_quotation_product
                     st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+                    _schedule_export_downloads(
+                        df_schedule, file_stem="capture_term_schedule", key_prefix="dl_cap_sched_term"
+                    )
                     if st.button("Use this schedule", key="cap_term_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -2195,7 +2742,16 @@ def capture_loan_ui():
 
             elif ltype == "Bullet Loan":
                 cfg = _get_system_config()
-                dr = cfg.get("default_rates", {}).get("bullet_loan", {})
+                product_cfg = get_product_config_from_db(product_code) or {}
+                dr = (product_cfg.get("default_rates") or {}).get("bullet_loan") or {}
+                required = ["interest_pct", "drawdown_pct", "arrangement_pct"]
+                missing = [k for k in required if dr.get(k) is None]
+                if missing:
+                    st.error(
+                        f"Selected product `{product_code}` must define product_config:{product_code}.default_rates.bullet_loan "
+                        f"keys: {', '.join(missing)}."
+                    )
+                    st.stop()
                 accepted_currencies = cfg.get("accepted_currencies", [cfg.get("base_currency", "USD")])
                 loan_curr_cfg = cfg.get("loan_default_currencies", {}) or {}
                 default_ccy = loan_curr_cfg.get("bullet_loan", cfg.get("base_currency", "USD"))
@@ -2237,10 +2793,10 @@ def capture_loan_ui():
                         datetime.min.time(),
                     )
                     rate_pct = st.number_input(
-                        "Interest rate (%)",
+                        rate_label,
                         0.0,
                         100.0,
-                        float(dr.get("interest_pct", 7.0)),
+                        float(dr.get("interest_pct")),
                         step=0.1,
                         key="cap_bullet_rate",
                     )
@@ -2249,7 +2805,7 @@ def capture_loan_ui():
                             "Drawdown fee (%)",
                             0.0,
                             100.0,
-                            float(dr.get("drawdown_pct", 2.5)),
+                            float(dr.get("drawdown_pct")),
                             step=0.1,
                             key="cap_bullet_drawdown",
                         )
@@ -2260,24 +2816,44 @@ def capture_loan_ui():
                             "Arrangement fee (%)",
                             0.0,
                             100.0,
-                            float(dr.get("arrangement_pct", 2.5)),
+                            float(dr.get("arrangement_pct")),
                             step=0.1,
                             key="cap_bullet_arrangement",
                         )
                         / 100.0
                     )
-                def_penalty = cfg.get("penalty_rates", {}).get("bullet_loan", 2.0)
+                def_penalty = (product_cfg.get("penalty_rates") or {}).get("bullet_loan")
+                if def_penalty is None:
+                    st.error(
+                        f"Selected product `{product_code}` must define product_config:{product_code}.penalty_rates.bullet_loan."
+                    )
+                    st.stop()
+                penalty_quotation_product = product_cfg.get("penalty_interest_quotation")
+                if not penalty_quotation_product:
+                    st.error(
+                        f"Selected product `{product_code}` must define product_config:{product_code}.penalty_interest_quotation."
+                    )
+                    st.stop()
                 bpen1, _ = st.columns([1, 1])
                 with bpen1:
+                    penalty_label = (
+                        "Penalty interest (% per annum)"
+                        if product_rate_basis == "Per annum"
+                        else "Penalty interest (% per month)"
+                    )
                     penalty_pct = st.number_input(
-                        "Penalty interest (%)",
+                        penalty_label,
                         0.0,
                         100.0,
                         float(def_penalty),
                         step=0.5,
                         key="cap_bullet_penalty",
-                        help="Required. 0% is acceptable. System uses only this value for penalty/default interest.",
+                        help="Required. 0% is acceptable. Will be converted to a per-month penalty rate for EOD.",
                     )
+                penalty_pct_monthly = _pct_to_monthly(penalty_pct, product_rate_basis)
+                if penalty_pct_monthly is None:
+                    st.error("Invalid penalty interest for the selected product rate basis.")
+                    st.stop()
                 first_rep = None
                 use_anniversary = True
                 if "with interest" in bullet_type:
@@ -2289,12 +2865,15 @@ def capture_loan_ui():
                     else:
                         details, df_schedule = compute_bullet_schedule(
                             loan_required, loan_term, disbursement_date, rate_pct, drawdown_pct, arrangement_pct,
-                            input_tf, bullet_type, first_rep, use_anniversary, glob.get("rate_basis", "Per month"), flat_rate,
+                            input_tf, bullet_type, first_rep, use_anniversary, product_rate_basis, flat_rate,
                         )
                         details["currency"] = currency
-                        details["penalty_rate_pct"] = penalty_pct
-                        details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
+                        details["penalty_rate_pct"] = float(penalty_pct_monthly)
+                        details["penalty_quotation"] = penalty_quotation_product
                         st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+                        _schedule_export_downloads(
+                            df_schedule, file_stem="capture_bullet_schedule", key_prefix="dl_cap_sched_bullet_i"
+                        )
                         if st.button("Use this schedule", key="cap_bullet_use"):
                             st.session_state["capture_loan_details"] = details
                             st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -2303,12 +2882,15 @@ def capture_loan_ui():
                 else:
                     details, df_schedule = compute_bullet_schedule(
                         loan_required, loan_term, disbursement_date, rate_pct, drawdown_pct, arrangement_pct,
-                        input_tf, bullet_type, None, True, glob.get("rate_basis", "Per month"), flat_rate,
+                        input_tf, bullet_type, None, True, product_rate_basis, flat_rate,
                     )
                     details["currency"] = currency
-                    details["penalty_rate_pct"] = penalty_pct
-                    details["penalty_quotation"] = cfg.get("penalty_interest_quotation", "Absolute Rate")
+                    details["penalty_rate_pct"] = float(penalty_pct_monthly)
+                    details["penalty_quotation"] = penalty_quotation_product
                     st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+                    _schedule_export_downloads(
+                        df_schedule, file_stem="capture_bullet_schedule", key_prefix="dl_cap_sched_bullet_s"
+                    )
                     if st.button("Use this schedule", key="cap_bullet_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -2318,7 +2900,16 @@ def capture_loan_ui():
             else:
                 # Customised Repayments
                 cfg = _get_system_config()
-                dr = cfg.get("default_rates", {}).get("customised_repayments", {})
+                product_cfg = get_product_config_from_db(product_code) or {}
+                dr = (product_cfg.get("default_rates") or {}).get("customised_repayments") or {}
+                required = ["interest_pct", "drawdown_pct", "arrangement_pct"]
+                missing = [k for k in required if dr.get(k) is None]
+                if missing:
+                    st.error(
+                        f"Selected product `{product_code}` must define product_config:{product_code}.default_rates.customised_repayments "
+                        f"keys: {', '.join(missing)}."
+                    )
+                    st.stop()
                 accepted_currencies = cfg.get(
                     "accepted_currencies", [cfg.get("base_currency", "USD")]
                 )
@@ -2351,17 +2942,59 @@ def capture_loan_ui():
                 first_rep_display = (first_rep_derived.date() if first_rep_derived is not None else default_first)
                 first_rep = datetime.combine(first_rep_display, datetime.min.time())
 
-                rate_pct = st.number_input("Interest rate (%)", 0.0, 100.0, float(dr.get("interest_pct", 7.0)), step=0.1, key="cap_cust_rate")
-                drawdown_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="cap_cust_drawdown") / 100.0
-                arrangement_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct", 2.5)), step=0.1, key="cap_cust_arrangement") / 100.0
-                def_penalty = cfg.get("penalty_rates", {}).get("customised_repayments", 2.0)
-                penalty_pct = st.number_input("Penalty interest (%)", 0.0, 100.0, float(def_penalty), step=0.5, key="cap_cust_penalty", help="Required. 0% is acceptable. System uses only this value for penalty/default interest.")
+                rate_pct = st.number_input(
+                    rate_label,
+                    0.0,
+                    100.0,
+                    float(dr.get("interest_pct")),
+                    step=0.1,
+                    key="cap_cust_rate",
+                )
+                drawdown_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct")), step=0.1, key="cap_cust_drawdown") / 100.0
+                arrangement_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct")), step=0.1, key="cap_cust_arrangement") / 100.0
+
+                def_penalty = (product_cfg.get("penalty_rates") or {}).get("customised_repayments")
+                if def_penalty is None:
+                    st.error(
+                        f"Selected product `{product_code}` must define product_config:{product_code}.penalty_rates.customised_repayments."
+                    )
+                    st.stop()
+
+                penalty_quotation_product = product_cfg.get("penalty_interest_quotation")
+                if not penalty_quotation_product:
+                    st.error(
+                        f"Selected product `{product_code}` must define product_config:{product_code}.penalty_interest_quotation."
+                    )
+                    st.stop()
+
+                penalty_label = (
+                    "Penalty interest (% per annum)"
+                    if product_rate_basis == "Per annum"
+                    else "Penalty interest (% per month)"
+                )
+                penalty_pct = st.number_input(
+                    penalty_label,
+                    0.0,
+                    100.0,
+                    float(def_penalty),
+                    step=0.5,
+                    key="cap_cust_penalty",
+                    help="Required. 0% is acceptable. Converted to a per-month penalty rate for EOD.",
+                )
+                penalty_pct_monthly = _pct_to_monthly(penalty_pct, product_rate_basis)
+                if penalty_pct_monthly is None:
+                    st.error("Invalid penalty interest for the selected product rate basis.")
+                    st.stop()
                 total_fee = drawdown_pct + arrangement_pct
                 if input_tf:
                     total_facility = loan_required
                 else:
                     total_facility = loan_required / (1.0 - total_fee)
-                annual_rate = (rate_pct / 100.0) * 12.0 if glob.get("rate_basis") == "Per month" else (rate_pct / 100.0)
+                annual_rate = (
+                    (rate_pct / 100.0) * 12.0
+                    if product_rate_basis == "Per month"
+                    else (rate_pct / 100.0)
+                )
 
                 cap_key = "cap_cust_df"
                 cap_params = (round(total_facility, 2), loan_term, disbursement_date.strftime("%Y-%m-%d"), irregular)
@@ -2437,7 +3070,8 @@ def capture_loan_ui():
                         "annual_rate": annual_rate, "drawdown_fee": drawdown_pct, "arrangement_fee": arrangement_pct,
                         "disbursement_date": disbursement_date, "end_date": end_date_from_table,
                         "first_repayment_date": first_rep_for_save, "payment_timing": "anniversary" if use_anniversary else "last_day_of_month",
-                        "penalty_rate_pct": penalty_pct, "penalty_quotation": cfg.get("penalty_interest_quotation", "Absolute Rate"),
+                        "penalty_rate_pct": float(penalty_pct_monthly),
+                        "penalty_quotation": penalty_quotation_product,
                         "currency": currency,
                     }
                     if st.button("Use this schedule", key="cap_cust_use"):
@@ -2506,10 +3140,45 @@ def capture_loan_ui():
                 st.markdown(f"**Principal:** {details.get('principal', 0):,.2f}")
                 st.markdown(f"**Disbursed amount:** {details.get('disbursed_amount', 0):,.2f} | **Term:** {details.get('term', 0)} months")
             with sum_col3:
-                rate_val = details.get('annual_rate') if details.get('annual_rate') is not None else details.get('monthly_rate', 0)
-                st.markdown(f"**Interest Rate:** {rate_val*100:.2f}%")
-                pen_rate = details.get('metadata', {}).get('penalty_rate_pct', details.get('penalty_rate_pct', 0))
-                st.markdown(f"**Penalty Rate:** {pen_rate:.2f}%")
+                product_code_for_rate = st.session_state.get("capture_product_code")
+                product_cfg_for_rate = get_product_config_from_db(product_code_for_rate) or {}
+                rate_basis_for_display = (
+                    (product_cfg_for_rate.get("global_loan_settings") or {}).get("rate_basis")
+                )
+                if rate_basis_for_display not in {"Per month", "Per annum"}:
+                    st.error(
+                        f"Selected product `{product_code_for_rate}` must define "
+                        "product_config:{product_code_for_rate}.global_loan_settings.rate_basis "
+                        "as either 'Per month' or 'Per annum'."
+                    )
+                    st.stop()
+
+                monthly_dec = None
+                annual_dec = None
+                if details.get("monthly_rate") is not None:
+                    monthly_dec = float(details.get("monthly_rate") or 0.0)
+                    annual_dec = monthly_dec * 12.0
+                if details.get("annual_rate") is not None:
+                    annual_dec = float(details.get("annual_rate") or 0.0)
+                    monthly_dec = annual_dec / 12.0
+
+                if rate_basis_for_display == "Per month":
+                    rate_display_pct = (monthly_dec or 0.0) * 100.0
+                    st.markdown(f"**Interest Rate (per month):** {rate_display_pct:.2f}%")
+                else:
+                    rate_display_pct = (annual_dec or 0.0) * 100.0
+                    st.markdown(f"**Interest Rate (per annum):** {rate_display_pct:.2f}%")
+
+                pen_rate_pct = details.get("metadata", {}).get(
+                    "penalty_rate_pct", details.get("penalty_rate_pct", 0)
+                )
+                # penalty_rate_pct is stored in details in a per-month basis in our capture flow.
+                if rate_basis_for_display == "Per month":
+                    pen_display_pct = float(pen_rate_pct or 0.0)
+                    st.markdown(f"**Penalty Rate (per month):** {pen_display_pct:.2f}%")
+                else:
+                    pen_display_pct = float(pen_rate_pct or 0.0) * 12.0
+                    st.markdown(f"**Penalty Rate (per annum):** {pen_display_pct:.2f}%")
                 
                 # Try explicit amounts first, fallback to calculating from rates
                 d_fee_amt = details.get('drawdown_fee_amount')
@@ -2527,24 +3196,20 @@ def capture_loan_ui():
             
             st.subheader("Journal Preview (On Approval)")
             from accounting_service import AccountingService
-            from decimal import Decimal
+            from loan_management import build_loan_approval_journal_payload
             try:
-                prin_amt = Decimal(str(details.get("principal", details.get("facility", 0))))
-                disb_amt = Decimal(str(details.get("disbursed_amount", details.get("principal", 0))))
-                total_fees_dec = Decimal(str(fees))
-                
-                payload_preview = {
-                    "loan_principal": prin_amt,
-                    "cash_operating": disb_amt,
-                    "deferred_fee_liability": total_fees_dec
-                }
-                preview_lines = AccountingService().simulate_event("LOAN_APPROVAL", payload=payload_preview)
-                if preview_lines:
+                payload_preview = build_loan_approval_journal_payload(details)
+                sim = AccountingService().simulate_event("LOAN_APPROVAL", payload=payload_preview)
+                if sim.lines:
+                    if not sim.balanced and sim.warning:
+                        st.warning(sim.warning)
+                    else:
+                        st.caption("Double-entry check (2dp): debits = credits ✓")
                     df_preview = pd.DataFrame([{
                         "Account": f"{line['account_name']} ({line['account_code']})",
                         "Debit": float(line['debit']),
                         "Credit": float(line['credit'])
-                    } for line in preview_lines])
+                    } for line in sim.lines])
                     st.dataframe(df_preview, use_container_width=True, hide_index=True)
                 else:
                     st.info("No transaction templates found for LOAN_APPROVAL. No automated journals will be posted.")
@@ -2554,6 +3219,9 @@ def capture_loan_ui():
 
             st.subheader("Schedule")
             st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+            _schedule_export_downloads(
+                df_schedule, file_stem="loan_schedule_review", key_prefix="dl_cap_sched_review"
+            )
             st.divider()
             
             st.subheader("Loan Documents")
@@ -3540,6 +4208,9 @@ def view_schedule_ui():
             display_cols = [c for c in ["Period", "Date", "Payment", "Principal", "Interest", "Principal Balance", "Total Outstanding"] if c in df.columns]
             df_display = df[display_cols] if display_cols else df
             st.dataframe(format_schedule_display(df_display), width="stretch", hide_index=True)
+            _schedule_export_downloads(
+                df_display, file_stem=f"loan_{loan_id}_schedule", key_prefix=f"dl_sched_loan_view_{loan_id}"
+            )
 
 
 def teller_ui():
@@ -4125,6 +4796,11 @@ def reamortisation_ui():
                                 width="stretch",
                                 hide_index=True,
                             )
+                            _schedule_export_downloads(
+                                df_preview,
+                                file_stem=f"loan_{loan_id}_modification_preview_schedule",
+                                key_prefix=f"dl_reamod_sched_{loan_id}",
+                            )
                             if st.button("Commit modification", type="primary", key="reamod_commit"):
                                 try:
                                     v = execute_loan_modification(
@@ -4197,6 +4873,11 @@ def reamortisation_ui():
                             format_schedule_display(rp["schedule_df"]),
                             width="stretch",
                             hide_index=True,
+                        )
+                        _schedule_export_downloads(
+                            rp["schedule_df"],
+                            file_stem=f"loan_{loan_id_r}_recast_preview_schedule",
+                            key_prefix=f"dl_recast_sched_{loan_id_r}",
                         )
                         if st.button("Commit recast", type="primary", key="recast_commit"):
                             try:
@@ -4351,6 +5032,7 @@ def statements_ui():
         "Portion of Credit Allocated to Interest": "Credit to Interest",
         "Credit Allocated to Fees": "Credit to Fees",
         "Credit Allocated to Capital": "Credit to Principal",
+        "Arrears": "Arrears (total delinquency, incl. fees)",
     }
 
     tab_loan, tab_gl = st.tabs(["Customer loan statement", "General Ledger"])
@@ -4358,7 +5040,7 @@ def statements_ui():
         st.subheader("Customer loan statement")
         st.caption(
             "Search by customer or Loan ID. Select loan and dates. "
-            "Shows Due Date, Narration, Debits, Credits, Balance, Unapplied funds (PDF/CSV/Print)."
+            "**Arrears** = principal in arrears + interest in arrears + default + penalty + fees (PDF/CSV/Print)."
         )
         search = st.text_input(
             "Search by customer name or Loan ID",
@@ -4471,7 +5153,7 @@ def statements_ui():
                             generated_fmt = gen.strftime("%d %b %Y, %H:%M:%S") if gen and hasattr(gen, "strftime") else (str(gen) if gen else "")
 
                             statement_title = "Customer loan statement"
-                            numeric_cols = ["Debits", "Credits", "Balance", "Unapplied funds"]
+                            numeric_cols = ["Debits", "Credits", "Balance", "Arrears", "Unapplied funds"]
                             for c in numeric_cols:
                                 if c in df.columns:
                                     df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
@@ -4488,7 +5170,7 @@ def statements_ui():
                                     stmt_df = df
                             else:
                                 stmt_df = df
-                            center_cols = ["Debits", "Credits", "Balance", "Unapplied funds"]
+                            center_cols = ["Debits", "Credits", "Balance", "Arrears", "Unapplied funds"]
                             table_html = _statement_table_html(stmt_df, display_headers, center_columns=center_cols)
                             closing_html = ""
                             if closing_row is not None:
@@ -4737,18 +5419,20 @@ def statements_ui():
             if entries:
                 flat_rows = []
                 for entry in entries:
+                    ok = entry.get("double_entry_balanced", True)
                     for line in entry["lines"]:
                         flat_rows.append({
                             "Date": entry["entry_date"],
                             "Reference": entry["reference"],
                             "Event": entry["event_tag"],
+                            "Balanced": "OK" if ok else "NO",
                             "Account": f"{line['account_name']} ({line['account_code']})",
                             "Debit": float(line["debit"]),
                             "Credit": float(line["credit"]),
                         })
 
                 df_all = pd.DataFrame(flat_rows) if flat_rows else pd.DataFrame(
-                    columns=["Date", "Reference", "Event", "Account", "Debit", "Credit"]
+                    columns=["Date", "Reference", "Event", "Balanced", "Account", "Debit", "Credit"]
                 )
                 st.dataframe(df_all, use_container_width=True, hide_index=True)
 
@@ -4756,6 +5440,11 @@ def statements_ui():
                     st.caption(
                         f"Totals for period: Debit {df_all['Debit'].sum():.2f} | Credit {df_all['Credit'].sum():.2f}"
                     )
+                    if "Balanced" in df_all.columns and (df_all["Balanced"] == "NO").any():
+                        st.warning(
+                            "Some rows are from journal headers that fail double-entry at **2dp** "
+                            "(see **Balanced** column). New postings are blocked if materially unbalanced; these may be historical."
+                        )
             else:
                 st.info("No journal entries found for the selected filters.")
 
@@ -4774,6 +5463,17 @@ def accounting_ui():
 
     svc = AccountingService()
 
+    def _coa_parent_display_label(acct_list: list, parent_id) -> str:
+        """Human-readable parent for COA edit confirmations."""
+        if parent_id is None:
+            return "(None — top level)"
+        for a in acct_list:
+            if str(a.get("id")) == str(parent_id):
+                c = (a.get("code") or "").strip()
+                n = (a.get("name") or "").strip()
+                return f"{c} — {n}" if (c or n) else str(parent_id)
+        return f"(unknown id {parent_id})"
+
     st.markdown(
         "<div style='background-color: #0F766E; color: white; padding: 8px 12px; "
         "font-weight: bold; font-size: 1.1rem;'>Accounting Module</div>",
@@ -4787,6 +5487,13 @@ def accounting_ui():
 
     # 1. Chart of Accounts
     with tab_coa:
+        _coa_banner = st.session_state.pop("coa_parent_edit_banner", None)
+        if _coa_banner:
+            _bkind, _btext = _coa_banner
+            if _bkind == "success":
+                st.success(_btext)
+            else:
+                st.info(_btext)
         st.subheader("Chart of Accounts")
         if not svc.is_coa_initialized():
             st.warning("Chart of Accounts is not initialized.")
@@ -4808,19 +5515,136 @@ def accounting_ui():
         
         st.divider()
         st.subheader("Add Custom Account")
+        _coa_accounts = svc.list_accounts() or []
+        _parent_labels = ["(None — top level)"]
+        _parent_ids: list = [None]
+        for _a in sorted(_coa_accounts, key=lambda x: (x.get("code") or "")):
+            _pid = _a.get("id")
+            if _pid is not None:
+                _parent_labels.append(f"{_a.get('code', '')} — {_a.get('name', '')}")
+                _parent_ids.append(_pid)
         with st.form("add_account_form"):
             code = st.text_input("Account Code (e.g. A100003)")
             name = st.text_input("Account Name")
             category = st.selectbox("Category", ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"])
+            _pi = st.selectbox(
+                "Parent account (optional)",
+                options=list(range(len(_parent_labels))),
+                format_func=lambda i: _parent_labels[i],
+                help="Choose a parent for roll-up reporting. The parent must already exist in the chart. "
+                "Typically the category matches the parent’s category.",
+                key="add_acct_parent_sel",
+            )
+            parent_id = _parent_ids[_pi]
             system_tag = st.text_input("System Tag (Optional)")
             submitted = st.form_submit_button("Create Account")
             if submitted:
                 if code and name:
-                    svc.create_account(code, name, category, system_tag if system_tag else None)
-                    st.success("Account created!")
-                    st.rerun()
+                    try:
+                        svc.create_account(
+                            code,
+                            name,
+                            category,
+                            system_tag=system_tag.strip() if system_tag else None,
+                            parent_id=parent_id,
+                        )
+                        st.success("Account created!")
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+                    except Exception as e:
+                        st.error(f"Could not create account: {e}")
                 else:
                     st.error("Code and Name are required.")
+
+        st.divider()
+        st.subheader("Edit account parent")
+        st.caption(
+            "Set or change the parent for an **existing** account. "
+            "This account and its descendants cannot be chosen as parent (prevents cycles)."
+        )
+        _edit_list = svc.list_accounts() or []
+        if _edit_list:
+            _sorted_edit = sorted(_edit_list, key=lambda x: (x.get("code") or ""))
+            _elabels = [f"{a.get('code', '')} — {a.get('name', '')}" for a in _sorted_edit]
+            _eids = [a["id"] for a in _sorted_edit]
+            st.caption(
+                "Pick the account, choose the new parent, then click **Update parent**. "
+                "(Not inside a form so your parent choice is saved to session state before the button runs.)"
+            )
+            _ei = st.selectbox(
+                "Account to edit",
+                options=list(range(len(_elabels))),
+                format_func=lambda i: _elabels[i],
+                key="edit_acct_pick",
+            )
+            selected_id = _eids[_ei]
+            acct_row = _sorted_edit[_ei]
+            current_parent_id = acct_row.get("parent_id")
+            # String IDs: UUID vs str from DB/cursors can break `x in set` and hide valid parents.
+            _subtree_raw = svc.get_account_subtree_ids(selected_id)
+            subtree = {str(x) for x in _subtree_raw}
+            _plabels: list[str] = ["(None — top level)"]
+            _pids: list = [None]
+            for _a in _sorted_edit:
+                if str(_a["id"]) not in subtree:
+                    _plabels.append(f"{_a.get('code', '')} — {_a.get('name', '')}")
+                    _pids.append(_a["id"])
+            default_pi = 0
+            for _i, _pid in enumerate(_pids):
+                if current_parent_id is not None and str(_pid) == str(current_parent_id):
+                    default_pi = _i
+                    break
+            default_pi = min(default_pi, max(0, len(_plabels) - 1))
+            # Integer index into _pids (avoids label→id dict collisions if two rows share same label text).
+            _sk_idx = f"coa_edit_parent_idx_{str(selected_id)}"
+            if _sk_idx not in st.session_state:
+                st.session_state[_sk_idx] = default_pi
+            else:
+                _cur = st.session_state[_sk_idx]
+                if not isinstance(_cur, int) or _cur < 0 or _cur >= len(_plabels):
+                    st.session_state[_sk_idx] = default_pi
+            st.selectbox(
+                "New parent",
+                options=list(range(len(_plabels))),
+                format_func=lambda i: _plabels[i],
+                key=_sk_idx,
+                help="Choose (None — top level) to clear the parent. "
+                "If an account is missing here, it may be under this account in the tree (cannot be parent).",
+            )
+            if st.button("Update parent", key="coa_btn_update_parent", type="primary"):
+                try:
+                    _idx = st.session_state.get(_sk_idx, default_pi)
+                    try:
+                        _idx = int(_idx)
+                    except (TypeError, ValueError):
+                        _idx = default_pi
+                    _idx = max(0, min(_idx, len(_pids) - 1))
+                    new_parent_id = _pids[_idx]
+                    old_lbl = _coa_parent_display_label(_sorted_edit, current_parent_id)
+                    new_lbl = _coa_parent_display_label(_sorted_edit, new_parent_id)
+                    acct_code = (acct_row.get("code") or "").strip() or "?"
+                    acct_name = (acct_row.get("name") or "").strip()
+                    acct_title = f"{acct_code} — {acct_name}" if acct_name else acct_code
+                    if str(current_parent_id or "") == str(new_parent_id or ""):
+                        st.session_state["coa_parent_edit_banner"] = (
+                            "info",
+                            f"**No change saved.** **{acct_title}** already has parent **{old_lbl}**.",
+                        )
+                    else:
+                        svc.update_account_parent(selected_id, new_parent_id)
+                        st.session_state.pop(_sk_idx, None)
+                        st.session_state["coa_parent_edit_banner"] = (
+                            "success",
+                            f"**Saved.** **{acct_title}**: parent **{old_lbl}** → **{new_lbl}**.",
+                        )
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"Could not update parent: {e}")
+        else:
+            st.caption("Initialize the chart of accounts above before editing parents.")
 
     # 2. Transaction Templates
     with tab_templates:
@@ -4973,41 +5797,69 @@ def accounting_ui():
 
         st.divider()
         st.subheader("Link New Journal (Double Entry)")
-        # Dropdown options from DB for Link New Journal form
+        st.caption(
+            "Adds one **debit** and one **credit** template row for an **event_type**. "
+            "Posting code (e.g. `AccountingService.post_event`) must use the **exact same** event type string. "
+            "Choose **Use existing** or **Define new**; the new name field appears as soon as you pick Define new."
+        )
         _accounts = svc.list_accounts() or []
         _all_system_tags = sorted(set(a["system_tag"] for a in _accounts if a.get("system_tag")))
         _all_system_tags = _all_system_tags or ["cash_operating", "loan_principal", "deferred_fee_liability"]
-        _event_types = sorted(set(t["event_type"] for t in templates)) if templates else []
+        _templates_for_evt = svc.list_all_transaction_templates() or []
+        _event_types = sorted(set(t["event_type"] for t in _templates_for_evt))
 
-        with st.form("add_template_form"):
-            evt_options = _event_types + ["(new event type)"]
-            evt_sel = st.selectbox("Event Type", evt_options, key="link_evt_sel")
-            if evt_sel == "(new event type)":
-                evt = st.text_input("New event type name", placeholder="e.g. LOAN_DISBURSEMENT", key="link_evt_new")
+        _evt_mode = st.radio(
+            "Event type",
+            ["Use existing", "Define new"],
+            horizontal=True,
+            key="link_evt_mode",
+            help="Define new: enter the identifier your posting code will use (same spelling/casing after normalization).",
+        )
+        evt_resolved = ""
+        if _evt_mode == "Use existing":
+            if _event_types:
+                evt_resolved = st.selectbox(
+                    "Existing event type",
+                    _event_types,
+                    key="link_evt_existing",
+                )
             else:
-                evt = evt_sel
-            trigger_type = st.selectbox("Trigger Type", ["EVENT", "EOD", "EOM"], index=0)
+                st.info("No event types in the database yet. Switch to **Define new** above.")
+        else:
+            _new_evt = st.text_input(
+                "New event type name",
+                placeholder="e.g. LOAN_DISBURSEMENT",
+                key="link_evt_new_name",
+                help="Use the same identifier your code will pass to post_event(event_type=...). "
+                "Stored uppercase with spaces → underscores.",
+            )
+            evt_resolved = (_new_evt or "").strip().upper().replace(" ", "_")
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Debit Leg**")
-                debit_tag = st.selectbox("System Tag to Debit", _all_system_tags, key="link_debit_tag")
-            with col2:
-                st.markdown("**Credit Leg**")
-                credit_tag = st.selectbox("System Tag to Credit", _all_system_tags, key="link_credit_tag")
+        trigger_type = st.selectbox("Trigger Type", ["EVENT", "EOD", "EOM"], index=0, key="link_trig")
 
-            desc = st.text_input("Description / Memo")
-            submitted2 = st.form_submit_button("Add Journal Link")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Debit leg**")
+            debit_tag = st.selectbox("System tag to debit", _all_system_tags, key="link_debit_tag")
+        with col2:
+            st.markdown("**Credit leg**")
+            credit_tag = st.selectbox("System tag to credit", _all_system_tags, key="link_credit_tag")
 
-            if submitted2 and evt and debit_tag and credit_tag:
-                # Add the debit leg
-                svc.link_journal(evt, debit_tag, "DEBIT", desc, trigger_type)
-                # Add the credit leg
-                svc.link_journal(evt, credit_tag, "CREDIT", desc, trigger_type)
-                st.success(f"Double-entry journal for {evt} added successfully!")
-                st.rerun()
-            elif submitted2:
-                st.error("Please provide the Event Type, Debit Tag, and Credit Tag.")
+        desc = st.text_input("Description / memo", key="link_desc")
+
+        if st.button("Add journal link", key="link_journal_btn", type="primary"):
+            if not evt_resolved or not debit_tag or not credit_tag:
+                st.error("Event type (existing or new name), debit tag, and credit tag are required.")
+            elif _evt_mode == "Define new" and len(evt_resolved) < 2:
+                st.error("Enter a valid new event type name (at least 2 characters after cleanup).")
+            else:
+                try:
+                    svc.link_journal(evt_resolved, debit_tag, "DEBIT", desc, trigger_type)
+                    svc.link_journal(evt_resolved, credit_tag, "CREDIT", desc, trigger_type)
+                    st.success(f"Double-entry template for **{evt_resolved}** added.")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(str(ex))
 
     # 3. Receipt → GL Mapping (dedicated tab)
     with tab_mapping:
@@ -5606,6 +6458,38 @@ def journals_ui():
         unsafe_allow_html=True,
     )
     st.markdown("<br>", unsafe_allow_html=True)
+
+    try:
+        bad_journals = svc.list_unbalanced_journal_entries()
+        if bad_journals:
+            st.error(
+                f"**Data integrity:** {len(bad_journals)} journal header(s) are **materially** unbalanced "
+                "(per-line 10dp, then totals compared at **2dp**; sub–2dp drift is ignored). "
+                "**Avoid:** unbalanced journals cannot be saved. "
+                "**Flag:** listed here + **Balanced** in Statements. "
+                "Use **Repair LOAN_APPROVAL** when applicable."
+            )
+            with st.expander("Unbalanced journal headers (detail) & repair"):
+                st.dataframe(pd.DataFrame([dict(r) for r in bad_journals]), width="stretch")
+                st.caption(
+                    "**imbalance_2dp** = rounded total debits minus rounded total credits (each total = sum of 10dp line amounts). "
+                    "Classic LOAN_APPROVAL bug: principal debit too small vs cash + deferred fees — re-post fixes when supported."
+                )
+                repair_id = st.number_input(
+                    "Loan ID (LOAN_APPROVAL repair)",
+                    min_value=1,
+                    step=1,
+                    key="journals_repair_loan_id",
+                )
+                if st.button("Re-post LOAN_APPROVAL from loan record", key="journals_repair_loan_btn"):
+                    try:
+                        svc.repost_loan_approval_journal(int(repair_id), created_by="ui_user")
+                        st.success(f"Re-posted LOAN_APPROVAL for loan {int(repair_id)}.")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(str(ex))
+    except Exception as ex:
+        st.caption(f"Could not check journal double-entry integrity: {ex}")
 
     tab_manual, tab_adjust = st.tabs(["Manual Journals", "Balance Adjustments"])
 

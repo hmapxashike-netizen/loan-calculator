@@ -1,7 +1,57 @@
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from config import get_database_url
 import json
+from decimal import Decimal
+
+import psycopg2
+from psycopg2 import errors as pg_errors
+from psycopg2.extras import RealDictCursor
+
+from config import get_database_url
+from decimal_utils import amounts_equal_at_2dp, as_10dp, as_2dp
+
+
+def journal_lines_balance_totals(lines: list[dict]) -> tuple[Decimal, Decimal]:
+    """
+    Sum debits and credits for a set of journal line dicts (10dp per line).
+    Lines use 'debit' / 'credit' keys as in posting or GL views.
+    """
+    total_d = Decimal("0")
+    total_c = Decimal("0")
+    for line in lines:
+        total_d += as_10dp(line.get("debit") or 0)
+        total_c += as_10dp(line.get("credit") or 0)
+    return total_d, total_c
+
+
+def journal_totals_balanced_for_posting(td: Decimal, tc: Decimal) -> bool:
+    """
+    True if debit/credit totals are treated as balanced (per-line 10dp sums, then 2dp material check).
+    Differences that vanish at 2dp are ignored.
+    """
+    return amounts_equal_at_2dp(td, tc)
+
+
+def is_journal_double_entry_balanced(lines: list[dict]) -> bool:
+    """True when sum(debits) and sum(credits) match at 2dp after per-line 10dp amounts."""
+    if not lines:
+        return True
+    td, tc = journal_lines_balance_totals(lines)
+    return journal_totals_balanced_for_posting(td, tc)
+
+
+def assert_journal_lines_balanced(lines: list[dict], *, context: str) -> None:
+    """
+    Enforce double-entry for posting: per-line 10dp, then totals must match at **2dp**.
+    Raises ValueError when imbalance is material at 2dp.
+    """
+    if not lines:
+        return
+    td, tc = journal_lines_balance_totals(lines)
+    if not journal_totals_balanced_for_posting(td, tc):
+        raise ValueError(
+            f"{context}: journal not balanced at 2dp — total debits {td} != total credits {tc} "
+            f"(as 2dp: {as_2dp(td)} vs {as_2dp(tc)})"
+        )
+
 
 def get_conn():
     return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
@@ -48,10 +98,68 @@ class AccountingRepository:
 
     def create_account(self, code, name, category, system_tag=None, parent_id=None):
         with self.conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO accounts (code, name, category, system_tag, parent_id, is_active)
-                VALUES (%s, %s, %s, %s, %s, TRUE)
-            """, (code, name, category, system_tag, parent_id))
+            cur.execute("SELECT 1 FROM accounts WHERE code = %s", (code,))
+            if cur.fetchone():
+                raise ValueError(
+                    f"Account code {code!r} already exists. Choose another code or use the existing account."
+                )
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO accounts (code, name, category, system_tag, parent_id, is_active)
+                    VALUES (%s, %s, %s, %s, %s, TRUE)
+                    """,
+                    (code, name, category, system_tag, parent_id),
+                )
+            except pg_errors.UniqueViolation as e:
+                self.conn.rollback()
+                raise ValueError(
+                    f"Account code {code!r} already exists. Choose another code or use the existing account."
+                ) from e
+        self.conn.commit()
+
+    def get_account_subtree_ids(self, root_id) -> list:
+        """
+        Return account id for root_id and every descendant (recursive children).
+        Used to prevent assigning a parent that would create a cycle in the hierarchy.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH RECURSIVE sub AS (
+                    SELECT id FROM accounts WHERE id = %s
+                    UNION ALL
+                    SELECT c.id FROM accounts c
+                    INNER JOIN sub ON c.parent_id = sub.id
+                )
+                SELECT id FROM sub
+                """,
+                (root_id,),
+            )
+            rows = cur.fetchall()
+        return [r["id"] for r in rows]
+
+    def update_account_parent(self, account_id, parent_id=None) -> None:
+        """Set parent_id for an existing account. parent_id=None clears the parent (top-level)."""
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT id FROM accounts WHERE id = %s", (account_id,))
+            if not cur.fetchone():
+                raise ValueError("Account not found.")
+            if parent_id is not None:
+                cur.execute("SELECT id FROM accounts WHERE id = %s", (parent_id,))
+                if not cur.fetchone():
+                    raise ValueError("Parent account not found.")
+            subtree = self.get_account_subtree_ids(account_id)
+            forbidden = {str(x) for x in subtree}
+            if parent_id is not None and str(parent_id) in forbidden:
+                raise ValueError(
+                    "Invalid parent: cannot set parent to this account or any of its descendants "
+                    "(that would create a cycle in the chart)."
+                )
+            cur.execute(
+                "UPDATE accounts SET parent_id = %s WHERE id = %s",
+                (parent_id, account_id),
+            )
         self.conn.commit()
 
     def get_account_by_tag(self, system_tag: str):
@@ -326,7 +434,44 @@ class AccountingRepository:
         self.conn.commit()
 
     def save_journal_entry(self, entry_date, reference, description, event_id, event_tag, created_by, lines):
+        if lines:
+            assert_journal_lines_balanced(
+                lines,
+                context=f"journal save (reference={reference!r}, event_tag={event_tag!r})",
+            )
         with self.conn.cursor() as cur:
+            # EOD (and other flows) pass deterministic identifiers via (event_id, event_tag).
+            # If the same event is posted twice (user re-runs EOD, auto-EOD overlaps, or a
+            # previous run partially succeeded), journal_entries can be duplicated because
+            # the schema currently has no uniqueness constraint on event_id.
+            #
+            # DAL guard: if journal exists for this (event_id, event_tag), replace it
+            # so the persisted GL matches the *latest* deterministic computation.
+            if event_id is not None and event_tag is not None:
+                try:
+                    cur.execute(
+                        """
+                        SELECT id
+                        FROM journal_entries
+                        WHERE event_id = %s AND event_tag = %s
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (event_id, event_tag),
+                    )
+                    row = cur.fetchone()
+                    if row is not None:
+                        existing_entry_id = row["id"]
+                        # Delete header (ON DELETE CASCADE should remove items if FK exists).
+                        cur.execute("DELETE FROM journal_entries WHERE id = %s", (existing_entry_id,))
+                        # In case cascade is missing in the current DB, also delete items explicitly.
+                        try:
+                            cur.execute("DELETE FROM journal_items WHERE entry_id = %s", (existing_entry_id,))
+                        except psycopg2.errors.UndefinedColumn:
+                            pass
+                except psycopg2.errors.UndefinedColumn:
+                    # Older schemas may not yet have event_id/event_tag; fall back to insert.
+                    pass
             cur.execute("""
                 INSERT INTO journal_entries (entry_date, reference, description, event_id, event_tag, created_by)
                 VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
@@ -339,6 +484,34 @@ class AccountingRepository:
                     VALUES (%s, %s, %s, %s, %s)
                 """, (entry_id, line["account_id"], line.get("debit", 0.0), line.get("credit", 0.0), line.get("memo")))
         self.conn.commit()
+
+    def list_unbalanced_journal_entries(self):
+        """
+        Rows where debit/credit totals still disagree after per-line 10dp then **2dp** rounding.
+
+        Ignores sub–2dp drift (same rule as assert_journal_lines_balanced / posting).
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT je.id,
+                       je.entry_date,
+                       je.reference,
+                       je.event_id,
+                       je.event_tag,
+                       SUM(ROUND(COALESCE(ji.debit, 0), 10)) AS total_debit,
+                       SUM(ROUND(COALESCE(ji.credit, 0), 10)) AS total_credit,
+                       ROUND(SUM(ROUND(COALESCE(ji.debit, 0), 10)), 2)
+                         - ROUND(SUM(ROUND(COALESCE(ji.credit, 0), 10)), 2) AS imbalance_2dp
+                FROM journal_entries je
+                JOIN journal_items ji ON ji.entry_id = je.id
+                GROUP BY je.id, je.entry_date, je.reference, je.event_id, je.event_tag
+                HAVING ROUND(SUM(ROUND(COALESCE(ji.debit, 0), 10)), 2)
+                    <> ROUND(SUM(ROUND(COALESCE(ji.credit, 0), 10)), 2)
+                ORDER BY je.entry_date, je.reference
+                """
+            )
+            return cur.fetchall()
 
     def get_journal_entries(self, start_date=None, end_date=None, account_code=None):
         with self.conn.cursor() as cur:

@@ -59,7 +59,7 @@ def main():
         start, end = end, start
 
     from datetime import timedelta
-    from eod import run_eod_for_date
+    from eod import ConcurrentEODError, run_eod_for_date
     if not args.eod_only:
         from loan_management import get_repayment_ids_for_value_date, reallocate_repayment
 
@@ -92,6 +92,10 @@ def main():
                         errors.append((current, f"realloc {rid}: {e}"))
                         if not args.quiet:
                             print(f"  Realloc {rid} FAILED: {e}", file=sys.stderr)
+        except ConcurrentEODError as e:
+            if not args.quiet:
+                print(f"EOD aborted: {e}", file=sys.stderr)
+            sys.exit(2)
         except Exception as e:
             errors.append((current, str(e)))
             if not args.quiet:

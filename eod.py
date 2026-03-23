@@ -37,7 +37,14 @@ from config import get_database_url
 from decimal_utils import as_10dp
 from loan_daily_engine import LoanConfig, ScheduleEntry, Loan
 from accounting_periods import normalize_accounting_period_config, is_eom, is_eoy
-from eod_audit import start_run as audit_start_run, finish_run as audit_finish_run, log_stage_event
+from eod_audit import (
+    ConcurrentEODError,
+    clear_stale_eod_audit_runs,
+    eod_exclusive_session_lock,
+    start_run as audit_start_run,
+    finish_run as audit_finish_run,
+    log_stage_event,
+)
 from loan_management import (
     get_allocation_totals_for_loan_date,
     get_net_allocation_for_loan_date,
@@ -363,8 +370,17 @@ def _loan_config_from_row(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> 
         dr_interest = Decimal(str(default_rates.get("interest_pct", 0))) / Decimal("100")
         monthly_rate = dr_interest / Decimal("12")
 
-    # Grace period days and penalty basis (from config: product or system).
-    grace_days = 5  # sensible default; can be made configurable later per product
+    # Grace period days (calendar days after arrears before default/penalty accrue).
+    # Prefer eod_settings.grace_period_days, then top-level grace_period_days, then default.
+    _eod_cfg = sys_cfg.get("eod_settings") if isinstance(sys_cfg.get("eod_settings"), dict) else {}
+    _grace_raw = _eod_cfg.get("grace_period_days", sys_cfg.get("grace_period_days"))
+    if _grace_raw is None:
+        grace_days = 5
+    else:
+        try:
+            grace_days = max(0, int(_grace_raw))
+        except (TypeError, ValueError):
+            grace_days = 5
     penalty_on_principal_arrears_only = (
         (sys_cfg.get("penalty_balance_basis") or "Arrears") == "Arrears"
     )
@@ -421,6 +437,11 @@ def _build_schedule_entries(
         principal_component = Decimal(str(row.get("principal") or row.get("Principal") or 0))
         interest_component = Decimal(str(row.get("interest") or row.get("Interest") or 0))
 
+        # Skip zero-length periods (e.g. Period 0 at disbursement from term-loan generator).
+        # Those rows have due_date == period_start and break "period_start < d <= due_date" accrual math.
+        if due_date <= period_start:
+            continue
+
         entries.append(
             ScheduleEntry(
                 period_start=period_start,
@@ -454,6 +475,11 @@ class StageExecutionError(RuntimeError):
         self.stage_name = stage_name
 
 
+def _format_stage_exception(e: BaseException) -> str:
+    """Human-readable message; str(e) alone is often useless (e.g. KeyError(0) -> '0')."""
+    return f"{type(e).__name__}: {e}"
+
+
 def get_engine_state_for_loan_date(loan_id: int, as_of_date: date) -> Dict[str, Any] | None:
     """
     Run the loan engine for one loan up to as_of_date and return the accrual-only state (no DB write).
@@ -475,6 +501,8 @@ def get_engine_state_for_loan_date(loan_id: int, as_of_date: date) -> Dict[str, 
     effective_cfg = _effective_config_for_loan(loan_row, sys_cfg)
     config = _loan_config_from_row(loan_row, effective_cfg)
     schedule_entries = _build_schedule_entries(loan_row, schedule_rows)
+    if not schedule_entries:
+        return None
     principal = Decimal(str(loan_row.get("principal") or loan_row.get("disbursed_amount") or 0))
     disb_date = loan_row.get("disbursement_date") or loan_row.get("start_date")
     if not isinstance(disb_date, date):
@@ -550,6 +578,9 @@ def _run_loan_engine_for_date(
         effective_cfg = _effective_config_for_loan(loan_row, sys_cfg)
         config = _loan_config_from_row(loan_row, effective_cfg)
         schedule_entries = _build_schedule_entries(loan_row, schedule_rows)
+        if not schedule_entries:
+            # No valid instalment rows after dropping zero-length stubs (e.g. only Period 0).
+            continue
 
         # Opening principal for the engine is the total loan amount (principal column),
         # not the disbursed amount. This ensures interest is charged on the full debt.
@@ -658,11 +689,15 @@ def _run_loan_engine_for_date(
         is_in_suspense = loan_row.get("interest_in_suspense", False)
         
         if suspense_logic == "Automatic" and not is_in_suspense and days_overdue_save >= suspense_days:
-            # Auto-flag the loan
+            # Auto-flag the loan (use a fresh connection; outer batch `conn` is already closed).
             try:
-                with conn.cursor() as cur:
-                    cur.execute("UPDATE loans SET interest_in_suspense = TRUE WHERE id = %s", (loan_id_int,))
-                conn.commit()
+                with _get_conn() as susp_conn:
+                    with susp_conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE loans SET interest_in_suspense = TRUE WHERE id = %s",
+                            (loan_id_int,),
+                        )
+                    susp_conn.commit()
                 is_in_suspense = True
             except Exception as e:
                 print(f"Failed to auto-flag loan {loan_id_int} for suspense: {e}")
@@ -1168,179 +1203,184 @@ def run_eod_for_date(
     When skip_reallocate_after_reversals=True (e.g. when called from reallocate_repayment),
     the reallocate step is skipped to avoid infinite recursion.
     """
-    sys_cfg = load_system_config_from_db() or {}
-    eod_settings = sys_cfg.get("eod_settings", {}) or {}
-    tasks_cfg = (eod_settings.get("tasks") or {}) if isinstance(eod_settings, dict) else {}
-
-    run_loan_engine = bool(tasks_cfg.get("run_loan_engine", True))
-    reallocate_after_reversals = (
-        bool(tasks_cfg.get("reallocate_after_reversals", True))
-        and not skip_reallocate_after_reversals
-    )
-    post_accounting = bool(tasks_cfg.get("post_accounting_events", False))
-    generate_statements = bool(tasks_cfg.get("generate_statements", False))
-    snapshot_financial_statements = bool(tasks_cfg.get("snapshot_financial_statements", True))
-    send_notifications = bool(tasks_cfg.get("send_notifications", False))
-    apply_unapplied = bool(tasks_cfg.get("apply_unapplied_to_arrears", True))
-
-    # Stage policy (config-driven)
-    policy_cfg = eod_settings.get("stage_policy", {}) if isinstance(eod_settings, dict) else {}
-    policy_mode = str(policy_cfg.get("mode") or "hybrid").strip().lower()
-    if policy_mode not in {"strict", "hybrid", "best_effort"}:
-        policy_mode = "hybrid"
-    blocking_default = [
-        "loan_engine",
-        "reallocate_after_reversals",
-        "apply_unapplied_to_arrears",
-        "accounting_events",
-        "statements",
-    ]
-    configured_blocking = policy_cfg.get("blocking_stages")
-    blocking_stages = set(configured_blocking) if isinstance(configured_blocking, list) else set(blocking_default)
-    advance_on_degraded = bool(policy_cfg.get("advance_date_on_degraded", False))
-
-    started = datetime.now(timezone.utc)
-    run_id = str(uuid.uuid4())
-    loans_processed = 0
-    tasks_run: list[str] = []
-    run_status = "SUCCESS"
-    failed_stage: str | None = None
-    error_message: str | None = None
-
-    try:
-        audit_start_run(
-            run_id=run_id,
-            as_of_date=as_of_date,
-            tasks_cfg=tasks_cfg,
-            policy_mode=policy_mode,
-            advance_on_degraded=advance_on_degraded,
-        )
-    except Exception:
-        # Audit must never block EOD; continue without DB audit row.
-        pass
-
-    def _stage(stage_name: str, enabled: bool, fn):
-        nonlocal loans_processed, run_status, failed_stage, error_message
-        is_blocking = stage_name in blocking_stages
-        if not enabled:
-            try:
-                log_stage_event(
-                    run_id=run_id,
-                    stage_name=stage_name,
-                    is_blocking=is_blocking,
-                    status="SKIPPED",
-                )
-            except Exception:
-                pass
-            return
-
+    with eod_exclusive_session_lock():
         try:
-            log_stage_event(
-                run_id=run_id,
-                stage_name=stage_name,
-                is_blocking=is_blocking,
-                status="STARTED",
-            )
+            clear_stale_eod_audit_runs()
         except Exception:
             pass
-
-        try:
-            stage_result = fn()
-            if stage_name == "loan_engine" and isinstance(stage_result, int):
-                loans_processed = stage_result
-            tasks_run.append(stage_name)
-            try:
-                log_stage_event(
-                    run_id=run_id,
-                    stage_name=stage_name,
-                    is_blocking=is_blocking,
-                    status="OK",
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            failed_stage = stage_name
-            error_message = str(e)
-            try:
-                log_stage_event(
-                    run_id=run_id,
-                    stage_name=stage_name,
-                    is_blocking=is_blocking,
-                    status="ERROR",
-                    error_message=error_message[:2000],
-                )
-            except Exception:
-                pass
-
-            # strict: any failure fails run.
-            # hybrid: blocking stage failure fails run; non-blocking degrades.
-            # best_effort: continue as degraded.
-            if policy_mode == "strict" or (policy_mode == "hybrid" and is_blocking):
-                run_status = "FAILED"
-                raise StageExecutionError(stage_name, error_message)
-            run_status = "DEGRADED"
-
-    try:
-        _stage("loan_engine", run_loan_engine, lambda: _run_loan_engine_for_date(as_of_date, sys_cfg))
-        _stage(
+        sys_cfg = load_system_config_from_db() or {}
+        eod_settings = sys_cfg.get("eod_settings", {}) or {}
+        tasks_cfg = (eod_settings.get("tasks") or {}) if isinstance(eod_settings, dict) else {}
+    
+        run_loan_engine = bool(tasks_cfg.get("run_loan_engine", True))
+        reallocate_after_reversals = (
+            bool(tasks_cfg.get("reallocate_after_reversals", True))
+            and not skip_reallocate_after_reversals
+        )
+        post_accounting = bool(tasks_cfg.get("post_accounting_events", False))
+        generate_statements = bool(tasks_cfg.get("generate_statements", False))
+        snapshot_financial_statements = bool(tasks_cfg.get("snapshot_financial_statements", True))
+        send_notifications = bool(tasks_cfg.get("send_notifications", False))
+        apply_unapplied = bool(tasks_cfg.get("apply_unapplied_to_arrears", True))
+    
+        # Stage policy (config-driven)
+        policy_cfg = eod_settings.get("stage_policy", {}) if isinstance(eod_settings, dict) else {}
+        policy_mode = str(policy_cfg.get("mode") or "hybrid").strip().lower()
+        if policy_mode not in {"strict", "hybrid", "best_effort"}:
+            policy_mode = "hybrid"
+        blocking_default = [
+            "loan_engine",
             "reallocate_after_reversals",
-            run_loan_engine and reallocate_after_reversals,
-            lambda: _reallocate_receipts_after_reversals(as_of_date, sys_cfg),
-        )
-        _stage(
             "apply_unapplied_to_arrears",
-            run_loan_engine and apply_unapplied,
-            lambda: _apply_unapplied_funds_to_arrears(as_of_date, sys_cfg),
-        )
-        _stage("accounting_events", post_accounting, lambda: _run_accounting_events(as_of_date, sys_cfg))
-        _stage(
+            "accounting_events",
             "statements",
-            generate_statements or snapshot_financial_statements,
-            lambda: _run_statement_batch(as_of_date, sys_cfg),
-        )
-        _stage("notifications", send_notifications, lambda: _run_notification_batch(as_of_date, sys_cfg))
-    except StageExecutionError:
+        ]
+        configured_blocking = policy_cfg.get("blocking_stages")
+        blocking_stages = set(configured_blocking) if isinstance(configured_blocking, list) else set(blocking_default)
+        advance_on_degraded = bool(policy_cfg.get("advance_date_on_degraded", False))
+    
+        started = datetime.now(timezone.utc)
+        run_id = str(uuid.uuid4())
+        loans_processed = 0
+        tasks_run: list[str] = []
+        run_status = "SUCCESS"
+        failed_stage: str | None = None
+        error_message: str | None = None
+    
+        try:
+            audit_start_run(
+                run_id=run_id,
+                as_of_date=as_of_date,
+                tasks_cfg=tasks_cfg,
+                policy_mode=policy_mode,
+                advance_on_degraded=advance_on_degraded,
+            )
+        except Exception:
+            # Audit must never block EOD; continue without DB audit row.
+            pass
+    
+        def _stage(stage_name: str, enabled: bool, fn):
+            nonlocal loans_processed, run_status, failed_stage, error_message
+            is_blocking = stage_name in blocking_stages
+            if not enabled:
+                try:
+                    log_stage_event(
+                        run_id=run_id,
+                        stage_name=stage_name,
+                        is_blocking=is_blocking,
+                        status="SKIPPED",
+                    )
+                except Exception:
+                    pass
+                return
+    
+            try:
+                log_stage_event(
+                    run_id=run_id,
+                    stage_name=stage_name,
+                    is_blocking=is_blocking,
+                    status="STARTED",
+                )
+            except Exception:
+                pass
+    
+            try:
+                stage_result = fn()
+                if stage_name == "loan_engine" and isinstance(stage_result, int):
+                    loans_processed = stage_result
+                tasks_run.append(stage_name)
+                try:
+                    log_stage_event(
+                        run_id=run_id,
+                        stage_name=stage_name,
+                        is_blocking=is_blocking,
+                        status="OK",
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                failed_stage = stage_name
+                error_message = _format_stage_exception(e)
+                try:
+                    log_stage_event(
+                        run_id=run_id,
+                        stage_name=stage_name,
+                        is_blocking=is_blocking,
+                        status="ERROR",
+                        error_message=error_message[:2000],
+                    )
+                except Exception:
+                    pass
+    
+                # strict: any failure fails run.
+                # hybrid: blocking stage failure fails run; non-blocking degrades.
+                # best_effort: continue as degraded.
+                if policy_mode == "strict" or (policy_mode == "hybrid" and is_blocking):
+                    run_status = "FAILED"
+                    raise StageExecutionError(stage_name, error_message)
+                run_status = "DEGRADED"
+    
+        try:
+            _stage("loan_engine", run_loan_engine, lambda: _run_loan_engine_for_date(as_of_date, sys_cfg))
+            _stage(
+                "reallocate_after_reversals",
+                run_loan_engine and reallocate_after_reversals,
+                lambda: _reallocate_receipts_after_reversals(as_of_date, sys_cfg),
+            )
+            _stage(
+                "apply_unapplied_to_arrears",
+                run_loan_engine and apply_unapplied,
+                lambda: _apply_unapplied_funds_to_arrears(as_of_date, sys_cfg),
+            )
+            _stage("accounting_events", post_accounting, lambda: _run_accounting_events(as_of_date, sys_cfg))
+            _stage(
+                "statements",
+                generate_statements or snapshot_financial_statements,
+                lambda: _run_statement_batch(as_of_date, sys_cfg),
+            )
+            _stage("notifications", send_notifications, lambda: _run_notification_batch(as_of_date, sys_cfg))
+        except StageExecutionError:
+            finished = datetime.now(timezone.utc)
+            try:
+                audit_finish_run(
+                    run_id=run_id,
+                    run_status="FAILED",
+                    failed_stage=failed_stage,
+                    error_message=(error_message or "")[:2000] or None,
+                )
+            except Exception:
+                pass
+            # Keep failure behavior for blocking stages so callers can stop date advance.
+            raise
+    
         finished = datetime.now(timezone.utc)
+        final_status = run_status if run_status in {"DEGRADED", "FAILED"} else "SUCCESS"
         try:
             audit_finish_run(
                 run_id=run_id,
-                run_status="FAILED",
+                run_status=final_status,
                 failed_stage=failed_stage,
                 error_message=(error_message or "")[:2000] or None,
             )
         except Exception:
             pass
-        # Keep failure behavior for blocking stages so callers can stop date advance.
-        raise
-
-    finished = datetime.now(timezone.utc)
-    final_status = run_status if run_status in {"DEGRADED", "FAILED"} else "SUCCESS"
-    try:
-        audit_finish_run(
+    
+        should_advance_date = final_status == "SUCCESS" or (
+            final_status == "DEGRADED" and advance_on_degraded
+        )
+    
+        return EODResult(
             run_id=run_id,
+            as_of_date=as_of_date,
+            loans_processed=loans_processed,
+            started_at=started,
+            finished_at=finished,
+            tasks_run=tuple(tasks_run),
             run_status=final_status,
             failed_stage=failed_stage,
-            error_message=(error_message or "")[:2000] or None,
+            error_message=error_message,
+            should_advance_date=should_advance_date,
         )
-    except Exception:
-        pass
-
-    should_advance_date = final_status == "SUCCESS" or (
-        final_status == "DEGRADED" and advance_on_degraded
-    )
-
-    return EODResult(
-        run_id=run_id,
-        as_of_date=as_of_date,
-        loans_processed=loans_processed,
-        started_at=started,
-        finished_at=finished,
-        tasks_run=tuple(tasks_run),
-        run_status=final_status,
-        failed_stage=failed_stage,
-        error_message=error_message,
-        should_advance_date=should_advance_date,
-    )
 
 
 def run_single_loan_eod(
@@ -1363,5 +1403,5 @@ def run_single_loan_eod(
     _run_loan_engine_for_date(as_of_date, sys_cfg, loan_ids_filter=[loan_id])
 
 
-__all__ = ["run_eod_for_date", "run_single_loan_eod", "EODResult"]
+__all__ = ["run_eod_for_date", "run_single_loan_eod", "EODResult", "ConcurrentEODError"]
 

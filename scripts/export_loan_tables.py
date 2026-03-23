@@ -1,8 +1,10 @@
 """
 Export loan tables to CSV in the LMS project folder.
-Run from project root:  python scripts/export_loan_tables.py
+Run from project root:
+  python scripts/export_loan_tables.py
+  python scripts/export_loan_tables.py --start-date 2025-01-01 --end-date 2025-06-30
 
-Date range: change START_DATE and END_DATE below (YYYY-MM-DD).
+Date range: pass --start-date and --end-date (YYYY-MM-DD), or edit DEFAULT_* below.
 Saves to ./lms_exports/ (at project root). If a file is open (e.g. Excel), writes to *_new.csv.
 
 Repayments/allocation: filtered by value_date (or payment_date) so receipts on END_DATE are included.
@@ -25,12 +27,14 @@ Rates captured at loan (loan parameters): stored on the loans table.
   loans_capture_rates.csv = flattened loan_id, annual_rate, monthly_rate, penalty_rate_pct, penalty_quotation from metadata.
 """
 
+import argparse
 import csv
 import json
+import math
 import os
 import sys
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 # Allow imports from project root when run as scripts/export_loan_tables.py
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -40,24 +44,60 @@ if _PROJECT_ROOT not in sys.path:
 EXPORT_DIR = os.path.join(_PROJECT_ROOT, "lms_exports")
 
 
+def _decimal_to_plain_string(d: Decimal) -> str:
+    """
+    Fixed-point decimal text: no scientific notation, no exponent.
+    Trims trailing zeros after the decimal point.
+    """
+    if d.is_nan():
+        return ""
+    s = format(d, "f")
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
 def _format_csv_value(v):
-    """Format value for CSV to avoid scientific notation (e.g. 0E-10) for zero/small numbers."""
+    """
+    Format cell for CSV: numbers as plain decimal strings (no exponents, no leading ').
+    Excel-friendly: avoids 1.23E+10 style and stray text markers on numeric strings.
+    """
     if v is None:
         return ""
     if isinstance(v, bool):
         return str(v).lower()
-    if isinstance(v, (int,)):
+    # int (not bool)
+    if isinstance(v, int):
         return str(v)
+
+    if isinstance(v, str):
+        s = v.strip()
+        # Strip Excel-style leading apostrophe used to force text
+        if s.startswith("'") and len(s) > 1:
+            s = s[1:].strip()
+        try:
+            d = Decimal(s)
+            return _decimal_to_plain_string(d)
+        except InvalidOperation:
+            return s
+
+    if isinstance(v, Decimal):
+        return _decimal_to_plain_string(v)
+
+    if isinstance(v, float):
+        if math.isnan(v) or math.isinf(v):
+            return ""
+        try:
+            return _decimal_to_plain_string(Decimal(str(v)))
+        except InvalidOperation:
+            return str(v)
+
     try:
-        f = float(v)
-        if abs(f) < 1e-9:
-            return "0"
-        if 1e-4 <= abs(f) <= 1e12:
-            s = f"{f:.10f}".rstrip("0").rstrip(".")
-            return s if s else "0"
-        return str(v)
-    except (TypeError, ValueError):
+        d = Decimal(str(v))
+        return _decimal_to_plain_string(d)
+    except (InvalidOperation, TypeError, ValueError):
         pass
+
     if hasattr(v, "isoformat"):
         return v.isoformat()
     return str(v)
@@ -68,11 +108,15 @@ def _format_csv_row(row):
     return [_format_csv_value(cell) for cell in row]
 
 
-START_DATE = "2025-06-30"
+# Defaults when --start-date / --end-date are omitted
+DEFAULT_START_DATE = "2025-06-30"
 # Include at least the latest receipt value_date so allocation and state impact appear in export
-END_DATE = "2026-03-08"
+DEFAULT_END_DATE = "2026-03-08"
 
-QUERIES = [
+
+def build_export_queries(start_date: str, end_date: str) -> list:
+    """Build (filename, sql, params) list for the given inclusive date range."""
+    return [
     (
         "loans.csv",
         """
@@ -101,7 +145,7 @@ QUERIES = [
         WHERE lds.as_of_date BETWEEN %s AND %s
         ORDER BY lds.loan_id, lds.as_of_date
         """,
-        (START_DATE, END_DATE),
+        (start_date, end_date),
     ),
     (
         "loan_daily_state_range.csv",
@@ -117,7 +161,7 @@ QUERIES = [
         WHERE lds.as_of_date BETWEEN %s AND %s
         ORDER BY lds.loan_id, lds.as_of_date
         """,
-        (START_DATE, END_DATE),
+        (start_date, end_date),
     ),
     (
         "loan_repayments.csv",
@@ -146,7 +190,7 @@ QUERIES = [
           )
         ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lr.id DESC
         """,
-        (START_DATE, END_DATE),
+        (start_date, end_date),
     ),
     (
         "loan_repayment_allocation.csv",
@@ -163,7 +207,7 @@ QUERIES = [
           )
         ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lra.repayment_id, lra.id
         """,
-        (START_DATE, END_DATE),
+        (start_date, end_date),
     ),
     (
         "loans_with_latest_state.csv",
@@ -199,7 +243,7 @@ QUERIES = [
         WHERE l.status = 'active'
         ORDER BY l.id
         """,
-        (END_DATE,),
+        (end_date,),
     ),
     (
         "loan_schedules.csv",
@@ -234,7 +278,7 @@ QUERIES = [
         WHERE uf.value_date BETWEEN %s AND %s
         ORDER BY uf.loan_id, uf.value_date, uf.id
         """,
-        (START_DATE, END_DATE),
+        (start_date, end_date),
     ),
     (
         "allocation_audit_log.csv",
@@ -244,7 +288,7 @@ QUERIES = [
         WHERE aal.as_of_date BETWEEN %s AND %s
         ORDER BY aal.created_at
         """,
-        (START_DATE, END_DATE),
+        (start_date, end_date),
     ),
     (
         "loan_modifications.csv",
@@ -273,7 +317,11 @@ QUERIES = [
         """,
         (),
     ),
-]
+    ]
+
+
+# Backwards-compatible name for any external import
+QUERIES = build_export_queries(DEFAULT_START_DATE, DEFAULT_END_DATE)
 
 
 def _export_config_rates(conn, export_dir: str) -> None:
@@ -339,7 +387,7 @@ def _export_config_rates(conn, export_dir: str) -> None:
         print(f"  {len(flat_rows):5} rows -> {alt_path} (original in use)")
 
 
-def _export_repayment_application(conn, export_dir: str) -> None:
+def _export_repayment_application(conn, export_dir: str, start_date: str, end_date: str) -> None:
     """
     Export unapplied funds ledger view linked to allocations.
 
@@ -446,7 +494,7 @@ def _export_repayment_application(conn, export_dir: str) -> None:
             FROM ledger l
             ORDER BY l.value_date, l.repayment_id, l.entry_kind
             """,
-            (START_DATE, END_DATE, START_DATE, END_DATE),
+            (start_date, end_date, start_date, end_date),
         )
         rows = cur.fetchall()
         colnames = [d[0] for d in cur.description]
@@ -466,7 +514,7 @@ def _export_repayment_application(conn, export_dir: str) -> None:
         print(f"  {len(rows):5} rows -> {alt_path} (original in use)")
 
 
-def _export_statement_credits(conn, export_dir: str) -> None:
+def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: str) -> None:
     """
     Statement-oriented credits view driven strictly by persisted tables:
     1) Credits from loan_repayment_allocation totals per receipt (non-system receipts).
@@ -624,7 +672,7 @@ def _export_statement_credits(conn, export_dir: str) -> None:
             FROM due_accruals d
             ORDER BY loan_id, value_date, line_type, repayment_id
             """,
-            (START_DATE, END_DATE, START_DATE, END_DATE, START_DATE, END_DATE),
+            (start_date, end_date, start_date, end_date, start_date, end_date),
         )
         rows = cur.fetchall()
         colnames = [d[0] for d in cur.description]
@@ -684,7 +732,28 @@ def _export_loans_capture_rates(conn, export_dir: str) -> None:
         print(f"  {len(flat_rows):5} rows -> {alt_path} (original in use)")
 
 
-def main():
+def _parse_args(argv=None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Export loan-related tables to CSV under ./lms_exports/",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  %(prog)s --start-date 2025-01-01 --end-date 2025-06-30\n  %(prog)s   # uses DEFAULT_START_DATE / DEFAULT_END_DATE in script",
+    )
+    p.add_argument(
+        "--start-date",
+        default=DEFAULT_START_DATE,
+        metavar="YYYY-MM-DD",
+        help=f"Inclusive start for date-filtered exports (default: {DEFAULT_START_DATE})",
+    )
+    p.add_argument(
+        "--end-date",
+        default=DEFAULT_END_DATE,
+        metavar="YYYY-MM-DD",
+        help=f"Inclusive end for date-filtered exports (default: {DEFAULT_END_DATE})",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv=None) -> None:
     try:
         from config import get_database_url
         import psycopg2
@@ -692,10 +761,26 @@ def main():
         print("Error: need config and psycopg2. Run from project root: python scripts/export_loan_tables.py", file=sys.stderr)
         raise SystemExit(1) from e
 
+    args = _parse_args(argv)
+    start_date = args.start_date.strip()
+    end_date = args.end_date.strip()
+    try:
+        d0 = date.fromisoformat(start_date)
+        d1 = date.fromisoformat(end_date)
+    except ValueError as e:
+        print("Error: --start-date and --end-date must be YYYY-MM-DD", file=sys.stderr)
+        raise SystemExit(2) from e
+    if d0 > d1:
+        print("Error: --start-date must be on or before --end-date", file=sys.stderr)
+        raise SystemExit(2)
+
+    queries = build_export_queries(start_date, end_date)
+
     os.makedirs(EXPORT_DIR, exist_ok=True)
     conn = psycopg2.connect(get_database_url())
     try:
-        for filename, query, params in QUERIES:
+        print(f"Date range (inclusive): {start_date} .. {end_date}")
+        for filename, query, params in queries:
             path = os.path.join(EXPORT_DIR, filename)
             with conn.cursor() as cur:
                 cur.execute(query, params)
@@ -720,9 +805,9 @@ def main():
         # Flatten loan-level capture rates (annual_rate, monthly_rate, metadata.penalty_rate_pct)
         _export_loans_capture_rates(conn, EXPORT_DIR)
         # Unapplied funds ledger: +credits and -liquidations linked to repayment IDs
-        _export_repayment_application(conn, EXPORT_DIR)
+        _export_repayment_application(conn, EXPORT_DIR, start_date, end_date)
         # Statement-oriented lines for credits/unapplied/liquidation and period accrual summaries
-        _export_statement_credits(conn, EXPORT_DIR)
+        _export_statement_credits(conn, EXPORT_DIR, start_date, end_date)
 
     finally:
         conn.close()

@@ -40,6 +40,13 @@ CREATE TABLE IF NOT EXISTS journal_entries (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Ensure deterministic journals are not duplicated.
+-- EOD posts use stable (event_id, event_tag) values.
+-- We use a partial unique index so rows with NULL event_id/event_tag are not blocked.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_event_id_event_tag
+    ON journal_entries(event_id, event_tag)
+    WHERE event_id IS NOT NULL AND event_tag IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS journal_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     entry_id UUID NOT NULL REFERENCES journal_entries(id) ON DELETE CASCADE,

@@ -1,14 +1,48 @@
-from accounting_dal import get_conn, AccountingRepository
-from accounting_core import as_money
+from dataclasses import dataclass
+
+from accounting_dal import (
+    AccountingRepository,
+    assert_journal_lines_balanced,
+    get_conn,
+    journal_lines_balance_totals,
+    journal_totals_balanced_for_posting,
+)
 from datetime import date
 from decimal import Decimal
+import json
 import psycopg2
+from decimal_utils import as_10dp, as_2dp
 from loan_management import load_system_config_from_db
 from accounting_periods import (
     normalize_accounting_period_config,
     get_month_period_bounds,
     get_year_period_bounds,
 )
+
+
+@dataclass(frozen=True)
+class JournalSimulationResult:
+    """
+    Result of simulate_event: lines plus balance diagnostics.
+    Posting uses 2dp material balance (avoid); simulation **flags** only.
+    """
+
+    lines: list[dict]
+    balanced: bool
+    total_debit: Decimal
+    total_credit: Decimal
+    warning: str | None
+
+    @staticmethod
+    def empty() -> "JournalSimulationResult":
+        return JournalSimulationResult(
+            lines=[],
+            balanced=True,
+            total_debit=Decimal("0"),
+            total_credit=Decimal("0"),
+            warning=None,
+        )
+
 
 class AccountingService:
     def __init__(self):
@@ -223,11 +257,33 @@ class AccountingService:
             conn.close()
 
     def create_account(self, code, name, category, system_tag=None, parent_id=None):
+        code = (code or "").strip() if code is not None else ""
+        name = (name or "").strip() if name is not None else ""
+        if not code or not name:
+            raise ValueError("Account code and name are required.")
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
             repo.create_account(code, name, category, system_tag, parent_id)
             return True
+        finally:
+            conn.close()
+
+    def get_account_subtree_ids(self, account_id):
+        """IDs of this account and all descendants (for valid parent options when editing hierarchy)."""
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.get_account_subtree_ids(account_id)
+        finally:
+            conn.close()
+
+    def update_account_parent(self, account_id, parent_id=None) -> None:
+        """Change an existing account's parent (or clear to top-level)."""
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.update_account_parent(account_id, parent_id)
         finally:
             conn.close()
 
@@ -243,9 +299,69 @@ class AccountingService:
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
-            return repo.get_journal_entries(start_date, end_date, account_code)
+            rows = repo.get_journal_entries(start_date, end_date, account_code)
+            return self._annotate_journal_entries_balance(rows)
         finally:
             conn.close()
+
+    @staticmethod
+    def _annotate_journal_entries_balance(rows):
+        """Add double_entry_balanced and line totals per header (flag legacy bad rows)."""
+        if not rows:
+            return rows
+        out = []
+        for row in rows:
+            e = dict(row)
+            lines = e.get("lines")
+            if lines is None:
+                lines = []
+            if isinstance(lines, str):
+                lines = json.loads(lines)
+            td, tc = journal_lines_balance_totals(lines)
+            e["double_entry_balanced"] = journal_totals_balanced_for_posting(td, tc)
+            e["lines_total_debit"] = td
+            e["lines_total_credit"] = tc
+            out.append(e)
+        return out
+
+    def list_unbalanced_journal_entries(self):
+        """
+        Journal headers where sum(debits) != sum(credits). For integrity checks and
+        after fixing LOAN_APPROVAL (or any) posting logic.
+        """
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.list_unbalanced_journal_entries()
+        finally:
+            conn.close()
+
+    def repost_loan_approval_journal(self, loan_id: int, *, created_by: str = "repair") -> None:
+        """
+        Re-post LOAN_APPROVAL for a loan from the current loans row (same payload as save_loan).
+        Replaces the existing journal for (event_id, event_tag) when the schema supports it.
+        """
+        from loan_management import (
+            _date_conv,
+            build_loan_approval_journal_payload,
+            get_loan,
+        )
+
+        loan = get_loan(loan_id)
+        if not loan:
+            raise ValueError(f"Loan {loan_id} not found")
+        payload = build_loan_approval_journal_payload(loan)
+        disb_date_str = loan.get("disbursement_date") or loan.get("start_date")
+        e_date = _date_conv(disb_date_str) if disb_date_str else None
+        self.post_event(
+            event_type="LOAN_APPROVAL",
+            reference=f"LOAN-{loan_id}",
+            description=f"Loan Approval and Disbursement for {loan_id}",
+            event_id=str(loan_id),
+            created_by=created_by,
+            entry_date=e_date,
+            payload=payload,
+        )
 
     def get_account_ledger(self, account_code: str, start_date: date = None, end_date: date = None):
         conn = get_conn()
@@ -569,38 +685,41 @@ class AccountingService:
             conn.close()
 
     def simulate_event(self, event_type: str, amount: Decimal = None, payload: dict = None, is_reversal: bool = False):
+        """
+        Dry-run journal lines for an event. Does **not** persist.
+
+        If totals differ at **2dp** (after per-line 10dp), returns ``balanced=False`` and a **warning**.
+        ``post_event`` uses the same rule and **raises** to avoid posting.
+        """
         if payload is None:
             payload = {}
-        
+
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
             templates = repo.get_transaction_templates(event_type)
             if not templates:
-                return []
-            
-            lines = []
+                return JournalSimulationResult.empty()
+
+            lines: list[dict] = []
             for tmpl in templates:
                 account = repo.get_account_by_tag(tmpl["system_tag"])
                 account_name = account["name"] if account else f"Missing Account ({tmpl['system_tag']})"
                 account_code = account["code"] if account else "???"
-                
+
                 line_amount = payload.get(tmpl["system_tag"], amount)
                 if line_amount is None:
                     line_amount = Decimal("0.0")
                 else:
-                    line_amount = Decimal(str(line_amount))
-                # Quantize to money precision so we do not post
-                # journals that round to zero at 2dp (noise).
-                line_amount = as_money(line_amount)
-                
+                    line_amount = as_10dp(Decimal(str(line_amount)))
+
                 direction = tmpl["direction"]
                 if is_reversal:
                     direction = "CREDIT" if direction == "DEBIT" else "DEBIT"
-                
-                debit = line_amount if direction == 'DEBIT' else Decimal("0.0")
-                credit = line_amount if direction == 'CREDIT' else Decimal("0.0")
-                
+
+                debit = line_amount if direction == "DEBIT" else Decimal("0.0")
+                credit = line_amount if direction == "CREDIT" else Decimal("0.0")
+
                 if debit > 0 or credit > 0:
                     lines.append({
                         "account_name": account_name,
@@ -609,7 +728,25 @@ class AccountingService:
                         "credit": credit,
                         "memo": tmpl["description"]
                     })
-            return lines
+            if not lines:
+                return JournalSimulationResult.empty()
+
+            td, tc = journal_lines_balance_totals(lines)
+            balanced = journal_totals_balanced_for_posting(td, tc)
+            warning = None
+            if not balanced:
+                warning = (
+                    f"Double-entry check failed at 2dp: total debits {td} ≠ total credits {tc} "
+                    f"(as 2dp: {as_2dp(td)} vs {as_2dp(tc)}). "
+                    "Posting would be blocked — fix amounts or templates before approval."
+                )
+            return JournalSimulationResult(
+                lines=lines,
+                balanced=balanced,
+                total_debit=td,
+                total_credit=tc,
+                warning=warning,
+            )
         finally:
             conn.close()
 
@@ -636,14 +773,16 @@ class AccountingService:
                 line_amount = payload.get(tmpl["system_tag"], amount)
                 if line_amount is None:
                     line_amount = Decimal("0.0")
-                
+                else:
+                    line_amount = as_10dp(Decimal(str(line_amount)))
+
                 direction = tmpl["direction"]
                 if is_reversal:
                     direction = "CREDIT" if direction == "DEBIT" else "DEBIT"
-                
-                debit = line_amount if direction == 'DEBIT' else Decimal("0.0")
-                credit = line_amount if direction == 'CREDIT' else Decimal("0.0")
-                
+
+                debit = line_amount if direction == "DEBIT" else Decimal("0.0")
+                credit = line_amount if direction == "CREDIT" else Decimal("0.0")
+
                 if debit > 0 or credit > 0:
                     lines.append({
                         "account_id": account["id"],
@@ -651,6 +790,31 @@ class AccountingService:
                         "credit": credit,
                         "memo": tmpl["description"] or description
                     })
+
+            # Prevent duplicate journal_items within a single journal header.
+            # This can happen if `transaction_templates` contains duplicate rows
+            # for the same event_type/system_tag/direction.
+            if lines:
+                seen: set[tuple[object, object, object, object]] = set()
+                deduped_lines = []
+                for line in lines:
+                    key = (
+                        line["account_id"],
+                        line.get("debit", Decimal("0.0")),
+                        line.get("credit", Decimal("0.0")),
+                        line.get("memo"),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    deduped_lines.append(line)
+                lines = deduped_lines
+
+            if lines:
+                assert_journal_lines_balanced(
+                    lines,
+                    context=f"AccountingService.post_event({event_type!r})",
+                )
 
             # Defensive check: ensure we are not posting to parent accounts
             # after they have transitioned to parent mode. The database trigger

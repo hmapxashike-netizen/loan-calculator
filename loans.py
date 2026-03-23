@@ -5,6 +5,9 @@ Actual/360 day basis where applicable. No UI; use from app.py or other entry poi
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from io import BytesIO
+
+import numpy as np
 import pandas as pd
 import numpy_financial as npf
 
@@ -117,7 +120,83 @@ def format_schedule_display(df: pd.DataFrame):
     cols = [c for c in SCHEDULE_AMOUNT_COLUMNS if c in df.columns]
     if not cols:
         return df.style
-    return df.style.format({c: "{:.2f}" for c in cols})
+    # Use digit grouping for readability (e.g., 1,234.56).
+    return df.style.format({c: "{:,.2f}" for c in cols})
+
+
+def prepare_schedule_export_dataframe(df: pd.DataFrame, *, amount_decimals: int = 2) -> pd.DataFrame:
+    """
+    Coerce schedule columns to plain numeric types for CSV/Excel export.
+
+    - Amounts: full precision via ``as_10dp`` then rounded to ``amount_decimals`` for human-readable
+      downloads (matches on-screen schedule formatting; DB storage remains 10dp elsewhere).
+    - Period → integer; Date-like columns → plain strings.
+    """
+    out = df.copy()
+    ad = max(0, min(28, int(amount_decimals)))
+    for c in out.columns:
+        name = str(c).strip()
+        lower = name.lower()
+        if lower == "period":
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype(np.int64)
+        elif lower == "date" or lower.endswith(" date") or lower in (
+            "value_date",
+            "due_date",
+            "payment_date",
+            "first_repayment_date",
+        ):
+            out[c] = out[c].map(lambda x: "" if pd.isna(x) else str(x).strip())
+        else:
+            num = pd.to_numeric(out[c], errors="coerce")
+
+            def _cell(v: object) -> float:
+                if pd.isna(v):
+                    return 0.0
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    return 0.0
+                if not np.isfinite(f):
+                    return 0.0
+                q = float(as_10dp(f))
+                return round(q, ad) if ad else q
+
+            out[c] = num.map(_cell)
+
+    return out
+
+
+def schedule_dataframe_to_csv_bytes(df: pd.DataFrame, *, amount_decimals: int = 2) -> bytes:
+    """
+    CSV bytes for Excel: UTF-8 BOM, fixed decimals (default 2), no scientific notation in cells.
+
+    Prefer :func:`schedule_dataframe_to_excel_bytes` if Excel still shows “number stored as text”.
+    """
+    prep = prepare_schedule_export_dataframe(df, amount_decimals=amount_decimals)
+    buf = BytesIO()
+    fmt = f"%.{max(0, min(28, int(amount_decimals)))}f"
+    prep.to_csv(
+        buf,
+        index=False,
+        encoding="utf-8-sig",
+        float_format=fmt,
+        lineterminator="\n",
+    )
+    return buf.getvalue()
+
+
+def schedule_dataframe_to_excel_bytes(df: pd.DataFrame, *, amount_decimals: int = 2) -> bytes:
+    """
+    Excel workbook bytes: real numeric cell types (avoids green “text” triangles in Excel).
+
+    Uses openpyxl via pandas; amounts rounded like CSV export.
+    """
+    prep = prepare_schedule_export_dataframe(df, amount_decimals=amount_decimals)
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        prep.to_excel(writer, index=False, sheet_name="Schedule")
+    buf.seek(0)
+    return buf.getvalue()
 
 
 # --- Consumer loan (30/360 style monthly) ---

@@ -6,7 +6,7 @@ Statements module: generate statements on demand (no persistence).
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -15,6 +15,7 @@ from loan_management import (
     get_loan_daily_state_range,
     get_repayments_with_allocations,
     get_loan_daily_state_balances,
+    get_repayment_opening_delinquency_total,
     get_unapplied_balance,
     get_unapplied_ledger_entries_for_statement,
     get_schedule_lines,
@@ -40,7 +41,7 @@ ALLOC_BUCKET_COLUMNS = [
     "Alloc (5) Principal Arrears",
 ]
 # Periodic (monthly/schedule) statement: one row per due date + receipts in period; interest/penalty/default summed per period
-# Arrears after Total Outstanding Balance for clarity
+# Arrears = total delinquency (principal + interest arrears + default + penalty + fees balances)
 PERIODIC_STATEMENT_HEADINGS = [
     "Due Date",
     "Narration",
@@ -66,7 +67,7 @@ PERIODIC_NUMERIC_HEADINGS = [
 
 # Customer-facing statement: simplified view from internal periodic. One line per periodic entry.
 # Shows interest (→ interest arrears on due date), penalty, default, disbursement, fees + credits.
-# Arrears = principal arrears. Receipts = one line per receipt; narration from source (e.g. customer reference or "Receipt").
+# Arrears = total delinquency (principal + interest arrears + default + penalty + fees). Receipts = one line per receipt.
 CUSTOMER_FACING_STATEMENT_HEADINGS = [
     "Due Date",
     "Narration",
@@ -170,6 +171,139 @@ def _q3(v: Any) -> Decimal:
 
 def _f3(v: Any) -> float:
     return float(_q3(v))
+
+
+def _total_delinquency_arrears(ds: dict | None) -> float:
+    """
+    Total delinquency from loan_daily_state: amounts past due / in arrears buckets
+    (excludes principal not yet due and unbilled accrued interest).
+    principal_arrears + interest_arrears_balance + default_interest_balance
+    + penalty_interest_balance + fees_charges_balance
+    """
+    if not ds:
+        return 0.0
+    return (
+        float(ds.get("principal_arrears") or 0)
+        + float(ds.get("interest_arrears_balance") or 0)
+        + float(ds.get("default_interest_balance") or 0)
+        + float(ds.get("penalty_interest_balance") or 0)
+        + float(ds.get("fees_charges_balance") or 0)
+    )
+
+
+def _is_external_cash_receipt_row(row: dict[str, Any]) -> bool:
+    """
+    Customer-facing rows that represent external cash in (credit, no debit).
+    These are sorted after same-day accruals/charges for presentation.
+    Excludes liquidation-of-unapplied (internal allocation) and closing lines.
+    """
+    narr = str(row.get("Narration") or "")
+    credits = _to_dec(row.get("Credits") or 0)
+    debits = _to_dec(row.get("Debits") or 0)
+    if credits <= Decimal("0"):
+        return False
+    if debits != Decimal("0"):
+        return False
+    if narr.startswith("Liquidation of unapplied"):
+        return False
+    if narr.startswith("Total outstanding balance"):
+        return False
+    return True
+
+
+def _reorder_customer_facing_rows_receipts_last(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Within each Due Date, place external cash receipts after other lines when both exist.
+    Keeps the closing 'Total outstanding balance as at ...' line last overall.
+    """
+    closing: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    for row in rows:
+        narr = str(row.get("Narration") or "")
+        if narr.startswith("Total outstanding balance as at"):
+            closing.append(row)
+        else:
+            rest.append(row)
+
+    by_date: dict[Any, list[dict[str, Any]]] = {}
+    date_order: list[Any] = []
+    for row in rest:
+        d = row.get("Due Date")
+        if d not in by_date:
+            by_date[d] = []
+            date_order.append(d)
+        by_date[d].append(row)
+
+    reordered: list[dict[str, Any]] = []
+    for d in date_order:
+        chunk = by_date[d]
+        non_rcpt = [r for r in chunk if not _is_external_cash_receipt_row(r)]
+        rcpt = [r for r in chunk if _is_external_cash_receipt_row(r)]
+        if non_rcpt and rcpt:
+            reordered.extend(non_rcpt + rcpt)
+        else:
+            reordered.extend(chunk)
+
+    reordered.extend(closing)
+    return reordered
+
+
+def _apply_customer_facing_arrears_before_first_receipt(loan_id: int, out: list[dict[str, Any]]) -> None:
+    """
+    On dates that mix charge lines and external cash receipts, every line that appears
+    before the first receipt should show delinquency at waterfall opening for that receipt
+    (amounts owed immediately before that receipt is applied). Receipt rows keep the
+    post-allocation arrears already supplied from periodic data (end-of-day / post-receipt).
+    """
+    from collections import defaultdict
+
+    by_date: dict[Any, list[int]] = defaultdict(list)
+    for i, row in enumerate(out):
+        by_date[row.get("Due Date")].append(i)
+
+    for d, indices in by_date.items():
+        d_conv = _date_conv(d) if d is not None else None
+        if d_conv is None:
+            continue
+        rows_for_d = [out[i] for i in indices]
+        has_external_receipt = any(
+            _is_external_cash_receipt_row(r) and r.get("_repayment_id") is not None for r in rows_for_d
+        )
+        has_other = any(
+            not _is_external_cash_receipt_row(r)
+            and not str(r.get("Narration") or "").startswith("Total outstanding balance as at")
+            for r in rows_for_d
+        )
+        if not has_external_receipt or not has_other:
+            continue
+
+        first_rid: int | None = None
+        for i in indices:
+            r = out[i]
+            if _is_external_cash_receipt_row(r) and r.get("_repayment_id") is not None:
+                try:
+                    first_rid = int(r["_repayment_id"])
+                except (TypeError, ValueError):
+                    first_rid = None
+                break
+        if first_rid is None:
+            continue
+
+        pre = get_repayment_opening_delinquency_total(first_rid)
+        if pre is None:
+            ds = get_loan_daily_state_balances(loan_id, d_conv - timedelta(days=1))
+            pre_f = _f3(_total_delinquency_arrears(ds)) if ds else 0.0
+        else:
+            pre_f = _f3(pre)
+
+        for i in indices:
+            r = out[i]
+            narr = str(r.get("Narration") or "")
+            if narr.startswith("Total outstanding balance as at"):
+                continue
+            if _is_external_cash_receipt_row(r):
+                continue
+            r["Arrears"] = pre_f
 
 
 def _generate_periodic_statement(
@@ -331,7 +465,6 @@ def _generate_periodic_statement(
         sum_regular = float(state_at_due.get("regular_interest_period_to_date") or 0) if state_at_due else 0.0
         sum_penalty = float(state_at_due.get("penalty_interest_period_to_date") or 0) if state_at_due else 0.0
         sum_default = float(state_at_due.get("default_interest_period_to_date") or 0) if state_at_due else 0.0
-        principal_arrears = float(state_at_due.get("principal_arrears") or 0) if state_at_due else 0.0
         fees_now = float(state_at_due.get("fees_charges_balance") or 0) if state_at_due else 0.0
         fees_in_period = max(0.0, fees_now - prev_fees)
         prev_fees = fees_now
@@ -360,7 +493,7 @@ def _generate_periodic_statement(
         row["Principal"] = _f3(principal_c)
         row["Fees"] = _f3(fees_in_period) if fees_in_period else 0.0
         row["Total Outstanding Balance"] = _f3(tot_out) if tot_out is not None else 0.0
-        row["Arrears"] = _f3(principal_arrears)
+        row["Arrears"] = _f3(_total_delinquency_arrears(state_at_due))
         row["Unapplied funds"] = _unapplied_at(due_d)
         rows.append(row)
 
@@ -382,11 +515,16 @@ def _generate_periodic_statement(
             bal = _state_at(vd)
             if bal:
                 rec_row["Total Outstanding Balance"] = _f3(_total_outstanding(bal))
-                rec_row["Arrears"] = _f3(float(bal.get("principal_arrears") or 0))
+                rec_row["Arrears"] = _f3(_total_delinquency_arrears(bal))
             else:
                 rec_row["Total Outstanding Balance"] = 0.0
                 rec_row["Arrears"] = 0.0
             rec_row["Unapplied funds"] = _unapplied_at(vd, repayment_id=int(r.get("id") or 0))
+            if r.get("id") is not None:
+                try:
+                    rec_row["_repayment_id"] = int(r["id"])
+                except (TypeError, ValueError):
+                    pass
             rows.append(rec_row)
             if r.get("id") is not None:
                 try:
@@ -419,11 +557,16 @@ def _generate_periodic_statement(
         bal = _state_at(vd)
         if bal:
             rec_row["Total Outstanding Balance"] = _f3(_total_outstanding(bal))
-            rec_row["Arrears"] = _f3(float(bal.get("principal_arrears") or 0))
+            rec_row["Arrears"] = _f3(_total_delinquency_arrears(bal))
         else:
             rec_row["Total Outstanding Balance"] = 0.0
             rec_row["Arrears"] = 0.0
         rec_row["Unapplied funds"] = _unapplied_at(vd, repayment_id=int(r.get("id") or 0))
+        if r.get("id") is not None:
+            try:
+                rec_row["_repayment_id"] = int(r["id"])
+            except (TypeError, ValueError):
+                pass
         rows.append(rec_row)
 
     # Unapplied ledger movements as explicit periodic rows.
@@ -455,7 +598,7 @@ def _generate_periodic_statement(
         bal = _state_at(vd)
         if bal:
             row["Total Outstanding Balance"] = _f3(_total_outstanding(bal))
-            row["Arrears"] = _f3(float(bal.get("principal_arrears") or 0))
+            row["Arrears"] = _f3(_total_delinquency_arrears(bal))
         row["Unapplied funds"] = _f3(float(u.get("unapplied_running_balance") or 0))
         rows.append(row)
 
@@ -497,7 +640,7 @@ def _generate_periodic_statement(
             end_bal = _state_at(end)
             if end_bal:
                 row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
-                row["Arrears"] = _f3(float(end_bal.get("principal_arrears") or 0))
+                row["Arrears"] = _f3(_total_delinquency_arrears(end_bal))
             row["Unapplied funds"] = _f3(unapplied_at_end)
             rows.append(row)
 
@@ -507,7 +650,7 @@ def _generate_periodic_statement(
     end_bal = _state_at(end)
     if end_bal:
         row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
-        row["Arrears"] = _f3(float(end_bal.get("principal_arrears") or 0))
+        row["Arrears"] = _f3(_total_delinquency_arrears(end_bal))
     row["Unapplied funds"] = _f3(unapplied_at_end)
     rows.append(row)
 
@@ -526,7 +669,7 @@ def generate_customer_facing_statement(
     """
     Generate a customer-facing loan statement from the internal periodic statement.
     Debits: interest, penalty, default, disbursement (principal only on disbursement row), fees.
-    Credits, Balance, Arrears (principal arrears), Unapplied funds.
+    Credits, Balance, Arrears (total delinquency incl. fees), Unapplied funds.
     """
     rows_periodic, meta = _generate_periodic_statement(
         loan_id,
@@ -583,7 +726,7 @@ def generate_customer_facing_statement(
             # Customer cash movement only:
             # positive receipt -> Credits, negative reversal -> Debits.
             if credits > Decimal("0"):
-                out.append({
+                rec_out = {
                     "Due Date": r.get("Due Date"),
                     "Narration": narration or "Receipt",
                     "Debits": 0.0,
@@ -591,7 +734,14 @@ def generate_customer_facing_statement(
                     "Balance": 0.0,
                     "Arrears": arrears,
                     "Unapplied funds": unapplied,
-                })
+                }
+                rid = r.get("_repayment_id")
+                if rid is not None:
+                    try:
+                        rec_out["_repayment_id"] = int(rid)
+                    except (TypeError, ValueError):
+                        pass
+                out.append(rec_out)
             else:
                 out.append({
                     "Due Date": r.get("Due Date"),
@@ -642,16 +792,9 @@ def generate_customer_facing_statement(
                         "Unapplied funds": unapplied,
                     })
 
-    # Ensure "Total outstanding balance as at ..." line is always last in customer-facing view
-    closing_index = None
-    for idx, row in enumerate(out):
-        narr = (row.get("Narration") or "")
-        if narr.startswith("Total outstanding balance as at"):
-            closing_index = idx
-            break
-    if closing_index is not None and closing_index != len(out) - 1:
-        closing_row = out.pop(closing_index)
-        out.append(closing_row)
+    # Same-day presentation: accruals/charges first, external cash receipts last; closing line last.
+    out = _reorder_customer_facing_rows_receipts_last(out)
+    _apply_customer_facing_arrears_before_first_receipt(loan_id, out)
 
     # Compute running balance: Balance[i] = Balance[i-1] + Debits[i] - Credits[i]
     running_bal = Decimal("0")
@@ -713,6 +856,9 @@ def generate_customer_facing_statement(
         "formula_diff": _f3(formula_diff_d),
         "rounding_adjustment_applied": 0.0,
     }
+
+    for _row in out:
+        _row.pop("_repayment_id", None)
 
     return out, meta
 

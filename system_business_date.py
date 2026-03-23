@@ -144,7 +144,7 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
     Safety: current_system_date does NOT tick if any part of EOD fails.
     Returns dict with keys: success, as_of_date, new_system_date, real_world_time, error.
     """
-    from eod import run_eod_for_date
+    from eod import ConcurrentEODError, run_eod_for_date
 
     cfg = get_system_business_config()
     as_of = cfg["current_system_date"]
@@ -159,13 +159,20 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
         "run_id": None,
         "run_status": None,
         "failed_stage": None,
+        "concurrent_eod": False,
     }
 
     eod_result = None
     try:
         eod_result = run_eod_for_date(as_of)
-    except Exception as e:
+    except ConcurrentEODError as e:
         result["error"] = str(e)
+        result["concurrent_eod"] = True
+        logger.warning("EOD not started (another run in progress) for %s: %s", as_of, e)
+        return result
+    except Exception as e:
+        # str(e) can be uninformative (e.g. KeyError(0) -> "0"); include exception type.
+        result["error"] = f"{type(e).__name__}: {e}"
         if hasattr(e, "stage_name"):
             result["failed_stage"] = getattr(e, "stage_name")
         logger.error("EOD failed for %s, system date NOT advanced: %s", as_of, e)
