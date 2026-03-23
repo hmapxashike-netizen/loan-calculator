@@ -71,10 +71,16 @@ liquidations AS (
     -- Liquidations come only from unapplied_funds_allocation (always negative unapplied delta).
     SELECT
         lra.source_repayment_id AS repayment_id,
-        lra.source_repayment_id::text AS repayment_key,
+        CASE
+            WHEN lra.event_type = 'unapplied_funds_allocation' THEN lra.source_repayment_id::text
+            ELSE 'REV-' || lra.source_repayment_id::text
+        END AS repayment_key,
         lr.loan_id AS loan_id,
         (COALESCE(lr.value_date, lr.payment_date))::date AS value_date,
-        'liquidation' AS entry_kind,
+        CASE
+            WHEN lra.event_type = 'unapplied_funds_allocation' THEN 'liquidation'
+            ELSE 'reversal'
+        END AS entry_kind,
         MIN(lra.repayment_id) AS liquidation_repayment_id,
         -SUM(
             COALESCE(lra.alloc_principal_total, 0)
@@ -88,9 +94,13 @@ liquidations AS (
         SUM(COALESCE(lra.alloc_fees_charges, 0)) AS alloc_fees_charges
     FROM loan_repayment_allocation lra
     JOIN loan_repayments lr ON lr.id = lra.repayment_id
-    WHERE lra.event_type = 'unapplied_funds_allocation'
+    WHERE lra.event_type IN ('unapplied_funds_allocation', 'unallocation_parent_reversed')
       AND lra.source_repayment_id IS NOT NULL
-    GROUP BY lra.source_repayment_id, lr.loan_id, (COALESCE(lr.value_date, lr.payment_date))::date
+    GROUP BY
+        lra.source_repayment_id,
+        lr.loan_id,
+        (COALESCE(lr.value_date, lr.payment_date))::date,
+        lra.event_type
 ),
 ledger AS (
     SELECT * FROM credits_and_reversals

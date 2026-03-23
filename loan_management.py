@@ -103,6 +103,27 @@ def _repayment_journal_reference(loan_id: int, repayment_id: int) -> str:
     return f"Loan {loan_id}, Repayment id {repayment_id}"
 
 
+def _unapplied_original_reference(
+    entry_kind: str,
+    *,
+    loan_id: int,
+    repayment_id: int,
+    value_date: date,
+) -> str:
+    """
+    Deterministic reference for unapplied funds lifecycle (PDF-driven).
+
+    Reversal references are built as: `REV-` + this string.
+    """
+    # Keep format stable so reversal can reference the exact original journal reference.
+    return f"{entry_kind}: Repayment ID {repayment_id} on LoanID {loan_id} - {value_date.isoformat()}"
+
+
+def _unapplied_reversal_reference(original_reference: str) -> str:
+    """Prefix original reference with REV- per PDF reversal rule."""
+    return f"REV-{original_reference}"
+
+
 # Minimum remaining amount to treat as zero (avoids float noise; 1e-4 = 0.01 cent)
 _WATERFALL_REMAINING_EPS = 1e-4
 
@@ -674,6 +695,11 @@ def reverse_repayment(
                     (loan_id, eff_date),
                 )
             # Reverse unapplied credits: insert debit rows (ledger-style, no DELETE)
+            try:
+                from accounting_service import AccountingService
+                svc_unapplied = AccountingService()
+            except Exception:
+                svc_unapplied = None
             cur.execute(
                 """
                 SELECT id, amount FROM unapplied_funds
@@ -690,6 +716,28 @@ def reverse_repayment(
                     """,
                     (loan_id, amt, eff_date, original_repayment_id),
                 )
+
+                # GL reversal for the unapplied overpayment credit.
+                if svc_unapplied is not None and float(uf_row.get("amount") or 0) > 1e-6:
+                    from decimal import Decimal
+
+                    orig_ref = _unapplied_original_reference(
+                        "credit",
+                        loan_id=loan_id,
+                        repayment_id=original_repayment_id,
+                        value_date=eff_date,
+                    )
+                    rev_ref = _unapplied_reversal_reference(orig_ref)
+                    svc_unapplied.post_event(
+                        event_type="UNAPPLIED_FUNDS_OVERPAYMENT",
+                        reference=rev_ref,
+                        description=f"Reversal of unapplied overpayment: {orig_ref}",
+                        event_id=rev_ref,
+                        created_by="system",
+                        entry_date=eff_date,
+                        amount=Decimal(str(float(uf_row.get("amount") or 0))),
+                        is_reversal=True,
+                    )
 
             # Reversal cascade: reverse any allocations that consumed this receipt's overpayment
             # (EOD apply-to-arrears with source_repayment_id = original)
@@ -771,6 +819,98 @@ def reverse_repayment(
                     """,
                     (loan_id, float(as_10dp(amount_applied)), alloc_date, original_repayment_id),
                 )
+
+                # GL reversal for liquidation bucket journals.
+                # We reverse the same event types that would have been posted when the
+                # unapplied funds were liquidated into loan arrears/buckets.
+                if svc_unapplied is not None and amount_applied > 1e-6:
+                    from decimal import Decimal
+
+                    liq_orig_ref = _unapplied_original_reference(
+                        "liquidation",
+                        loan_id=loan_id,
+                        repayment_id=original_repayment_id,
+                        value_date=alloc_date,
+                    )
+                    liq_rev_ref = _unapplied_reversal_reference(liq_orig_ref)
+
+                    if apr > 1e-6:
+                        svc_unapplied.post_event(
+                            event_type="PAYMENT_PRINCIPAL_NOT_YET_DUE",
+                            reference=liq_rev_ref,
+                            description=f"Reversal of unapplied liquidation: {liq_orig_ref}",
+                            event_id=liq_rev_ref,
+                            created_by="system",
+                            entry_date=alloc_date,
+                            amount=Decimal(str(apr)),
+                            is_reversal=True,
+                        )
+                    if apa > 1e-6:
+                        svc_unapplied.post_event(
+                            event_type="PAYMENT_PRINCIPAL",
+                            reference=liq_rev_ref,
+                            description=f"Reversal of unapplied liquidation: {liq_orig_ref}",
+                            event_id=liq_rev_ref,
+                            created_by="system",
+                            entry_date=alloc_date,
+                            amount=Decimal(str(apa)),
+                            is_reversal=True,
+                        )
+                    if aia > 1e-6:
+                        svc_unapplied.post_event(
+                            event_type="PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+                            reference=liq_rev_ref,
+                            description=f"Reversal of unapplied liquidation: {liq_orig_ref}",
+                            event_id=liq_rev_ref,
+                            created_by="system",
+                            entry_date=alloc_date,
+                            amount=Decimal(str(aia)),
+                            is_reversal=True,
+                        )
+                    if aiar > 1e-6:
+                        svc_unapplied.post_event(
+                            event_type="PAYMENT_REGULAR_INTEREST",
+                            reference=liq_rev_ref,
+                            description=f"Reversal of unapplied liquidation: {liq_orig_ref}",
+                            event_id=liq_rev_ref,
+                            created_by="system",
+                            entry_date=alloc_date,
+                            amount=Decimal(str(aiar)),
+                            is_reversal=True,
+                        )
+                    if adi > 1e-6:
+                        svc_unapplied.post_event(
+                            event_type="PAYMENT_DEFAULT_INTEREST",
+                            reference=liq_rev_ref,
+                            description=f"Reversal of unapplied liquidation: {liq_orig_ref}",
+                            event_id=liq_rev_ref,
+                            created_by="system",
+                            entry_date=alloc_date,
+                            amount=Decimal(str(adi)),
+                            is_reversal=True,
+                        )
+                    if api > 1e-6:
+                        svc_unapplied.post_event(
+                            event_type="PAYMENT_PENALTY_INTEREST",
+                            reference=liq_rev_ref,
+                            description=f"Reversal of unapplied liquidation: {liq_orig_ref}",
+                            event_id=liq_rev_ref,
+                            created_by="system",
+                            entry_date=alloc_date,
+                            amount=Decimal(str(api)),
+                            is_reversal=True,
+                        )
+                    if afc > 1e-6:
+                        svc_unapplied.post_event(
+                            event_type="PASS_THROUGH_COST_RECOVERY",
+                            reference=liq_rev_ref,
+                            description=f"Reversal of unapplied liquidation: {liq_orig_ref}",
+                            event_id=liq_rev_ref,
+                            created_by="system",
+                            entry_date=alloc_date,
+                            amount=Decimal(str(afc)),
+                            is_reversal=True,
+                        )
 
             sdate = system_date
             if sdate is None:
@@ -1529,6 +1669,13 @@ def apply_unapplied_funds_to_arrears_eod(
 
     # Consume FIFO by source; create one debit + allocation per source for lineage
     with _connection() as conn:
+        # Optional GL posting: unapplied liquidation requires transaction templates.
+        try:
+            from accounting_service import AccountingService
+            svc_liq = AccountingService()
+        except Exception:
+            svc_liq = None
+
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
@@ -1629,15 +1776,163 @@ def apply_unapplied_funds_to_arrears_eod(
             alloc_fees_charges += afc
 
             with conn.cursor() as cur:
-                # Debit unapplied_funds: link back to the source teller receipt.
-                # allocation_repayment_id is NULL (no system repayment is created).
+                # Create a deterministic system repayment that represents this liquidation leg.
+                # This allows reverse_repayment() to reverse liquidations by parent receipt.
                 cur.execute(
                     """
-                    INSERT INTO unapplied_funds (loan_id, amount, value_date, entry_type, reference, allocation_repayment_id, source_repayment_id, currency)
-                    VALUES (%s, %s, %s, 'debit', 'Applied to arrears (EOD)', NULL, %s, 'USD')
+                    INSERT INTO loan_repayments (
+                        loan_id, amount, payment_date, reference, value_date, status
+                    ) VALUES (%s, %s, %s, %s, %s, 'posted')
+                    RETURNING id
                     """,
-                    (loan_id, float(as_10dp(-consumed)), as_of_date, src_repayment_id),
+                    (
+                        loan_id,
+                        float(as_10dp(-consumed)),
+                        as_of_date,
+                        "Unapplied funds allocation",
+                        as_of_date,
+                    ),
                 )
+                liquidation_repayment_id = int(cur.fetchone()[0])
+
+                # Debit unapplied_funds: link back to the source teller receipt.
+                cur.execute(
+                    """
+                    INSERT INTO unapplied_funds (
+                        loan_id, amount, value_date, entry_type, reference,
+                        allocation_repayment_id, source_repayment_id, currency
+                    )
+                    VALUES (%s, %s, %s, 'debit', 'Applied to arrears (EOD)', %s, %s, 'USD')
+                    """,
+                    (
+                        loan_id,
+                        float(as_10dp(-consumed)),
+                        as_of_date,
+                        liquidation_repayment_id,
+                        src_repayment_id,
+                    ),
+                )
+
+                # Persist liquidation lineage for reversal cascade.
+                alloc_principal_total = apr + apa
+                alloc_interest_total = aia + aiar + adi + api
+                alloc_fees_total = afc
+                alloc_total = alloc_principal_total + alloc_interest_total + alloc_fees_total
+                cur.execute(
+                    """
+                    INSERT INTO loan_repayment_allocation (
+                        repayment_id,
+                        alloc_principal_not_due, alloc_principal_arrears,
+                        alloc_interest_accrued, alloc_interest_arrears,
+                        alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
+                        alloc_principal_total, alloc_interest_total, alloc_fees_total,
+                        alloc_total, unallocated,
+                        event_type,
+                        source_repayment_id
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        'unapplied_funds_allocation', %s
+                    )
+                    """,
+                    (
+                        liquidation_repayment_id,
+                        float(as_10dp(apr)),
+                        float(as_10dp(apa)),
+                        float(as_10dp(aia)),
+                        float(as_10dp(aiar)),
+                        float(as_10dp(adi)),
+                        float(as_10dp(api)),
+                        float(as_10dp(afc)),
+                        float(as_10dp(alloc_principal_total)),
+                        float(as_10dp(alloc_interest_total)),
+                        float(as_10dp(alloc_fees_total)),
+                        float(as_10dp(alloc_total)),
+                        float(as_10dp(0.0)),
+                        src_repayment_id,
+                    ),
+                )
+
+                # GL postings for liquidation: fire bucket journals using the bucket amount.
+                # Template system_tags control whether cash/bank or unapplied_funds is used.
+                if svc_liq is not None:
+                    liq_ref = _unapplied_original_reference(
+                        "liquidation",
+                        loan_id=loan_id,
+                        repayment_id=src_repayment_id,
+                        value_date=as_of_date,
+                    )
+                    from decimal import Decimal
+                    if apr > 1e-6:
+                        svc_liq.post_event(
+                            event_type="PAYMENT_PRINCIPAL_NOT_YET_DUE",
+                            reference=liq_ref,
+                            description=f"Unapplied liquidation: principal not yet due ({liq_ref})",
+                            event_id=liq_ref,
+                            created_by="system",
+                            entry_date=as_of_date,
+                            amount=Decimal(str(apr)),
+                        )
+                    if apa > 1e-6:
+                        svc_liq.post_event(
+                            event_type="PAYMENT_PRINCIPAL",
+                            reference=liq_ref,
+                            description=f"Unapplied liquidation: principal arrears ({liq_ref})",
+                            event_id=liq_ref,
+                            created_by="system",
+                            entry_date=as_of_date,
+                            amount=Decimal(str(apa)),
+                        )
+                    if aia > 1e-6:
+                        svc_liq.post_event(
+                            event_type="PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+                            reference=liq_ref,
+                            description=f"Unapplied liquidation: interest accrued ({liq_ref})",
+                            event_id=liq_ref,
+                            created_by="system",
+                            entry_date=as_of_date,
+                            amount=Decimal(str(aia)),
+                        )
+                    if aiar > 1e-6:
+                        svc_liq.post_event(
+                            event_type="PAYMENT_REGULAR_INTEREST",
+                            reference=liq_ref,
+                            description=f"Unapplied liquidation: interest arrears ({liq_ref})",
+                            event_id=liq_ref,
+                            created_by="system",
+                            entry_date=as_of_date,
+                            amount=Decimal(str(aiar)),
+                        )
+                    if adi > 1e-6:
+                        svc_liq.post_event(
+                            event_type="PAYMENT_DEFAULT_INTEREST",
+                            reference=liq_ref,
+                            description=f"Unapplied liquidation: default interest ({liq_ref})",
+                            event_id=liq_ref,
+                            created_by="system",
+                            entry_date=as_of_date,
+                            amount=Decimal(str(adi)),
+                        )
+                    if api > 1e-6:
+                        svc_liq.post_event(
+                            event_type="PAYMENT_PENALTY_INTEREST",
+                            reference=liq_ref,
+                            description=f"Unapplied liquidation: penalty interest ({liq_ref})",
+                            event_id=liq_ref,
+                            created_by="system",
+                            entry_date=as_of_date,
+                            amount=Decimal(str(api)),
+                        )
+                    if afc > 1e-6:
+                        svc_liq.post_event(
+                            event_type="PASS_THROUGH_COST_RECOVERY",
+                            reference=liq_ref,
+                            description=f"Unapplied liquidation: fees/charges ({liq_ref})",
+                            event_id=liq_ref,
+                            created_by="system",
+                            entry_date=as_of_date,
+                            amount=Decimal(str(afc)),
+                        )
 
         alloc_principal_total = alloc_principal_not_due + alloc_principal_arrears
         alloc_interest_total = (
@@ -2232,6 +2527,8 @@ def apply_unapplied_funds_recast(
                 value_date = value_date.date()
             eff_date = as_of or value_date
             source_repayment_id = int(row["repayment_id"]) if row.get("repayment_id") is not None else None
+            if source_repayment_id is None:
+                raise ValueError("Recast requires source repayment_id on the unapplied credit row.")
 
             # Ensure exact-date state exists before any mutation.
             from eod import run_single_loan_eod
@@ -2290,6 +2587,14 @@ def apply_unapplied_funds_recast(
             new_principal_arrears = round(balances["principal_arrears"] - move_principal_not_due_to_arrears, 2)
             net_alloc = get_net_allocation_for_loan_date(loan_id, eff_date, conn=conn)
             unalloc = get_unallocated_for_loan_date(loan_id, eff_date, conn=conn)
+            liquidation_amount = move_accrued_to_arrears + move_principal_not_due_to_arrears
+            # Safety: recast should not consume a different total than we allocate to
+            # the liquidation buckets; otherwise reversal cascade would not reconcile.
+            if abs(float(as_10dp(liquidation_amount)) - float(as_10dp(amount))) > 1e-6:
+                raise ValueError(
+                    "Recast allocation mismatch: unapplied amount does not equal "
+                    "principal_not_due_to_arrears + interest_accrued_to_arrears."
+                )
 
             save_loan_daily_state(
                 loan_id=loan_id,
@@ -2312,14 +2617,121 @@ def apply_unapplied_funds_recast(
                 unallocated=unalloc,
             )
 
+            # Create a deterministic system repayment representing this recast liquidation leg.
+            try:
+                from accounting_service import AccountingService
+                svc_unapplied = AccountingService()
+            except Exception:
+                svc_unapplied = None
+
+            cur.execute(
+                """
+                INSERT INTO loan_repayments (
+                    loan_id, amount, payment_date, reference, value_date, status
+                ) VALUES (%s, %s, %s, %s, %s, 'posted')
+                RETURNING id
+                """,
+                (
+                    loan_id,
+                    float(as_10dp(-liquidation_amount)),
+                    eff_date,
+                    "Unapplied funds allocation",
+                    eff_date,
+                ),
+            )
+            liquidation_repayment_id = int(cur.fetchone()[0])
+
+            # Insert liquidation lineage allocation so reverse_repayment can cascade.
+            cur.execute(
+                """
+                INSERT INTO loan_repayment_allocation (
+                    repayment_id,
+                    alloc_principal_not_due, alloc_principal_arrears,
+                    alloc_interest_accrued, alloc_interest_arrears,
+                    alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
+                    alloc_principal_total, alloc_interest_total, alloc_fees_total,
+                    alloc_total, unallocated,
+                    event_type,
+                    source_repayment_id
+                )
+                VALUES (
+                    %s, %s, %s,
+                    %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s,
+                    'unapplied_funds_allocation', %s
+                )
+                """,
+                (
+                    liquidation_repayment_id,
+                    float(as_10dp(0.0)),
+                    float(as_10dp(move_principal_not_due_to_arrears)),
+                    float(as_10dp(0.0)),
+                    float(as_10dp(move_accrued_to_arrears)),
+                    float(as_10dp(0.0)),
+                    float(as_10dp(0.0)),
+                    float(as_10dp(0.0)),
+                    float(as_10dp(move_principal_not_due_to_arrears)),
+                    float(as_10dp(move_accrued_to_arrears)),
+                    float(as_10dp(0.0)),
+                    float(as_10dp(liquidation_amount)),
+                    float(as_10dp(0.0)),
+                    source_repayment_id,
+                ),
+            )
+
+            liq_ref = _unapplied_original_reference(
+                "liquidation",
+                loan_id=loan_id,
+                repayment_id=source_repayment_id,
+                value_date=eff_date,
+            )
+
             # Insert debit row (ledger-style, no UPDATE)
             cur.execute(
                 """
-                INSERT INTO unapplied_funds (loan_id, amount, value_date, entry_type, reference, source_repayment_id, source_unapplied_id, currency)
-                VALUES (%s, %s, %s, 'debit', 'Applied via recast', %s, %s, 'USD')
+                INSERT INTO unapplied_funds (
+                    loan_id, amount, value_date, entry_type, reference,
+                    allocation_repayment_id, source_repayment_id, source_unapplied_id, currency
+                )
+                VALUES (%s, %s, %s, 'debit', 'Applied via recast', %s, %s, %s, 'USD')
                 """,
-                (loan_id, float(as_10dp(-amount)), eff_date, source_repayment_id, unapplied_funds_id),
+                (
+                    loan_id,
+                    float(as_10dp(-liquidation_amount)),
+                    eff_date,
+                    liquidation_repayment_id,
+                    source_repayment_id,
+                    unapplied_funds_id,
+                ),
             )
+
+            # GL postings for recast liquidation.
+            # For recast, liquidated amounts land in (principal_arrears, interest_arrears).
+            if svc_unapplied is not None:
+                from decimal import Decimal
+
+                if move_principal_not_due_to_arrears > 1e-6:
+                    svc_unapplied.post_event(
+                        event_type="PAYMENT_PRINCIPAL",
+                        reference=liq_ref,
+                        description=f"Recast liquidation: principal arrears ({liq_ref})",
+                        event_id=liq_ref,
+                        created_by="system",
+                        entry_date=eff_date,
+                        amount=Decimal(str(move_principal_not_due_to_arrears)),
+                    )
+                if move_accrued_to_arrears > 1e-6:
+                    svc_unapplied.post_event(
+                        event_type="PAYMENT_REGULAR_INTEREST",
+                        reference=liq_ref,
+                        description=f"Recast liquidation: interest arrears ({liq_ref})",
+                        event_id=liq_ref,
+                        created_by="system",
+                        entry_date=eff_date,
+                        amount=Decimal(str(move_accrued_to_arrears)),
+                    )
 
 
 def _credit_unapplied_funds(
@@ -2433,17 +2845,68 @@ def reallocate_repayment(
                     "alloc_default_interest", "alloc_penalty_interest", "alloc_fees_charges",
                 )
             ) and _same_10dp(alloc_row.get("unallocated", 0), desired_unapplied):
+                # Allocation/unapplied is already correct, but we may still be
+                # missing the GL journal backing for unapplied overpayment.
+                # Backfill it idempotently (post_event replaces by (event_id,event_tag)).
+                if desired_unapplied > 1e-6:
+                    try:
+                        from accounting_service import AccountingService
+                        from decimal import Decimal
+                        svc_unapplied = AccountingService()
+                    except Exception:
+                        svc_unapplied = None
+
+                    if svc_unapplied is not None:
+                        credit_ref = _unapplied_original_reference(
+                            "credit",
+                            loan_id=loan_id,
+                            repayment_id=repayment_id,
+                            value_date=eff_date,
+                        )
+
+                        # Only post if header doesn't exist yet.
+                        cur.execute(
+                            """
+                            SELECT 1
+                            FROM journal_entries
+                            WHERE event_tag = %s AND event_id = %s
+                            LIMIT 1
+                            """,
+                            ("UNAPPLIED_FUNDS_OVERPAYMENT", credit_ref),
+                        )
+                        if cur.fetchone() is None:
+                            svc_unapplied.post_event(
+                                event_type="UNAPPLIED_FUNDS_OVERPAYMENT",
+                                reference=credit_ref,
+                                description="Unapplied funds on overpayment",
+                                event_id=credit_ref,
+                                created_by="system",
+                                entry_date=eff_date,
+                                amount=Decimal(str(desired_unapplied)),
+                            )
                 return
 
             # Insert debit rows to offset prior unapplied credits (ledger-style)
+            # Also fix GL lineage for unapplied overpayment by reversing prior
+            # UNAPPLIED_FUNDS_OVERPAYMENT journals (only if they exist), and
+            # posting a new credit journal for the new_unapplied amount.
+            try:
+                from accounting_service import AccountingService
+                svc_unapplied = AccountingService()
+            except Exception:
+                svc_unapplied = None
+
             cur.execute(
                 """
-                SELECT id, amount FROM unapplied_funds
+                SELECT id, amount, value_date
+                FROM unapplied_funds
                 WHERE repayment_id = %s AND amount > 0
+                ORDER BY id DESC
                 """,
                 (repayment_id,),
             )
-            for uf_row in cur.fetchall():
+            prev_unapplied_rows = cur.fetchall()
+            for uf_row in prev_unapplied_rows:
                 amt = float(as_10dp(-float(uf_row["amount"] or 0)))
                 cur.execute(
                     """
@@ -2452,6 +2915,44 @@ def reallocate_repayment(
                     """,
                     (loan_id, amt, eff_date, repayment_id),
                 )
+
+                # GL reversal: only post if the original credit journal exists.
+                if svc_unapplied is not None and float(uf_row.get("amount") or 0) > 1e-6:
+                    from decimal import Decimal
+
+                    uf_value_date = uf_row.get("value_date") or eff_date
+                    if hasattr(uf_value_date, "date"):
+                        uf_value_date = uf_value_date.date() if callable(getattr(uf_value_date, "date")) else uf_value_date
+
+                    orig_ref = _unapplied_original_reference(
+                        "credit",
+                        loan_id=loan_id,
+                        repayment_id=repayment_id,
+                        value_date=uf_value_date,
+                    )
+                    # If there is no original UNAPPLIED_FUNDS_OVERPAYMENT journal,
+                    # do not create a reversal-only entry.
+                    cur.execute(
+                        """
+                        SELECT 1
+                        FROM journal_entries
+                        WHERE event_tag = %s AND event_id = %s
+                        LIMIT 1
+                        """,
+                        ("UNAPPLIED_FUNDS_OVERPAYMENT", orig_ref),
+                    )
+                    if cur.fetchone() is not None:
+                        rev_ref = _unapplied_reversal_reference(orig_ref)
+                        svc_unapplied.post_event(
+                            event_type="UNAPPLIED_FUNDS_OVERPAYMENT",
+                            reference=rev_ref,
+                            description=f"Reversal of unapplied overpayment: {orig_ref}",
+                            event_id=rev_ref,
+                            created_by="system",
+                            entry_date=eff_date,
+                            amount=Decimal(str(float(uf_row.get("amount") or 0))),
+                            is_reversal=True,
+                        )
 
     # Override existing allocation row in place (policy: one row per repayment_id).
     # Same opening-basis policy as allocate_repayment_waterfall (closing eff_date-1 minus earlier receipts).
@@ -2523,6 +3024,24 @@ def reallocate_repayment(
 
             if new_unapplied > 1e-6:
                 _credit_unapplied_funds(conn, loan_id, repayment_id, new_unapplied, eff_date)
+                # GL credit posting for unapplied overpayment.
+                if svc_unapplied is not None:
+                    from decimal import Decimal
+                    credit_ref = _unapplied_original_reference(
+                        "credit",
+                        loan_id=loan_id,
+                        repayment_id=repayment_id,
+                        value_date=eff_date,
+                    )
+                    svc_unapplied.post_event(
+                        event_type="UNAPPLIED_FUNDS_OVERPAYMENT",
+                        reference=credit_ref,
+                        description="Unapplied funds on overpayment",
+                        event_id=credit_ref,
+                        created_by="system",
+                        entry_date=eff_date,
+                        amount=Decimal(str(new_unapplied)),
+                    )
 
             new_interest_accrued = max(0.0, state_before["interest_accrued_balance"] - new_aia)
             new_interest_arrears = max(0.0, state_before["interest_arrears_balance"] - new_aiar)
@@ -2741,6 +3260,29 @@ def allocate_repayment_waterfall(
                 # to PAYMENT_PRINCIPAL_NOT_YET_DUE, interest arrears vs accrued to separate events, etc.
 
                 _rj = _repayment_journal_reference(loan_id, repayment_id)
+
+                # Overpayment remainder: credit unapplied_funds and post GL using the
+                # dedicated template (UNAPPLIED_FUNDS_OVERPAYMENT).
+                if unapplied > 1e-6:
+                    svc.post_event(
+                        event_type="UNAPPLIED_FUNDS_OVERPAYMENT",
+                        reference=_unapplied_original_reference(
+                            "credit",
+                            loan_id=loan_id,
+                            repayment_id=repayment_id,
+                            value_date=eff_date,
+                        ),
+                        description="Unapplied funds on overpayment",
+                        event_id=_unapplied_original_reference(
+                            "credit",
+                            loan_id=loan_id,
+                            repayment_id=repayment_id,
+                            value_date=eff_date,
+                        ),
+                        created_by="system",
+                        entry_date=eff_date,
+                        amount=Decimal(str(unapplied)),
+                    )
                 if alloc_principal_arrears > 0:
                     p = Decimal(str(alloc_principal_arrears))
                     svc.post_event(

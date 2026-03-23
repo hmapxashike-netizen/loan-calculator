@@ -1,3 +1,4 @@
 id,loan_id,schedule_line_id,period_number,amount,payment_date,reference,status,created_at,updated_at,customer_reference,company_reference,value_date,system_date,original_repayment_id,customer_name,repayment_key,receipt_type
+5,9,,,6000,2025-06-17,a,posted,2026-03-23T15:25:00.450430+02:00,2026-03-23T15:25:00.450430+02:00,a,b,2025-06-17,2025-06-17T15:25:00.276632+02:00,,test,5,cash_receipt
 4,2,,,40426.64,2025-06-01,Transfer exCBZ Bank 12510622,posted,2026-03-22T20:57:21.858058+02:00,2026-03-22T20:57:21.858058+02:00,Transfer exCBZ Bank 12510622,Loan 2 payment,2025-06-01,2025-06-01T20:57:21.819292+02:00,,test,4,cash_receipt
 3,1,,,100000,2025-06-01,Transfer ex Barclays Bank 12510622,posted,2026-03-22T20:57:20.671848+02:00,2026-03-22T20:57:20.671848+02:00,Transfer ex Barclays Bank 12510622,Loan 1 payment,2025-06-01,2025-06-01T20:57:20.634182+02:00,,Upenyu Moyo,3,cash_receipt

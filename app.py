@@ -1077,6 +1077,12 @@ def eod_ui():
     )
 
     st.divider()
+    fix_eod_issues = st.checkbox(
+        "Fix EOD issues (no date advance)",
+        value=False,
+        key="eod_fix_issues",
+        help="Shows maintenance tools: reallocate receipts, run EOD for a specific date (backfill only), and recompute loan daily state.",
+    )
     if mode == "manual":
         eod_busy = False
         try:
@@ -1158,6 +1164,14 @@ def eod_ui():
             if last_eod.get("run_id") and not is_concurrent:
                 st.caption(f"Run ID: {last_eod['run_id']} | status: {last_eod.get('run_status') or 'FAILED'}")
 
+        # Auto-clear confirmation after a successful EOD run.
+        # Streamlit forbids modifying a widget's session_state key after the widget
+        # is instantiated in the current script run, so we clear it here (before
+        # the widget is created) on the next rerun.
+        if st.session_state.get("eod_confirm_clear_requested"):
+            st.session_state["eod_confirm"] = False
+            st.session_state["eod_confirm_clear_requested"] = False
+
         confirm = st.checkbox(
             f"I confirm: EOD will process accruals for **{current_system_date.isoformat()}**. "
             f"On success, system date will advance to **{next_date.isoformat()}**.",
@@ -1179,15 +1193,22 @@ def eod_ui():
                 # Persist result so confirmation survives the rerun and is
                 # visible together with the updated system date.
                 st.session_state["eod_last_result"] = result
+                # Prevent accidental re-run: auto-clear confirmation checkbox.
+                # Do it on the next rerun to avoid Streamlit API restrictions.
+                st.session_state["eod_confirm_clear_requested"] = True
                 st.rerun()
             else:
                 st.session_state["eod_last_result"] = result
                 st.rerun()
 
-        with st.expander("Run EOD for specific date (backfill, no advance)"):
+        if fix_eod_issues:
+            st.subheader("Backfill EOD (specific date, no system date advance)")
             st.caption("Backfill only. Does not advance system date.")
             backfill_date = st.date_input("EOD as-of date", current_system_date, key="eod_backfill_date")
-            if st.button("Run EOD for date only", key="eod_backfill_btn"):
+            if st.button(
+                "Run EOD for date only",
+                key="eod_backfill_btn",
+            ):
                 st.info(
                     f"**EOD backfill in progress** for **{backfill_date.isoformat()}**. Please wait…"
                 )
@@ -1211,7 +1232,6 @@ def eod_ui():
         )
 
     # Available in both manual and automatic EOD modes — does not advance system date.
-    st.divider()
     st.subheader("Reallocate receipts")
     st.caption(
         "Re-runs waterfall allocation for selected **posted** receipts and **writes results to the database**: "
@@ -1219,7 +1239,7 @@ def eod_ui():
         "plus unapplied-funds adjustments where applicable. "
         "**Does not advance the system business date.**"
     )
-    with st.expander("Open reallocate tool", expanded=False):
+    if fix_eod_issues:
         st.markdown(
             "**When to use what**\n"
             "- **Typical:** receipts with **value date = current system date** — fix same-day allocation without running full EOD.\n"
@@ -1261,12 +1281,14 @@ def eod_ui():
                     "Reallocate all on loan + value date",
                     key="eod_realloc_by_loan_date",
                     type="secondary",
+                    disabled=not fix_eod_issues,
                 )
             with b2:
                 run_by_ids = st.button(
                     "Reallocate listed repayment IDs",
                     key="eod_realloc_by_ids",
                     type="secondary",
+                    disabled=not fix_eod_issues,
                 )
 
             if run_by_loan_date:
@@ -1327,7 +1349,7 @@ def eod_ui():
                         for rid, msg in err:
                             st.error(f"repayment_id={rid}: {msg}")
 
-    with st.expander("Recompute loan daily state (no receipts needed)", expanded=False):
+    if fix_eod_issues:
         st.caption(
             "**Reallocate** only works when there is at least one receipt for that date. "
             "If all receipts were deleted or you need to refresh `loan_daily_state` from the "
@@ -1348,7 +1370,11 @@ def eod_ui():
                 value=current_system_date,
                 key="eod_recompute_as_of",
             )
-        if st.button("Recompute loan daily state for this loan + date", key="eod_run_single_loan_eod"):
+        if st.button(
+            "Recompute loan daily state for this loan + date",
+            key="eod_run_single_loan_eod",
+            disabled=not fix_eod_issues,
+        ):
             cfg = load_system_config_from_db() or {}
             try:
                 with st.spinner(f"Running engine for loan_id={int(rl_loan)} on {rl_date}…"):
@@ -5131,6 +5157,12 @@ def statements_ui():
                 with fd2:
                     end_date = st.date_input("End date (optional)", value=_get_system_date(), key="stmt_end")
                 st.caption("Start date is fixed to disbursement. Adjust end date as needed.")
+                show_pa_billing = st.checkbox(
+                    "Show principal arrears billing lines",
+                    value=True,
+                    key="stmt_show_pa_billing",
+                    help="Adds non-cash informational rows: 'Principal arrears billing (amount)'.",
+                )
 
                 if st.button("Generate statement", type="primary", key="stmt_gen"):
                     try:
@@ -5138,6 +5170,7 @@ def statements_ui():
                             loan_id,
                             start_date=start_date,
                             end_date=end_date,
+                            include_principal_arrears_billing=show_pa_billing,
                         )
                         if not rows:
                             st.info("No statement lines for this period.")
@@ -6810,9 +6843,20 @@ def document_management_ui():
             dl_doc_id = st.selectbox("Select Document to Download", [d["id"] for d in docs], format_func=lambda x: next(f"ID {d['id']} - {d['file_name']}" for d in docs if d["id"] == x))
             dl_doc = get_document(dl_doc_id)
             if dl_doc:
+                # PostgreSQL `bytea` sometimes comes back as `memoryview` via the DB driver.
+                # Streamlit's download_button expects real `bytes`.
+                file_content = dl_doc.get("file_content")
+                if file_content is None:
+                    file_content = b""
+                elif isinstance(file_content, memoryview):
+                    file_content = file_content.tobytes()
+                elif isinstance(file_content, bytearray):
+                    file_content = bytes(file_content)
+                elif isinstance(file_content, str):
+                    file_content = file_content.encode("utf-8")
                 st.download_button(
                     label=f"Download {dl_doc['file_name']}",
-                    data=dl_doc["file_content"],
+                    data=file_content,
                     file_name=dl_doc["file_name"],
                     mime=dl_doc["file_type"]
                 )
