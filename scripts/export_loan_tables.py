@@ -807,6 +807,18 @@ def main(argv=None) -> None:
         print("Error: --start-date must be on or before --end-date", file=sys.stderr)
         raise SystemExit(2)
 
+    # Hard cap: never export future schedule/statement rows beyond system business date.
+    # (User may pass a future end date; we clamp it.)
+    try:
+        from system_business_date import get_effective_date
+
+        eff = get_effective_date()
+    except Exception:
+        eff = date.today()
+    if d1 > eff:
+        d1 = eff
+        end_date = d1.isoformat()
+
     queries = build_export_queries(start_date, end_date)
 
     os.makedirs(EXPORT_DIR, exist_ok=True)

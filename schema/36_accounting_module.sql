@@ -35,7 +35,11 @@ CREATE TABLE IF NOT EXISTS journal_entries (
     description TEXT,
     event_id VARCHAR(255),
     event_tag VARCHAR(100),
+    entry_type VARCHAR(50) DEFAULT 'EVENT',
     status VARCHAR(50) DEFAULT 'POSTED',
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    superseded_at TIMESTAMP WITH TIME ZONE,
+    superseded_by_id UUID REFERENCES journal_entries(id),
     created_by VARCHAR(255),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -45,7 +49,13 @@ CREATE TABLE IF NOT EXISTS journal_entries (
 -- We use a partial unique index so rows with NULL event_id/event_tag are not blocked.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_journal_entries_event_id_event_tag
     ON journal_entries(event_id, event_tag)
-    WHERE event_id IS NOT NULL AND event_tag IS NOT NULL;
+    WHERE event_id IS NOT NULL AND event_tag IS NOT NULL AND is_active = TRUE;
+
+CREATE TABLE IF NOT EXISTS financial_periods (
+    period_key VARCHAR(7) PRIMARY KEY, -- YYYY-MM
+    is_closed BOOLEAN NOT NULL DEFAULT FALSE,
+    closed_at TIMESTAMP WITH TIME ZONE
+);
 
 CREATE TABLE IF NOT EXISTS journal_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

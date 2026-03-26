@@ -139,6 +139,12 @@ try:
         delete_product,
         get_product_config_from_db,
         save_product_config_to_db,
+        save_loan_approval_draft,
+        list_loan_approval_drafts,
+        get_loan_approval_draft,
+        approve_loan_approval_draft,
+        send_back_loan_approval_draft,
+        dismiss_loan_approval_draft,
     )
     _loan_management_available = True
 except Exception as e:
@@ -1053,18 +1059,22 @@ def eod_ui():
     from system_business_date import get_system_business_config, run_eod_process
 
     st.markdown(
-        "<div style='background-color: #16A34A; color: white; padding: 8px 12px; "
-        "font-weight: bold; font-size: 1.1rem;'>End of day</div>",
+        "<div style='color:#16A34A; font-weight:700; font-size:2rem; margin:0.25rem 0 0.75rem 0;'>End of day</div>",
         unsafe_allow_html=True,
     )
-    st.markdown("<br>", unsafe_allow_html=True)
 
     sb_cfg = get_system_business_config()
     current_system_date = sb_cfg["current_system_date"]
     next_date = current_system_date + timedelta(days=1)
 
-    st.markdown(f"**Current system date:** `{current_system_date.isoformat()}`")
-    st.caption(f"Calendar date: {datetime.now().strftime('%Y-%m-%d')}")
+    d_col1, d_col2 = st.columns([1, 2])
+    with d_col1:
+        st.caption(f"Calendar date: {datetime.now().strftime('%Y-%m-%d')}")
+    with d_col2:
+        st.markdown(
+            f"<div style='font-size: 1.6rem; font-weight: 700; text-align: right;'>System date: {current_system_date.isoformat()}</div>",
+            unsafe_allow_html=True,
+        )
 
     cfg = _get_system_config()
     eod_cfg = cfg.get("eod_settings", {}) or {}
@@ -1110,24 +1120,44 @@ def eod_ui():
 
         from loan_management import _connection
         from psycopg2.extras import RealDictCursor
-        is_rerun = False
+        loans_with_state = 0
+        active_loans = 0
         try:
             with _connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
-                        "SELECT 1 FROM loan_daily_state WHERE as_of_date = %s LIMIT 1",
+                        """
+                        SELECT COUNT(DISTINCT loan_id) AS n
+                        FROM loan_daily_state
+                        WHERE as_of_date = %s
+                        """,
                         (current_system_date,),
                     )
-                    is_rerun = cur.fetchone() is not None
+                    row = cur.fetchone() or {}
+                    loans_with_state = int(row.get("n") or 0)
+                    cur.execute(
+                        "SELECT COUNT(*) AS n FROM loans WHERE status = 'active'"
+                    )
+                    row2 = cur.fetchone() or {}
+                    active_loans = int(row2.get("n") or 0)
         except Exception:
             pass
 
-        if is_rerun:
-            st.warning(
-                f"EOD has already been run for **{current_system_date.isoformat()}**. "
-                "Re-running is idempotent but will not advance the system date again. "
-                "Confirm below to re-run."
-            )
+        if loans_with_state > 0:
+            if active_loans > 0:
+                st.warning(
+                    f"EOD already has daily-state rows for **{loans_with_state} / {active_loans}** active loan(s) "
+                    f"on **{current_system_date.isoformat()}**. "
+                    "Re-running is idempotent; it will not advance the system date again. "
+                    "Confirm below to re-run."
+                )
+            else:
+                st.warning(
+                    f"EOD already has daily-state rows for **{loans_with_state}** loan(s) "
+                    f"on **{current_system_date.isoformat()}**. "
+                    "Re-running is idempotent; it will not advance the system date again. "
+                    "Confirm below to re-run."
+                )
         # Show outcome of the last EOD run (if any) so the user
         # gets a clear confirmation message even after rerun.
         last_eod = st.session_state.get("eod_last_result")
@@ -1393,7 +1423,7 @@ def consumer_loan_ui():
     cfg = _get_system_config()
     default_additional_rate_pct = cfg.get("consumer_default_additional_rate_pct", 0.0)
 
-    st.sidebar.header("Consumer Loan Parameters")
+    st.subheader("Consumer Loan Parameters")
     # Currency selection with system default + override
     accepted_currencies = cfg.get(
         "accepted_currencies", [cfg.get("base_currency", "USD")]
@@ -1402,53 +1432,56 @@ def consumer_loan_ui():
     default_ccy = loan_curr_cfg.get("consumer_loan", cfg.get("base_currency", "USD"))
     if default_ccy not in accepted_currencies:
         accepted_currencies = [default_ccy, *accepted_currencies]
-    currency = st.sidebar.selectbox(
-        "Currency",
-        accepted_currencies,
-        index=accepted_currencies.index(default_ccy)
-        if default_ccy in accepted_currencies
-        else 0,
-        key="cl_currency",
-    )
-    st.caption("Schemes and default rates are managed in **System configurations**.")
-    scheme_options = scheme_names + ["Other"]
-    scheme = st.sidebar.selectbox("Loan Scheme", scheme_options, key="cl_scheme")
     glob = _get_global_loan_settings()
-    principal_input_choice = st.sidebar.radio(
-        "What are you entering?",
-        ["Net proceeds", "Principal (total loan amount)"],
-        key="cl_principal_input",
-    )
-    input_total_facility = principal_input_choice == "Principal (total loan amount)"
-    loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
-    loan_required = st.sidebar.number_input(
-        loan_input_label,
-        min_value=0.0,
-        value=140.0,
-        step=10.0,
-        format="%.2f",
-        key="cl_principal",
-    )
-    loan_term = st.sidebar.number_input(
-        "Term (Months)",
-        min_value=1,
-        max_value=60,
-        value=6,
-        step=1,
-        key="cl_term",
-    )
-    disbursement_input = st.sidebar.date_input("Disbursement date", _get_system_date(), key="cl_start")
-    disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
-    default_first_rep = add_months(disbursement_date, 1).date()
-    first_rep_input = st.sidebar.date_input("First Repayment Date", default_first_rep, key="cl_first_rep")
-    first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
-    use_anniversary = st.sidebar.radio(
-        "Repayments on",
-        ["Anniversary date (same day each month)", "Last day of each month"],
-        key="cl_timing",
-    ).startswith("Anniversary")
+    scheme_options = scheme_names + ["Other"]
+    p_col1, p_col2 = st.columns(2)
+    with p_col1:
+        currency = st.selectbox(
+            "Currency",
+            accepted_currencies,
+            index=accepted_currencies.index(default_ccy)
+            if default_ccy in accepted_currencies
+            else 0,
+            key="cl_currency",
+        )
+        principal_input_choice = st.radio(
+            "What are you entering?",
+            ["Net proceeds", "Principal (total loan amount)"],
+            key="cl_principal_input",
+        )
+        input_total_facility = principal_input_choice == "Principal (total loan amount)"
+        loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
+        loan_required = st.number_input(
+            loan_input_label,
+            min_value=0.0,
+            value=140.0,
+            step=10.0,
+            format="%.2f",
+            key="cl_principal",
+        )
+        loan_term = st.number_input(
+            "Term (Months)",
+            min_value=1,
+            max_value=60,
+            value=6,
+            step=1,
+            key="cl_term",
+        )
+    with p_col2:
+        st.caption("Schemes and default rates are managed in **System configurations**.")
+        scheme = st.selectbox("Loan Scheme", scheme_options, key="cl_scheme")
+        disbursement_input = st.date_input("Disbursement date", _get_system_date(), key="cl_start")
+        disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
+        default_first_rep = add_months(disbursement_date, 1).date()
+        first_rep_input = st.date_input("First Repayment Date", default_first_rep, key="cl_first_rep")
+        first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
+        use_anniversary = st.radio(
+            "Repayments on",
+            ["Anniversary date (same day each month)", "Last day of each month"],
+            key="cl_timing",
+        ).startswith("Anniversary")
     if not use_anniversary and not is_last_day_of_month(first_repayment_date):
-        st.sidebar.error("When repayments are on last day of month, First Repayment Date must be the last day of that month.")
+        st.error("When repayments are on last day of month, First Repayment Date must be the last day of that month.")
 
     # Future disbursement: prompt for additional rate when disbursement_date > next month
     today_normalized = datetime.combine(_get_system_date(), datetime.min.time()).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1456,8 +1489,8 @@ def consumer_loan_ui():
     additional_buffer_rate = 0.0
 
     if disbursement_date > next_month_limit:
-        st.sidebar.warning("Future date detected: additional interest rate applies per extra month.")
-        additional_rate_pct = st.sidebar.number_input(
+        st.warning("Future date detected: additional interest rate applies per extra month.")
+        additional_rate_pct = st.number_input(
             "Additional Monthly Rate (%) per extra month",
             min_value=0.0,
             max_value=100.0,
@@ -1479,22 +1512,25 @@ def consumer_loan_ui():
         base_rate = (sch["interest_rate_pct"] / 100.0) if sch else 0.07
         admin_fee = (sch["admin_fee_pct"] / 100.0) if sch else 0.07
     else:
-        interest_rate_percent = st.sidebar.number_input(
-            "Interest rate (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=0.0,
-            step=0.1,
-            key="cl_other_rate",
-        )
-        admin_fee_percent = st.sidebar.number_input(
-            "Administration fee (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=0.0,
-            step=0.1,
-            key="cl_other_admin",
-        )
+        o_col1, o_col2 = st.columns(2)
+        with o_col1:
+            interest_rate_percent = st.number_input(
+                "Interest rate (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=0.1,
+                key="cl_other_rate",
+            )
+        with o_col2:
+            admin_fee_percent = st.number_input(
+                "Administration fee (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=0.0,
+                step=0.1,
+                key="cl_other_admin",
+            )
         has_error = False
         if interest_rate_percent <= 0.0:
             st.error("Please enter an interest rate greater than 0% for the 'Other' scheme.")
@@ -1566,26 +1602,22 @@ def consumer_loan_ui():
     st.markdown(f"**k. No. of Repayments:** {loan_term} times")
     st.markdown(f"**i. End Date:** {end_date.strftime('%d-%b-%Y')}")
 
-    # Notes section
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown(
-        "<div style='background-color: #F1F5F9; padding: 12px 16px; border-radius: 4px;'>"
-        "<strong>Notes</strong><br>"
-        "1. Select Scheme (a.). If the loan does not fall under a Scheme, select \"Other\"<br>"
-        "2. Enter net proceeds in (b) or principal (total loan amount) via the sidebar<br>"
-        "3. If you have selected \"Other\" under the Scheme, manually enter the interest rate (c.) and administration fees % (d.)<br>"
-        "4. Enter the Loan Term in months (h.)<br>"
-        "5. Monthly repayment (f.) assumes every month has 30 days<br>"
-        "6. Default rates and schemes are in **System configurations**"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    # 5. Amortization Schedule
-    st.divider()
-    st.subheader("Repayment Schedule")
-    st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
-    _schedule_export_downloads(df_schedule, file_stem="consumer_loan_schedule", key_prefix="dl_sched_consumer")
+    with st.expander("Notes", expanded=False):
+        st.markdown(
+            "<div style='background-color: #F1F5F9; padding: 12px 16px; border-radius: 4px;'>"
+            "<strong>Notes</strong><br>"
+            "1. Select Scheme (a.). If the loan does not fall under a Scheme, select \"Other\"<br>"
+            "2. Enter net proceeds in (b) or principal (total loan amount)<br>"
+            "3. If you selected \"Other\", enter interest rate (c.) and administration fee (d.)<br>"
+            "4. Enter the Loan Term in months (h.)<br>"
+            "5. Monthly repayment (f.) assumes every month has 30 days<br>"
+            "6. Default rates and schemes are in **System configurations**"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    with st.expander("Repayment schedule and downloads", expanded=False):
+        st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True, height=240)
+        _schedule_export_downloads(df_schedule, file_stem="consumer_loan_schedule", key_prefix="dl_sched_consumer")
 
     # 6. Save button - DB-ready structure (from shared engine)
     loan_record = {**details, "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
@@ -1593,18 +1625,41 @@ def consumer_loan_ui():
         if k in loan_record and hasattr(loan_record[k], "isoformat"):
             loan_record[k] = loan_record[k].isoformat()
 
-    st.divider()
-    if st.button("Save Loan Record to System", type="primary", key="cl_save"):
-        # TODO: Replace with db.insert(loan_record) when DB is ready
-        st.success(f"Loan for ${loan_required:,.2f} has been prepared for database sync.")
-        with st.expander("Preview record (for DB insertion)"):
-            st.json(loan_record)
+    with st.expander("Save to system", expanded=False):
+        if st.button("Save Loan Record to System", type="primary", key="cl_save"):
+            # TODO: Replace with db.insert(loan_record) when DB is ready
+            st.success(f"Loan for ${loan_required:,.2f} has been prepared for database sync.")
+            with st.expander("Preview record (for DB insertion)"):
+                st.json(loan_record)
 
 
 def term_loan_ui():
     glob = _get_global_loan_settings()
     cfg = _get_system_config()
-    st.sidebar.header("Term Loan Parameters")
+    # Optional product selector for calculator defaults (safe fallback to system defaults).
+    rate_basis = glob.get("rate_basis", "Per month")
+    product_cfg: dict[str, Any] = {}
+    product_opts = []
+    try:
+        all_products = list_products(active_only=True) if _loan_management_available else []
+        product_opts = [
+            p for p in (all_products or [])
+            if str(p.get("loan_type") or "").strip().lower() == "term_loan"
+        ]
+    except Exception:
+        product_opts = []
+
+    st.subheader("Term Loan Parameters")
+    if product_opts:
+        prod_labels = ["System defaults"] + [f"{p.get('code')} - {p.get('name')}" for p in product_opts]
+        selected_label = st.selectbox("Product (optional)", prod_labels, key="term_product_pick")
+        if selected_label != "System defaults":
+            picked = product_opts[prod_labels.index(selected_label) - 1]
+            product_code = str(picked.get("code") or "").strip()
+            if product_code:
+                product_cfg = get_product_config_from_db(product_code) or {}
+                rate_basis = _get_product_rate_basis(product_cfg, fallback=rate_basis)
+
     # Currency selection with system default + override
     accepted_currencies = cfg.get(
         "accepted_currencies", [cfg.get("base_currency", "USD")]
@@ -1613,46 +1668,57 @@ def term_loan_ui():
     default_ccy = loan_curr_cfg.get("term_loan", cfg.get("base_currency", "USD"))
     if default_ccy not in accepted_currencies:
         accepted_currencies = [default_ccy, *accepted_currencies]
-    currency = st.sidebar.selectbox(
-        "Currency",
-        accepted_currencies,
-        index=accepted_currencies.index(default_ccy)
-        if default_ccy in accepted_currencies
-        else 0,
-        key="term_currency",
-    )
-    principal_input_choice = st.sidebar.radio(
-        "What are you entering?",
-        ["Net proceeds", "Principal (total loan amount)"],
-        key="term_principal_input",
-    )
-    input_total_facility = principal_input_choice == "Principal (total loan amount)"
-    loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
-    loan_required = st.sidebar.number_input(
-        loan_input_label,
-        min_value=0.0,
-        value=1000.0,
-        step=100.0,
-        format="%.2f",
-        key="term_principal",
-    )
-    loan_term = st.sidebar.number_input(
-        "Term (Months)",
-        min_value=1,
-        max_value=120,
-        value=24,
-        step=1,
-        key="term_months",
-    )
-    disbursement_input = st.sidebar.date_input("Disbursement date", _get_system_date(), key="term_disb")
-    disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
+    p_col1, p_col2 = st.columns(2)
+    with p_col1:
+        currency = st.selectbox(
+            "Currency",
+            accepted_currencies,
+            index=accepted_currencies.index(default_ccy)
+            if default_ccy in accepted_currencies
+            else 0,
+            key="term_currency",
+        )
+        principal_input_choice = st.radio(
+            "What are you entering?",
+            ["Net proceeds", "Principal (total loan amount)"],
+            key="term_principal_input",
+        )
+        input_total_facility = principal_input_choice == "Principal (total loan amount)"
+        loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
+        loan_required = st.number_input(
+            loan_input_label,
+            min_value=0.0,
+            value=1000.0,
+            step=100.0,
+            format="%.2f",
+            key="term_principal",
+        )
+        loan_term = st.number_input(
+            "Term (Months)",
+            min_value=1,
+            max_value=120,
+            value=24,
+            step=1,
+            key="term_months",
+        )
+    with p_col2:
+        disbursement_input = st.date_input("Disbursement date", _get_system_date(), key="term_disb")
+        disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
 
-    # Term loan: defaults from System configurations, user can override
-    dr = cfg.get("default_rates", {}).get("term_loan", {})
-    rate_label = "Interest rate (% per annum)" if glob.get("rate_basis") == "Per annum" else "Interest rate (% per month)"
-    rate_pct = st.sidebar.number_input(rate_label, 0.0, 100.0, float(dr.get("interest_pct", 7.0)), step=0.1, key="term_rate")
-    drawdown_fee_pct = st.sidebar.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="term_drawdown") / 100.0
-    arrangement_fee_pct = st.sidebar.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct", 2.5)), step=0.1, key="term_arrangement") / 100.0
+    # Term loan: defaults from selected product (if any), else system config; always safe.
+    dr_sys = cfg.get("default_rates", {}).get("term_loan", {}) or {}
+    dr_prod = (product_cfg.get("default_rates") or {}).get("term_loan") or {}
+    dr = {**dr_sys, **dr_prod}
+    default_interest = float(dr.get("interest_pct") or 7.0)
+    default_drawdown = float(dr.get("drawdown_pct") or 2.5)
+    default_arrangement = float(dr.get("arrangement_pct") or 2.5)
+    rate_label = "Interest rate (% per annum)" if rate_basis == "Per annum" else "Interest rate (% per month)"
+    fee_col1, fee_col2 = st.columns(2)
+    with fee_col1:
+        rate_pct = st.number_input(rate_label, 0.0, 100.0, default_interest, step=0.1, key="term_rate")
+        drawdown_fee_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, default_drawdown, step=0.1, key="term_drawdown") / 100.0
+    with fee_col2:
+        arrangement_fee_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, default_arrangement, step=0.1, key="term_arrangement") / 100.0
     total_fee = drawdown_fee_pct + arrangement_fee_pct
     if rate_pct <= 0:
         st.error("Please enter an interest rate greater than 0%.")
@@ -1666,26 +1732,33 @@ def term_loan_ui():
     else:
         total_facility = loan_required / (1.0 - total_fee)
     # Rate basis: per annum -> annual_rate = rate_pct/100; per month -> annual_rate = (rate_pct/100)*12
-    annual_rate = (rate_pct / 100.0) * 12.0 if glob.get("rate_basis") == "Per month" else (rate_pct / 100.0)
+    annual_rate = (rate_pct / 100.0) * 12.0 if rate_basis == "Per month" else (rate_pct / 100.0)
     flat_rate = glob.get("interest_method") == "Flat rate"
 
-    # Grace period
-    st.sidebar.subheader("Grace Period")
-    grace_type = st.sidebar.radio(
-        "Grace period type",
-        ["No grace period", "Principal moratorium", "Principal and interest moratorium"],
-        key="term_grace",
-    )
-    moratorium_months = 0
-    if "Principal moratorium" in grace_type:
-        moratorium_months = st.sidebar.number_input("Moratorium length (months)", 1, 60, 3, key="term_moratorium_p")
-    elif "Principal and interest" in grace_type:
-        moratorium_months = st.sidebar.number_input("Moratorium length (months)", 1, 60, 3, key="term_moratorium_pi")
-
-    # First repayment date (default: 1 month after disbursement)
-    default_first_rep = add_months(disbursement_date, 1).date()
-    first_rep_input = st.sidebar.date_input("First Repayment Date", default_first_rep, key="term_first_rep")
-    first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
+    # Grace period + repayment timing
+    g_col1, g_col2 = st.columns(2)
+    with g_col1:
+        st.markdown("**Grace Period**")
+        grace_type = st.radio(
+            "Grace period type",
+            ["No grace period", "Principal moratorium", "Principal and interest moratorium"],
+            key="term_grace",
+        )
+        moratorium_months = 0
+        if "Principal moratorium" in grace_type:
+            moratorium_months = st.number_input("Moratorium length (months)", 1, 60, 3, key="term_moratorium_p")
+        elif "Principal and interest" in grace_type:
+            moratorium_months = st.number_input("Moratorium length (months)", 1, 60, 3, key="term_moratorium_pi")
+    with g_col2:
+        default_first_rep = add_months(disbursement_date, 1).date()
+        first_rep_input = st.date_input("First Repayment Date", default_first_rep, key="term_first_rep")
+        first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
+        st.markdown("**Repayment Timing**")
+        use_anniversary = st.radio(
+            "Repayments on",
+            ["Anniversary date (same day each month)", "Last day of each month"],
+            key="term_timing",
+        ).startswith("Anniversary")
 
     today_norm = datetime.combine(_get_system_date(), datetime.min.time()).replace(hour=0, minute=0, second=0, microsecond=0)
     next_month_limit = add_months(today_norm, 1)
@@ -1697,14 +1770,6 @@ def term_loan_ui():
     if "Principal" in grace_type and moratorium_months >= loan_term:
         st.error("Moratorium length must be less than loan term.")
         return
-
-    # Repayment timing
-    st.sidebar.subheader("Repayment Timing")
-    use_anniversary = st.sidebar.radio(
-        "Repayments on",
-        ["Anniversary date (same day each month)", "Last day of each month"],
-        key="term_timing",
-    ).startswith("Anniversary")
 
     if not use_anniversary and not is_last_day_of_month(first_repayment_date):
         last_day = days_in_month(first_repayment_date.year, first_repayment_date.month)
@@ -1718,7 +1783,7 @@ def term_loan_ui():
     details, df_schedule = compute_term_schedule(
         loan_required, loan_term, disbursement_date, rate_pct, drawdown_fee_pct, arrangement_fee_pct,
         input_total_facility, grace_type, moratorium_months, first_repayment_date, use_anniversary,
-        glob.get("rate_basis", "Per month"), flat_rate,
+        rate_basis, flat_rate,
     )
     details["currency"] = currency
     installment = details["installment"]
@@ -1764,27 +1829,26 @@ def term_loan_ui():
     st.markdown(f"**i. Grace period:** {grace_type}")
     st.markdown(f"**j. End Date:** {end_date.strftime('%d-%b-%Y')}")
 
-    st.divider()
-    st.subheader("Repayment Schedule (Actual/360)")
-    st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
-    _schedule_export_downloads(df_schedule, file_stem="term_loan_schedule", key_prefix="dl_sched_term")
+    with st.expander("Repayment schedule and downloads", expanded=False):
+        st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True, height=240)
+        _schedule_export_downloads(df_schedule, file_stem="term_loan_schedule", key_prefix="dl_sched_term")
 
     loan_record = {**details, "loan_type": "term_loan", "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
     for k in ("disbursement_date", "start_date", "end_date", "first_repayment_date"):
         if k in loan_record and hasattr(loan_record[k], "isoformat"):
             loan_record[k] = loan_record[k].isoformat()
 
-    st.divider()
-    if st.button("Save Term Loan Record to System", type="primary", key="term_save"):
-        st.success(f"Term loan for ${loan_required:,.2f} has been prepared for database sync.")
-        with st.expander("Preview record (for DB insertion)"):
-            st.json(loan_record)
+    with st.expander("Save to system", expanded=False):
+        if st.button("Save Term Loan Record to System", type="primary", key="term_save"):
+            st.success(f"Term loan for ${loan_required:,.2f} has been prepared for database sync.")
+            with st.expander("Preview record (for DB insertion)"):
+                st.json(loan_record)
 
 
 def bullet_loan_ui():
     glob = _get_global_loan_settings()
     cfg = _get_system_config()
-    st.sidebar.header("Bullet Loan Parameters")
+    st.subheader("Bullet Loan Parameters")
     # Currency selection with system default + override
     accepted_currencies = cfg.get(
         "accepted_currencies", [cfg.get("base_currency", "USD")]
@@ -1793,50 +1857,56 @@ def bullet_loan_ui():
     default_ccy = loan_curr_cfg.get("bullet_loan", cfg.get("base_currency", "USD"))
     if default_ccy not in accepted_currencies:
         accepted_currencies = [default_ccy, *accepted_currencies]
-    currency = st.sidebar.selectbox(
-        "Currency",
-        accepted_currencies,
-        index=accepted_currencies.index(default_ccy)
-        if default_ccy in accepted_currencies
-        else 0,
-        key="bullet_currency",
-    )
-    principal_input_choice = st.sidebar.radio(
-        "What are you entering?",
-        ["Net proceeds", "Principal (total loan amount)"],
-        key="bullet_principal_input",
-    )
-    input_total_facility = principal_input_choice == "Principal (total loan amount)"
-    bullet_type = st.sidebar.radio(
-        "Bullet type",
-        ["Straight bullet (no interim payments)", "Bullet with interest payments"],
-        key="bullet_type",
-    )
-    loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
-    loan_required = st.sidebar.number_input(
-        loan_input_label,
-        min_value=0.0,
-        value=1000.0,
-        step=100.0,
-        format="%.2f",
-        key="bullet_principal",
-    )
-    loan_term = st.sidebar.number_input(
-        "Term (Months)",
-        min_value=1,
-        max_value=120,
-        value=12,
-        step=1,
-        key="bullet_term",
-    )
-    disbursement_input = st.sidebar.date_input("Disbursement date", _get_system_date(), key="bullet_disb")
-    disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
+    p_col1, p_col2 = st.columns(2)
+    with p_col1:
+        currency = st.selectbox(
+            "Currency",
+            accepted_currencies,
+            index=accepted_currencies.index(default_ccy)
+            if default_ccy in accepted_currencies
+            else 0,
+            key="bullet_currency",
+        )
+        principal_input_choice = st.radio(
+            "What are you entering?",
+            ["Net proceeds", "Principal (total loan amount)"],
+            key="bullet_principal_input",
+        )
+        input_total_facility = principal_input_choice == "Principal (total loan amount)"
+        loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
+        loan_required = st.number_input(
+            loan_input_label,
+            min_value=0.0,
+            value=1000.0,
+            step=100.0,
+            format="%.2f",
+            key="bullet_principal",
+        )
+        loan_term = st.number_input(
+            "Term (Months)",
+            min_value=1,
+            max_value=120,
+            value=12,
+            step=1,
+            key="bullet_term",
+        )
+    with p_col2:
+        bullet_type = st.radio(
+            "Bullet type",
+            ["Straight bullet (no interim payments)", "Bullet with interest payments"],
+            key="bullet_type",
+        )
+        disbursement_input = st.date_input("Disbursement date", _get_system_date(), key="bullet_disb")
+        disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
 
     dr = cfg.get("default_rates", {}).get("bullet_loan", {})
     rate_label = "Interest rate (% per annum)" if glob.get("rate_basis") == "Per annum" else "Interest rate (% per month)"
-    rate_pct = st.sidebar.number_input(rate_label, min_value=0.0, max_value=100.0, value=float(dr.get("interest_pct", 7.0)), step=0.1, key="bullet_rate")
-    drawdown_fee_pct = st.sidebar.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="bullet_drawdown") / 100.0
-    arrangement_fee_pct = st.sidebar.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct", 2.5)), step=0.1, key="bullet_arrangement") / 100.0
+    f_col1, f_col2 = st.columns(2)
+    with f_col1:
+        rate_pct = st.number_input(rate_label, min_value=0.0, max_value=100.0, value=float(dr.get("interest_pct", 7.0)), step=0.1, key="bullet_rate")
+        drawdown_fee_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="bullet_drawdown") / 100.0
+    with f_col2:
+        arrangement_fee_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct", 2.5)), step=0.1, key="bullet_arrangement") / 100.0
     total_fee = drawdown_fee_pct + arrangement_fee_pct
     if rate_pct <= 0:
         st.error("Please enter an interest rate greater than 0%.")
@@ -1849,14 +1919,17 @@ def bullet_loan_ui():
     first_repayment_date = None
     use_anniversary = True
     if "with interest" in bullet_type:
-        default_first_rep = add_months(disbursement_date, 1).date()
-        first_rep_input = st.sidebar.date_input("First Repayment Date", default_first_rep, key="bullet_first_rep")
-        first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
-        use_anniversary = st.sidebar.radio(
-            "Interest payments on",
-            ["Anniversary date (same day each month)", "Last day of each month"],
-            key="bullet_timing",
-        ).startswith("Anniversary")
+        t_col1, t_col2 = st.columns(2)
+        with t_col1:
+            default_first_rep = add_months(disbursement_date, 1).date()
+            first_rep_input = st.date_input("First Repayment Date", default_first_rep, key="bullet_first_rep")
+            first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
+        with t_col2:
+            use_anniversary = st.radio(
+                "Interest payments on",
+                ["Anniversary date (same day each month)", "Last day of each month"],
+                key="bullet_timing",
+            ).startswith("Anniversary")
         if not use_anniversary and not is_last_day_of_month(first_repayment_date):
             last_day = days_in_month(first_repayment_date.year, first_repayment_date.month)
             example = datetime(first_repayment_date.year, first_repayment_date.month, last_day).strftime("%d-%b-%Y")
@@ -1906,21 +1979,20 @@ def bullet_loan_ui():
     if details.get("first_repayment_date") is not None:
         st.markdown(f"**i. First interest payment:** {details['first_repayment_date'].strftime('%d-%b-%Y')}")
 
-    st.divider()
-    st.subheader("Repayment Schedule (Actual/360)")
-    st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
-    _schedule_export_downloads(df_schedule, file_stem="bullet_loan_schedule", key_prefix="dl_sched_bullet")
+    with st.expander("Repayment schedule and downloads", expanded=False):
+        st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True, height=240)
+        _schedule_export_downloads(df_schedule, file_stem="bullet_loan_schedule", key_prefix="dl_sched_bullet")
 
     loan_record = {**details, "loan_type": "bullet_loan", "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
     for k in ("disbursement_date", "end_date", "first_repayment_date"):
         if k in loan_record and loan_record[k] is not None and hasattr(loan_record[k], "isoformat"):
             loan_record[k] = loan_record[k].isoformat()
 
-    st.divider()
-    if st.button("Save Bullet Loan Record to System", type="primary", key="bullet_save"):
-        st.success(f"Bullet loan for ${net_proceeds_to_display:,.2f} has been prepared for database sync.")
-        with st.expander("Preview record (for DB insertion)"):
-            st.json(loan_record)
+    with st.expander("Save to system", expanded=False):
+        if st.button("Save Bullet Loan Record to System", type="primary", key="bullet_save"):
+            st.success(f"Bullet loan for ${net_proceeds_to_display:,.2f} has been prepared for database sync.")
+            with st.expander("Preview record (for DB insertion)"):
+                st.json(loan_record)
 
 
 def customised_repayments_ui():
@@ -1928,7 +2000,7 @@ def customised_repayments_ui():
     cfg = _get_system_config()
     flat_rate = glob.get("interest_method") == "Flat rate"
 
-    st.sidebar.header("Customised Repayments Parameters")
+    st.subheader("Customised Repayments Parameters")
     # Currency selection with system default + override
     accepted_currencies = cfg.get(
         "accepted_currencies", [cfg.get("base_currency", "USD")]
@@ -1939,58 +2011,64 @@ def customised_repayments_ui():
     )
     if default_ccy not in accepted_currencies:
         accepted_currencies = [default_ccy, *accepted_currencies]
-    currency = st.sidebar.selectbox(
-        "Currency",
-        accepted_currencies,
-        index=accepted_currencies.index(default_ccy)
-        if default_ccy in accepted_currencies
-        else 0,
-        key="cust_currency",
-    )
-    principal_input_choice = st.sidebar.radio(
-        "What are you entering?",
-        ["Net proceeds", "Principal (total loan amount)"],
-        key="cust_principal_input",
-    )
-    input_total_facility = principal_input_choice == "Principal (total loan amount)"
-    loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
-    loan_required = st.sidebar.number_input(
-        loan_input_label,
-        min_value=0.0,
-        value=1000.0,
-        step=100.0,
-        format="%.2f",
-        key="cust_principal",
-    )
-    loan_term = st.sidebar.number_input(
-        "Term (Months)",
-        min_value=1,
-        max_value=120,
-        value=12,
-        step=1,
-        key="cust_term",
-    )
-    disbursement_input = st.sidebar.date_input("Disbursement date", _get_system_date(), key="cust_start")
-    disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
-    irregular_calc = st.sidebar.checkbox("Irregular", value=False, key="cust_irregular", help="Allow editing dates and adding rows; schedule recomputes from table.")
-    use_anniversary = st.sidebar.radio(
-        "Repayments on",
-        ["Anniversary date (same day each month)", "Last day of each month"],
-        key="cust_timing",
-    ).startswith("Anniversary")
+    p_col1, p_col2 = st.columns(2)
+    with p_col1:
+        currency = st.selectbox(
+            "Currency",
+            accepted_currencies,
+            index=accepted_currencies.index(default_ccy)
+            if default_ccy in accepted_currencies
+            else 0,
+            key="cust_currency",
+        )
+        principal_input_choice = st.radio(
+            "What are you entering?",
+            ["Net proceeds", "Principal (total loan amount)"],
+            key="cust_principal_input",
+        )
+        input_total_facility = principal_input_choice == "Principal (total loan amount)"
+        loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
+        loan_required = st.number_input(
+            loan_input_label,
+            min_value=0.0,
+            value=1000.0,
+            step=100.0,
+            format="%.2f",
+            key="cust_principal",
+        )
+        loan_term = st.number_input(
+            "Term (Months)",
+            min_value=1,
+            max_value=120,
+            value=12,
+            step=1,
+            key="cust_term",
+        )
+    with p_col2:
+        disbursement_input = st.date_input("Disbursement date", _get_system_date(), key="cust_start")
+        disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
+        irregular_calc = st.checkbox("Irregular", value=False, key="cust_irregular", help="Allow editing dates and adding rows; schedule recomputes from table.")
+        use_anniversary = st.radio(
+            "Repayments on",
+            ["Anniversary date (same day each month)", "Last day of each month"],
+            key="cust_timing",
+        ).startswith("Anniversary")
     default_first_rep = add_months(disbursement_date, 1).date()
     if not use_anniversary:
         default_first_rep = default_first_rep.replace(day=days_in_month(default_first_rep.year, default_first_rep.month))
     existing_cust = st.session_state.get("customised_repayments_df")
     first_rep_calc = _first_repayment_from_customised_table(existing_cust) if existing_cust is not None and len(existing_cust) > 1 else None
     first_rep_display_calc = (first_rep_calc.date() if first_rep_calc else default_first_rep)
-    st.sidebar.date_input("First repayment date (from table)", first_rep_display_calc, key="cust_first_rep", disabled=True, help="From first row with non-zero payment.")
+    st.date_input("First repayment date (from table)", first_rep_display_calc, key="cust_first_rep", disabled=True, help="From first row with non-zero payment.")
     first_repayment_date = datetime.combine(first_rep_display_calc, datetime.min.time())
     dr = cfg.get("default_rates", {}).get("customised_repayments", {})
     rate_label = "Interest rate (% per annum)" if glob.get("rate_basis") == "Per annum" else "Interest rate (% per month)"
-    rate_pct = st.sidebar.number_input(rate_label, 0.0, 100.0, float(dr.get("interest_pct", 7.0)), step=0.1, key="cust_rate")
-    drawdown_fee_pct = st.sidebar.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="cust_drawdown") / 100.0
-    arrangement_fee_pct = st.sidebar.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct", 2.5)), step=0.1, key="cust_arrangement") / 100.0
+    f_col1, f_col2 = st.columns(2)
+    with f_col1:
+        rate_pct = st.number_input(rate_label, 0.0, 100.0, float(dr.get("interest_pct", 7.0)), step=0.1, key="cust_rate")
+        drawdown_fee_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="cust_drawdown") / 100.0
+    with f_col2:
+        arrangement_fee_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct", 2.5)), step=0.1, key="cust_arrangement") / 100.0
     total_fee = drawdown_fee_pct + arrangement_fee_pct
     if total_fee < 0:
         st.error("Total of Drawdown and Arrangement fees cannot be negative.")
@@ -2040,26 +2118,28 @@ def customised_repayments_ui():
     else:
         st.caption("Edit the **Payment** column; interest and balances update automatically. Save only when the loan is fully cleared (Total Outstanding = $0).")
     date_editable_calc = irregular_calc
-    edited = st.data_editor(
-        df,
-        column_config={
-            "Period": st.column_config.NumberColumn(disabled=True),
-            "Date": st.column_config.TextColumn(disabled=not date_editable_calc, help="Format: DD-Mon-YYYY" if date_editable_calc else None),
-            "Interest": st.column_config.NumberColumn(disabled=True, format="%.2f"),
-            "Principal": st.column_config.NumberColumn(disabled=True, format="%.2f"),
-            "Principal Balance": st.column_config.NumberColumn(disabled=True, format="%.2f"),
-            "Total Outstanding": st.column_config.NumberColumn(disabled=True, format="%.2f"),
-            "Payment": st.column_config.NumberColumn(format="%.2f"),
-        },
-        width="stretch",
-        hide_index=True,
-        key="cust_editor",
-    )
-    if not edited.equals(df):
-        schedule_dates_edit = parse_schedule_dates_from_table(edited, start_date=disbursement_date)
-        df_updated = recompute_customised_from_payments(edited, total_facility, schedule_dates_edit, annual_rate, flat_rate, disbursement_date)
-        st.session_state[session_key] = df_updated
-        st.rerun()
+    with st.expander("Repayment editor and schedule", expanded=False):
+        edited = st.data_editor(
+            df,
+            column_config={
+                "Period": st.column_config.NumberColumn(disabled=True),
+                "Date": st.column_config.TextColumn(disabled=not date_editable_calc, help="Format: DD-Mon-YYYY" if date_editable_calc else None),
+                "Interest": st.column_config.NumberColumn(disabled=True, format="%.2f"),
+                "Principal": st.column_config.NumberColumn(disabled=True, format="%.2f"),
+                "Principal Balance": st.column_config.NumberColumn(disabled=True, format="%.2f"),
+                "Total Outstanding": st.column_config.NumberColumn(disabled=True, format="%.2f"),
+                "Payment": st.column_config.NumberColumn(format="%.2f"),
+            },
+            width="stretch",
+            hide_index=True,
+            key="cust_editor",
+            height=260,
+        )
+        if not edited.equals(df):
+            schedule_dates_edit = parse_schedule_dates_from_table(edited, start_date=disbursement_date)
+            df_updated = recompute_customised_from_payments(edited, total_facility, schedule_dates_edit, annual_rate, flat_rate, disbursement_date)
+            st.session_state[session_key] = df_updated
+            st.rerun()
 
     final_total_outstanding = float(df.at[len(df) - 1, "Total Outstanding"]) if len(df) > 1 and "Total Outstanding" in df.columns else total_facility
     if abs(final_total_outstanding) < 0.01:
@@ -2068,23 +2148,24 @@ def customised_repayments_ui():
         st.warning(f"Total outstanding at end: **${final_total_outstanding:,.2f}**. Adjust payments so Total Outstanding is $0 to save.")
 
     can_save = abs(final_total_outstanding) < 0.01
-    if st.button("Save Customised Repayments to System", type="primary", key="cust_save", disabled=not can_save):
-        if can_save:
-            st.success(f"Customised loan for ${loan_required:,.2f} has been prepared for database sync.")
-            with st.expander("Preview record (for DB insertion)"):
-                st.json({
-                    "loan_type": "customised_repayments",
-                    "timestamp": datetime.now().isoformat(),
-                    "principal": float(total_facility),
-                    "disbursed_amount": float(loan_required),
-                    "term": int(loan_term),
-                    "annual_rate": float(annual_rate),
-                    "drawdown_fee": float(drawdown_fee_pct),
-                    "arrangement_fee": float(arrangement_fee_pct),
-                    "disbursement_date": disbursement_date.isoformat(),
-                    "currency": currency,
-                    "schedule": df.to_dict(orient="records"),
-                })
+    with st.expander("Save to system", expanded=False):
+        if st.button("Save Customised Repayments to System", type="primary", key="cust_save", disabled=not can_save):
+            if can_save:
+                st.success(f"Customised loan for ${loan_required:,.2f} has been prepared for database sync.")
+                with st.expander("Preview record (for DB insertion)"):
+                    st.json({
+                        "loan_type": "customised_repayments",
+                        "timestamp": datetime.now().isoformat(),
+                        "principal": float(total_facility),
+                        "disbursed_amount": float(loan_required),
+                        "term": int(loan_term),
+                        "annual_rate": float(annual_rate),
+                        "drawdown_fee": float(drawdown_fee_pct),
+                        "arrangement_fee": float(arrangement_fee_pct),
+                        "disbursement_date": disbursement_date.isoformat(),
+                        "currency": currency,
+                        "schedule": df.to_dict(orient="records"),
+                    })
 
 
 def _first_repayment_from_customised_table(df_cap: pd.DataFrame):
@@ -2262,27 +2343,19 @@ def capture_loan_ui():
         st.error(f"Loan management module is not available. ({_loan_management_error})")
         return
 
-    st.markdown(
-        "<div style='background-color: #1E3A8A; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.1rem;'>Capture Loan</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
-
     if "capture_loan_step" not in st.session_state:
         st.session_state["capture_loan_step"] = 0
     step = st.session_state["capture_loan_step"]
-    step_labels = ["Key loan details", "Build schedule", "Review & approve"]
-    progress = " · ".join([f"**{i + 1}. {step_labels[i]}**" if i == step else f"{i + 1}. {step_labels[i]}" for i in range(3)])
-    st.markdown(f"**Step {step + 1} of 3** — {progress}")
-    st.markdown("<br>", unsafe_allow_html=True)
+    if step > 1:
+        step = 1
+        st.session_state["capture_loan_step"] = 1
+    step_labels = ["Key loan details", "Build schedule"]
+    progress = " · ".join([f"**{i + 1}. {step_labels[i]}**" if i == step else f"{i + 1}. {step_labels[i]}" for i in range(2)])
+    st.caption(f"Step {step + 1} of 2 — {progress}")
 
     # -------- Window 1: Key loan details --------
     if step == 0:
-        st.markdown(
-            "<div style='border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; background: #f8fafc;'>"
-            "<strong style='font-size: 1rem;'>1. Key loan details</strong> — Select customer, product and optional RM/agent.</div>",
-            unsafe_allow_html=True,
-        )
+        st.caption("1. Key loan details — Select customer, product and optional RM/agent.")
         customers_list = list_customers(status="active") or []
         if not customers_list:
             st.warning("No active customers. Add a customer first under **Customers**.")
@@ -2351,7 +2424,6 @@ def capture_loan_ui():
                     st.session_state["capture_agent_id"] = agent_ids_cap[agent_labels_cap.index(sel_agent_label)] if sel_agent_label else None
                 else:
                     st.session_state["capture_agent_id"] = None
-        st.markdown("<br>", unsafe_allow_html=True)
         btn_clear, btn_next, _ = st.columns([1, 1, 2])
         with btn_clear:
             if st.button("Clear selection", key="cap_clear_t1"):
@@ -2366,11 +2438,7 @@ def capture_loan_ui():
 
     # -------- Window 2: Build schedule --------
     elif step == 1:
-        st.markdown(
-            "<div style='border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; background: #f8fafc;'>"
-            "<strong style='font-size: 1rem;'>2. Build schedule</strong> — Enter loan parameters and generate the repayment schedule.</div>",
-            unsafe_allow_html=True,
-        )
+        st.caption("2. Build schedule — Enter loan parameters and generate the repayment schedule.")
         cid = st.session_state.get("capture_customer_id")
         ltype = st.session_state.get("capture_loan_type")
         product_code = st.session_state.get("capture_product_code") or "—"
@@ -2414,7 +2482,7 @@ def capture_loan_ui():
                 if default_ccy not in accepted_currencies:
                     accepted_currencies = [default_ccy, *accepted_currencies]
 
-                cl_col1, cl_col2 = st.columns(2)
+                cl_col1, cl_col2, cl_col3 = st.columns(3)
                 with cl_col1:
                     currency = st.selectbox(
                         "Currency",
@@ -2428,6 +2496,7 @@ def capture_loan_ui():
                         "What are you entering?",
                         ["Net proceeds", "Principal (total loan amount)"],
                         key="cap_cl_principal_input",
+                        horizontal=True,
                     )
                     input_tf = principal_input == "Principal (total loan amount)"
                 with cl_col2:
@@ -2439,19 +2508,21 @@ def capture_loan_ui():
                         format="%.2f",
                         key="cap_cl_principal",
                     )
-                loan_term = st.number_input("Term (months)", 1, 60, 6, key="cap_cl_term")
-                disbursement_date = datetime.combine(
-                    st.date_input("Disbursement date", _get_system_date(), key="cap_cl_start"),
-                    datetime.min.time(),
-                )
-                default_first_rep = add_months(disbursement_date, 1).date()
-                first_rep_input = st.date_input("First Repayment Date", default_first_rep, key="cap_cl_first_rep")
-                first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
-                use_anniversary = st.radio(
-                    "Repayments on",
-                    ["Anniversary date (same day each month)", "Last day of each month"],
-                    key="cap_cl_timing",
-                ).startswith("Anniversary")
+                    loan_term = st.number_input("Term (months)", 1, 60, 6, key="cap_cl_term")
+                with cl_col3:
+                    disbursement_date = datetime.combine(
+                        st.date_input("Disbursement date", _get_system_date(), key="cap_cl_start"),
+                        datetime.min.time(),
+                    )
+                    default_first_rep = add_months(disbursement_date, 1).date()
+                    first_rep_input = st.date_input("First Repayment Date", default_first_rep, key="cap_cl_first_rep")
+                    first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
+                    use_anniversary = st.radio(
+                        "Repayments on",
+                        ["Anniversary date (same day each month)", "Last day of each month"],
+                        key="cap_cl_timing",
+                        horizontal=True,
+                    ).startswith("Anniversary")
                 cl_schedule_valid = use_anniversary or is_last_day_of_month(first_repayment_date)
                 if not cl_schedule_valid:
                     last_day = days_in_month(first_repayment_date.year, first_repayment_date.month)
@@ -2600,7 +2671,9 @@ def capture_loan_ui():
                     if st.button("Use this schedule", key="cap_cl_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
-                        st.success("Schedule saved. Click **Next** below to go to Review & approve.")
+                        st.session_state["capture_loan_step"] = 2
+                        st.session_state["capture_require_docs_prompt"] = True
+                        st.success("Schedule saved. Continue with document upload and approval.")
                         st.rerun()
 
             elif ltype == "Term Loan":
@@ -2622,7 +2695,31 @@ def capture_loan_ui():
                 if default_ccy not in accepted_currencies:
                     accepted_currencies = [default_ccy, *accepted_currencies]
 
-                tcol1, tcol2 = st.columns(2)
+                top_tog1, top_tog2, top_tog3 = st.columns(3)
+                with top_tog1:
+                    principal_input = st.radio(
+                        "What are you entering?",
+                        ["Net proceeds", "Principal (total loan amount)"],
+                        key="cap_term_principal_input",
+                        horizontal=True,
+                    )
+                    input_tf = principal_input == "Principal (total loan amount)"
+                with top_tog2:
+                    grace_type = st.radio(
+                        "Grace period",
+                        ["No grace period", "Principal moratorium", "Principal and interest moratorium"],
+                        key="cap_term_grace",
+                        horizontal=True,
+                    )
+                with top_tog3:
+                    use_anniversary = st.radio(
+                        "Repayments on",
+                        ["Anniversary date", "Last day of month"],
+                        key="cap_term_timing",
+                        horizontal=True,
+                    ).startswith("Anniversary")
+
+                tcol1, tcol2, tcol3 = st.columns(3)
                 with tcol1:
                     currency = st.selectbox(
                         "Currency",
@@ -2632,12 +2729,6 @@ def capture_loan_ui():
                         else 0,
                         key="cap_term_currency",
                     )
-                    principal_input = st.radio(
-                        "What are you entering?",
-                        ["Net proceeds", "Principal (total loan amount)"],
-                        key="cap_term_principal_input",
-                    )
-                    input_tf = principal_input == "Principal (total loan amount)"
                     loan_required = st.number_input(
                         "Loan amount",
                         min_value=0.0,
@@ -2646,20 +2737,13 @@ def capture_loan_ui():
                         format="%.2f",
                         key="cap_term_principal",
                     )
-                    loan_term = st.number_input("Term (months)", 1, 120, 24, key="cap_term_months")
                 with tcol2:
+                    loan_term = st.number_input("Term (months)", 1, 120, 24, key="cap_term_months")
                     disbursement_date = datetime.combine(
                         st.date_input("Disbursement date", _get_system_date(), key="cap_term_disb"),
                         datetime.min.time(),
                     )
-                    rate_pct = st.number_input(
-                        rate_label,
-                        0.0,
-                        100.0,
-                        float(dr.get("interest_pct") or 0.0),
-                        step=0.1,
-                        key="cap_term_rate",
-                    )
+                with tcol3:
                     drawdown_pct = (
                         st.number_input(
                             "Drawdown fee (%)",
@@ -2694,8 +2778,17 @@ def capture_loan_ui():
                         f"Selected product `{product_code}` must define product_config:{product_code}.penalty_interest_quotation."
                     )
                     st.stop()
-                tpen1, tpen2 = st.columns(2)
+                tpen1, tpen2, tpen3 = st.columns(3)
                 with tpen1:
+                    rate_pct = st.number_input(
+                        rate_label,
+                        0.0,
+                        100.0,
+                        float(dr.get("interest_pct") or 0.0),
+                        step=0.1,
+                        key="cap_term_rate",
+                    )
+                with tpen2:
                     penalty_label = (
                         "Penalty interest (% per annum)"
                         if product_rate_basis == "Per annum"
@@ -2710,11 +2803,11 @@ def capture_loan_ui():
                         key="cap_term_penalty",
                         help="Required. 0% is acceptable. Will be converted to a per-month penalty rate for EOD.",
                     )
-                with tpen2:
-                    grace_type = st.radio(
-                        "Grace period",
-                        ["No grace period", "Principal moratorium", "Principal and interest moratorium"],
-                        key="cap_term_grace",
+                with tpen3:
+                    default_first = add_months(disbursement_date, 1).date()
+                    first_rep = datetime.combine(
+                        st.date_input("First repayment date", default_first, key="cap_term_first_rep"),
+                        datetime.min.time(),
                     )
                 moratorium_months = 0
                 if "Principal moratorium" in grace_type:
@@ -2729,19 +2822,6 @@ def capture_loan_ui():
                         moratorium_months = st.number_input(
                             "Moratorium (months)", 1, 60, 3, key="cap_term_moratorium_pi"
                         )
-                df_col1, df_col2 = st.columns(2)
-                default_first = add_months(disbursement_date, 1).date()
-                with df_col1:
-                    first_rep = datetime.combine(
-                        st.date_input("First repayment date", default_first, key="cap_term_first_rep"),
-                        datetime.min.time(),
-                    )
-                with df_col2:
-                    use_anniversary = st.radio(
-                        "Repayments on",
-                        ["Anniversary date", "Last day of month"],
-                        key="cap_term_timing",
-                    ).startswith("Anniversary")
                 if not use_anniversary and not is_last_day_of_month(first_rep):
                     st.error("When repayments are on last day of month, first repayment date must be the last day of that month.")
                 else:
@@ -2764,7 +2844,9 @@ def capture_loan_ui():
                     if st.button("Use this schedule", key="cap_term_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
-                        st.success("Schedule saved. Click **Next** below to go to Review & approve.")
+                        st.session_state["capture_loan_step"] = 2
+                        st.session_state["capture_require_docs_prompt"] = True
+                        st.success("Schedule saved. Continue with document upload and approval.")
                         st.rerun()
 
             elif ltype == "Bullet Loan":
@@ -2784,7 +2866,7 @@ def capture_loan_ui():
                 default_ccy = loan_curr_cfg.get("bullet_loan", cfg.get("base_currency", "USD"))
                 if default_ccy not in accepted_currencies:
                     accepted_currencies = [default_ccy, *accepted_currencies]
-                bcol1, bcol2 = st.columns(2)
+                bcol1, bcol2, bcol3 = st.columns(3)
                 with bcol1:
                     currency = st.selectbox(
                         "Currency",
@@ -2798,11 +2880,13 @@ def capture_loan_ui():
                         "Bullet type",
                         ["Straight bullet (no interim payments)", "Bullet with interest payments"],
                         key="cap_bullet_type",
+                        horizontal=True,
                     )
                     principal_input = st.radio(
                         "What are you entering?",
                         ["Net proceeds", "Principal (total loan amount)"],
                         key="cap_bullet_principal_input",
+                        horizontal=True,
                     )
                     input_tf = principal_input == "Principal (total loan amount)"
                     loan_required = st.number_input(
@@ -2819,6 +2903,7 @@ def capture_loan_ui():
                         st.date_input("Disbursement date", _get_system_date(), key="cap_bullet_disb"),
                         datetime.min.time(),
                     )
+                with bcol3:
                     rate_pct = st.number_input(
                         rate_label,
                         0.0,
@@ -2861,7 +2946,7 @@ def capture_loan_ui():
                         f"Selected product `{product_code}` must define product_config:{product_code}.penalty_interest_quotation."
                     )
                     st.stop()
-                bpen1, _ = st.columns([1, 1])
+                bpen1, bpen2, _ = st.columns(3)
                 with bpen1:
                     penalty_label = (
                         "Penalty interest (% per annum)"
@@ -2884,9 +2969,15 @@ def capture_loan_ui():
                 first_rep = None
                 use_anniversary = True
                 if "with interest" in bullet_type:
-                    default_first = add_months(disbursement_date, 1).date()
-                    first_rep = datetime.combine(st.date_input("First repayment date", default_first, key="cap_bullet_first_rep"), datetime.min.time())
-                    use_anniversary = st.radio("Interest payments on", ["Anniversary date", "Last day of month"], key="cap_bullet_timing").startswith("Anniversary")
+                    with bpen2:
+                        default_first = add_months(disbursement_date, 1).date()
+                        first_rep = datetime.combine(st.date_input("First repayment date", default_first, key="cap_bullet_first_rep"), datetime.min.time())
+                        use_anniversary = st.radio(
+                            "Interest payments on",
+                            ["Anniversary date", "Last day of month"],
+                            key="cap_bullet_timing",
+                            horizontal=True,
+                        ).startswith("Anniversary")
                     if not use_anniversary and not is_last_day_of_month(first_rep):
                         st.error("First repayment date must be last day of month when using last day of month.")
                     else:
@@ -2904,7 +2995,9 @@ def capture_loan_ui():
                         if st.button("Use this schedule", key="cap_bullet_use"):
                             st.session_state["capture_loan_details"] = details
                             st.session_state["capture_loan_schedule_df"] = df_schedule
-                            st.success("Schedule saved. Click **Next** below to go to Review & approve.")
+                            st.session_state["capture_loan_step"] = 2
+                            st.session_state["capture_require_docs_prompt"] = True
+                            st.success("Schedule saved. Continue with document upload and approval.")
                             st.rerun()
                 else:
                     details, df_schedule = compute_bullet_schedule(
@@ -2921,7 +3014,9 @@ def capture_loan_ui():
                     if st.button("Use this schedule", key="cap_bullet_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
-                        st.success("Schedule saved. Click **Next** below to go to Review & approve.")
+                        st.session_state["capture_loan_step"] = 2
+                        st.session_state["capture_require_docs_prompt"] = True
+                        st.success("Schedule saved. Continue with document upload and approval.")
                         st.rerun()
 
             else:
@@ -2946,21 +3041,34 @@ def capture_loan_ui():
                 )
                 if default_ccy not in accepted_currencies:
                     accepted_currencies = [default_ccy, *accepted_currencies]
-                currency = st.selectbox(
-                    "Currency",
-                    accepted_currencies,
-                    index=accepted_currencies.index(default_ccy)
-                    if default_ccy in accepted_currencies
-                    else 0,
-                    key="cap_cust_currency",
-                )
-                principal_input = st.radio("What are you entering?", ["Net proceeds", "Principal (total loan amount)"], key="cap_cust_principal_input")
-                input_tf = principal_input == "Principal (total loan amount)"
-                loan_required = st.number_input("Loan amount", min_value=0.0, value=1000.0, step=100.0, format="%.2f", key="cap_cust_principal")
-                loan_term = st.number_input("Term (months)", 1, 120, 12, key="cap_cust_term")
-                disbursement_date = datetime.combine(st.date_input("Disbursement date", _get_system_date(), key="cap_cust_start"), datetime.min.time())
-                irregular = st.checkbox("Irregular", value=False, key="cap_cust_irregular", help="Allow editing dates and adding rows; schedule recomputes from table dates.")
-                use_anniversary = st.radio("Repayments on", ["Anniversary date", "Last day of month"], key="cap_cust_timing").startswith("Anniversary")
+                ccol1, ccol2, ccol3 = st.columns(3)
+                with ccol1:
+                    currency = st.selectbox(
+                        "Currency",
+                        accepted_currencies,
+                        index=accepted_currencies.index(default_ccy)
+                        if default_ccy in accepted_currencies
+                        else 0,
+                        key="cap_cust_currency",
+                    )
+                    principal_input = st.radio(
+                        "What are you entering?",
+                        ["Net proceeds", "Principal (total loan amount)"],
+                        key="cap_cust_principal_input",
+                        horizontal=True,
+                    )
+                    input_tf = principal_input == "Principal (total loan amount)"
+                    loan_required = st.number_input("Loan amount", min_value=0.0, value=1000.0, step=100.0, format="%.2f", key="cap_cust_principal")
+                with ccol2:
+                    loan_term = st.number_input("Term (months)", 1, 120, 12, key="cap_cust_term")
+                    disbursement_date = datetime.combine(st.date_input("Disbursement date", _get_system_date(), key="cap_cust_start"), datetime.min.time())
+                    irregular = st.checkbox("Irregular", value=False, key="cap_cust_irregular", help="Allow editing dates and adding rows; schedule recomputes from table dates.")
+                    use_anniversary = st.radio(
+                        "Repayments on",
+                        ["Anniversary date", "Last day of month"],
+                        key="cap_cust_timing",
+                        horizontal=True,
+                    ).startswith("Anniversary")
                 default_first = add_months(disbursement_date, 1).date()
                 if not use_anniversary:
                     default_first = default_first.replace(day=days_in_month(default_first.year, default_first.month))
@@ -2969,16 +3077,17 @@ def capture_loan_ui():
                 first_rep_display = (first_rep_derived.date() if first_rep_derived is not None else default_first)
                 first_rep = datetime.combine(first_rep_display, datetime.min.time())
 
-                rate_pct = st.number_input(
-                    rate_label,
-                    0.0,
-                    100.0,
-                    float(dr.get("interest_pct")),
-                    step=0.1,
-                    key="cap_cust_rate",
-                )
-                drawdown_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct")), step=0.1, key="cap_cust_drawdown") / 100.0
-                arrangement_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct")), step=0.1, key="cap_cust_arrangement") / 100.0
+                with ccol3:
+                    rate_pct = st.number_input(
+                        rate_label,
+                        0.0,
+                        100.0,
+                        float(dr.get("interest_pct")),
+                        step=0.1,
+                        key="cap_cust_rate",
+                    )
+                    drawdown_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct")), step=0.1, key="cap_cust_drawdown") / 100.0
+                    arrangement_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct")), step=0.1, key="cap_cust_arrangement") / 100.0
 
                 def_penalty = (product_cfg.get("penalty_rates") or {}).get("customised_repayments")
                 if def_penalty is None:
@@ -2999,15 +3108,17 @@ def capture_loan_ui():
                     if product_rate_basis == "Per annum"
                     else "Penalty interest (% per month)"
                 )
-                penalty_pct = st.number_input(
-                    penalty_label,
-                    0.0,
-                    100.0,
-                    float(def_penalty),
-                    step=0.5,
-                    key="cap_cust_penalty",
-                    help="Required. 0% is acceptable. Converted to a per-month penalty rate for EOD.",
-                )
+                cpen1, cpen2, cpen3 = st.columns(3)
+                with cpen1:
+                    penalty_pct = st.number_input(
+                        penalty_label,
+                        0.0,
+                        100.0,
+                        float(def_penalty),
+                        step=0.5,
+                        key="cap_cust_penalty",
+                        help="Required. 0% is acceptable. Converted to a per-month penalty rate for EOD.",
+                    )
                 penalty_pct_monthly = _pct_to_monthly(penalty_pct, product_rate_basis)
                 if penalty_pct_monthly is None:
                     st.error("Invalid penalty interest for the selected product rate basis.")
@@ -3104,32 +3215,175 @@ def capture_loan_ui():
                     if st.button("Use this schedule", key="cap_cust_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_cap
-                        st.success("Schedule saved. Click **Next** below to go to Review & approve.")
+                        st.session_state["capture_loan_step"] = 2
+                        st.session_state["capture_require_docs_prompt"] = True
+                        st.success("Schedule saved. Continue with document upload and approval.")
                         st.rerun()
                 else:
                     st.warning("Clear the schedule (Total Outstanding = $0) before using it.")
         st.markdown("<br>", unsafe_allow_html=True)
+        st.subheader("Loan Documents")
+        st.write("Upload supporting loan documents before saving.")
+        if "loan_docs_staged" not in st.session_state:
+            st.session_state["loan_docs_staged"] = []
+        staged_loan_docs = st.session_state["loan_docs_staged"]
+        if _documents_available:
+            doc_cats = list_document_categories(active_only=True)
+            LOAN_DOC_TYPES = {
+                "Signed Loan Agreement",
+                "Facility Letter",
+                "Term Sheet",
+                "Business Plan",
+                "Application Form",
+                "Application Letter",
+                "Purchase Orders",
+                "Offtake Agreement",
+                "Supply Agreement",
+                "Other",
+            }
+            name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in LOAN_DOC_TYPES}
+            if not name_to_cat:
+                st.info("No matching loan document categories configured.")
+            else:
+                dcol1, dcol2, dcol3 = st.columns(3)
+                with dcol1:
+                    doc_type = st.selectbox(
+                        "Doc type",
+                        sorted(name_to_cat.keys()),
+                        key="loan_doc_type",
+                    )
+                    other_label = ""
+                    if doc_type == "Other":
+                        other_label = st.text_input(
+                            "If Other, describe the document",
+                            key="loan_doc_other_label",
+                        )
+                with dcol2:
+                    f = st.file_uploader("Choose file", type=["pdf", "png", "jpg", "jpeg"], key="loan_doc_file")
+                with dcol3:
+                    notes = st.text_input("Notes (optional)", key="loan_doc_notes")
+                if st.button("Save document to list", key="loan_doc_add") and f is not None:
+                    cat = name_to_cat[doc_type]
+                    label = other_label.strip() if doc_type == "Other" else notes.strip()
+                    staged_loan_docs.append(
+                        {
+                            "category_id": cat["id"],
+                            "category_name": doc_type,
+                            "file": f,
+                            "notes": label or "",
+                        }
+                    )
+                    st.session_state["loan_docs_staged"] = staged_loan_docs
+                    st.success(f"Staged {f.name} as {doc_type}.")
+            if staged_loan_docs:
+                st.markdown("**Staged documents:**")
+                for idx, row in enumerate(staged_loan_docs, start=1):
+                    cat_name = row.get("category_name") or "Document"
+                    st.write(f"{idx}. {row['file'].name} · {cat_name} ({row.get('notes') or 'no notes'})")
+        else:
+            st.info("Document module is unavailable.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.subheader("Approval routing")
+        if _users_for_rm_available:
+            approver_users = list_users_for_selection() or []
+            if approver_users:
+                approver_opts = [(u["id"], f"{u['full_name']} ({u['email']})") for u in approver_users]
+                approver_labels = [x[1] for x in approver_opts]
+                default_approver_idx = 0
+                prev_approver_id = st.session_state.get("capture_approval_assigned_to")
+                if prev_approver_id is not None:
+                    try:
+                        default_approver_idx = next(
+                            i for i, (uid, _lbl) in enumerate(approver_opts) if str(uid) == str(prev_approver_id)
+                        )
+                    except Exception:
+                        default_approver_idx = 0
+                approver_label = st.selectbox(
+                    "Assign approver",
+                    approver_labels,
+                    index=default_approver_idx,
+                    key="cap_assigned_approver_select_stage2",
+                )
+                assigned_approver_id = approver_opts[approver_labels.index(approver_label)][0] if approver_label else None
+                st.session_state["capture_approval_assigned_to"] = assigned_approver_id
+                st.caption("Captured in draft and used in Stage 3 approval save.")
+
         has_schedule = st.session_state.get("capture_loan_details") is not None and st.session_state.get("capture_loan_schedule_df") is not None
         if not has_schedule:
-            st.caption("Click **Use this schedule** above, then **Next** to go to Review & approve.")
-        btn_b, btn_n, _ = st.columns([1, 1, 2])
+            st.caption("Click **Use this schedule** above, then **Send for approval**.")
+        else:
+            st.caption("Draft is in session. Send for approval to persist it to the approval queue.")
+        btn_b, btn_submit, _ = st.columns([1, 1, 2])
         with btn_b:
             if st.button("← Back", key="cap_back_1"):
                 st.session_state["capture_loan_step"] = 0
                 st.rerun()
-        with btn_n:
-            if st.button("Next →", type="primary", key="cap_next_1", disabled=not has_schedule):
-                if has_schedule:
-                    st.session_state["capture_loan_step"] = 2
-                    st.rerun()
+        with btn_submit:
+            if st.button("Send for approval", type="primary", key="cap_send_for_approval", disabled=not has_schedule):
+                try:
+                    details = st.session_state.get("capture_loan_details") or {}
+                    df_schedule = st.session_state.get("capture_loan_schedule_df")
+                    cid = st.session_state.get("capture_customer_id")
+                    ltype = st.session_state.get("capture_loan_type")
+                    pcode = st.session_state.get("capture_product_code")
+                    if not details or df_schedule is None or not cid or not ltype:
+                        st.error("Draft is incomplete. Please rebuild schedule first.")
+                    else:
+                        base_meta = details.get("metadata") or {}
+                        assigned_approver_id = st.session_state.get("capture_approval_assigned_to")
+                        if assigned_approver_id is not None:
+                            base_meta["approval_assigned_to_user_id"] = str(assigned_approver_id)
+                        details_to_queue = {
+                            **details,
+                            "agent_id": st.session_state.get("capture_agent_id"),
+                            "relationship_manager_id": st.session_state.get("capture_relationship_manager_id"),
+                            "metadata": base_meta,
+                            "status": "pending_approval",
+                        }
+                        draft_id = save_loan_approval_draft(
+                            int(cid),
+                            str(ltype),
+                            details_to_queue,
+                            df_schedule,
+                            product_code=pcode,
+                            assigned_approver_id=str(assigned_approver_id) if assigned_approver_id is not None else None,
+                            created_by="capture_ui",
+                        )
+                        doc_count = 0
+                        staged_loan_docs = st.session_state.get("loan_docs_staged") or []
+                        if _documents_available and staged_loan_docs:
+                            for row in staged_loan_docs:
+                                cat_id = row["category_id"]
+                                f = row["file"]
+                                notes = row.get("notes") or ""
+                                try:
+                                    upload_document(
+                                        "loan_approval_draft",
+                                        int(draft_id),
+                                        int(cat_id),
+                                        f.name,
+                                        f.type,
+                                        f.size,
+                                        f.getvalue(),
+                                        uploaded_by="System User",
+                                        notes=notes,
+                                    )
+                                    doc_count += 1
+                                except Exception as de:
+                                    st.error(f"Failed to attach {f.name}: {de}")
+                        st.success(f"Draft sent for approval. Draft ID: {draft_id}")
+                        for k in list(st.session_state.keys()):
+                            if k.startswith("capture_"):
+                                st.session_state.pop(k, None)
+                        st.session_state["loan_docs_staged"] = []
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Could not send draft for approval: {e}")
 
-    # -------- Window 3: Review & approve --------
+    # -------- Window 3: View, approve, rework, dismiss --------
     elif step == 2:
-        st.markdown(
-            "<div style='border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; background: #f8fafc;'>"
-            "<strong style='font-size: 1rem;'>3. Review & approve</strong> — Check summary and schedule, then approve and save to database.</div>",
-            unsafe_allow_html=True,
-        )
+        st.caption("3. View, approve, save & send back for rework, or dismiss.")
         # Show save result from previous run (success or failure)
         save_result = st.session_state.pop("capture_last_save_result", None)
         if save_result is not None:
@@ -3143,6 +3397,10 @@ def capture_loan_ui():
         df_schedule = st.session_state.get("capture_loan_schedule_df")
         cid = st.session_state.get("capture_customer_id")
         ltype = st.session_state.get("capture_loan_type")
+        if st.session_state.pop("capture_require_docs_prompt", False):
+            st.info("Please upload supporting loan documents before approval.")
+        if st.session_state.get("capture_rework_note"):
+            st.warning(str(st.session_state.pop("capture_rework_note")))
         if not details or df_schedule is None or not cid or not ltype:
             if save_result is None:
                 st.info("Complete **Step 1 — Key loan details** and **Step 2 — Build schedule** first.")
@@ -3158,7 +3416,8 @@ def capture_loan_ui():
                     st.session_state["capture_loan_step"] = 1
                     st.rerun()
         else:
-            st.subheader("Loan summary")
+            st.subheader("View")
+            st.markdown("**Loan summary**")
             sum_col1, sum_col2, sum_col3 = st.columns(3)
             with sum_col1:
                 st.markdown(f"**Customer:** {get_display_name(cid)} (ID {cid})")
@@ -3221,7 +3480,7 @@ def capture_loan_ui():
                 st.markdown(f"**Total Fees:** {fees:,.2f}")
             st.divider()
             
-            st.subheader("Journal Preview (On Approval)")
+            st.markdown("**Journal preview (on approval)**")
             from accounting_service import AccountingService
             from loan_management import build_loan_approval_journal_payload
             try:
@@ -3244,83 +3503,43 @@ def capture_loan_ui():
                 st.warning(f"Could not preview journals: {e}")
             st.divider()
 
-            st.subheader("Schedule")
+            st.markdown("**Schedule**")
             st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
             _schedule_export_downloads(
                 df_schedule, file_stem="loan_schedule_review", key_prefix="dl_cap_sched_review"
             )
             st.divider()
             
-            st.subheader("Loan Documents")
-            st.write("Upload supporting loan documents before saving.")
-            if "loan_docs_staged" not in st.session_state:
-                st.session_state["loan_docs_staged"] = []
-            staged_loan_docs = st.session_state["loan_docs_staged"]
-            if _documents_available:
-                doc_cats = list_document_categories(active_only=True)
-                # Allowed loan document names (must exist as categories)
-                LOAN_DOC_TYPES = {
-                    "Signed Loan Agreement",
-                    "Facility Letter",
-                    "Term Sheet",
-                    "Business Plan",
-                    "Application Form",
-                    "Application Letter",
-                    "Purchase Orders",
-                    "Offtake Agreement",
-                    "Supply Agreement",
-                    "Other",
-                }
-                name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in LOAN_DOC_TYPES}
-                if not name_to_cat:
-                    st.info("No matching loan document categories configured.")
+            st.subheader("Documents")
+            view_docs = st.checkbox("View documents", value=False, key="cap_view_docs_toggle")
+            if view_docs:
+                staged_loan_docs = st.session_state.get("loan_docs_staged") or []
+                if not staged_loan_docs:
+                    st.info("No staged documents available from Stage 2.")
                 else:
-                    doc_type = st.selectbox(
-                        "Document type",
-                        sorted(name_to_cat.keys()),
-                        key="loan_doc_type",
-                    )
-                    other_label = ""
-                    if doc_type == "Other":
-                        other_label = st.text_input(
-                            "If Other, describe the document",
-                            key="loan_doc_other_label",
-                        )
-                    f = st.file_uploader(
-                        "Choose file",
-                        type=["pdf", "png", "jpg", "jpeg"],
-                        key="loan_doc_file",
-                    )
-                    notes = st.text_input("Notes (optional)", key="loan_doc_notes")
-                    if st.button("Save document to list", key="loan_doc_add") and f is not None:
-                        cat = name_to_cat[doc_type]
-                        label = other_label.strip() if doc_type == "Other" else notes.strip()
-                        staged_loan_docs.append(
-                            {
-                                "category_id": cat["id"],
-                                "file": f,
-                                "notes": label or "",
-                            }
-                        )
-                        st.session_state["loan_docs_staged"] = staged_loan_docs
-                        st.success(f"Staged {f.name} as {doc_type}.")
-                if staged_loan_docs:
-                    st.markdown("**Staged documents:**")
+                    st.markdown("**Staged documents (view only):**")
                     for idx, row in enumerate(staged_loan_docs, start=1):
-                        st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'no notes'})")
-            else:
-                st.info("Document module is unavailable.")
+                        cat_name = row.get("category_name") or "Document"
+                        st.write(f"{idx}. {row['file'].name} · {cat_name} ({row.get('notes') or 'no notes'})")
             
             st.divider()
-            st.subheader("Approve & save")
-            col_save, col_cancel, col_back = st.columns([2, 1, 1])
+            st.subheader("Decision")
+            assigned_approver_id = st.session_state.get("capture_approval_assigned_to")
+            if assigned_approver_id is not None:
+                st.caption(f"Approver assigned in Stage 2: user ID {assigned_approver_id}")
+
+            col_save, col_rework, col_dismiss, col_back = st.columns([2, 2, 1, 1])
             with col_save:
                 if st.button("Approve & save to database", type="primary", key="cap_save_btn"):
                     try:
+                        base_meta = details.get("metadata") or {}
+                        if assigned_approver_id is not None:
+                            base_meta["approval_assigned_to_user_id"] = str(assigned_approver_id)
                         details_with_agent = {
                             **details,
                             "agent_id": st.session_state.get("capture_agent_id"),
                             "relationship_manager_id": st.session_state.get("capture_relationship_manager_id"),
+                            "metadata": base_meta,
                         }
                         loan_id = save_loan_to_db(cid, ltype, details_with_agent, df_schedule, product_code=st.session_state.get("capture_product_code"))
                         
@@ -3355,16 +3574,157 @@ def capture_loan_ui():
                     except Exception as e:
                         st.session_state["capture_last_save_result"] = {"success": False, "error": str(e)}
                         st.rerun()
-            with col_cancel:
-                if st.button("Cancel / Clear and start over", key="cap_cancel_t3"):
+            with col_rework:
+                if st.button("Save and send back for rework", key="cap_rework_t3"):
+                    assignee_txt = f" (assigned to user ID {assigned_approver_id})" if assigned_approver_id is not None else ""
+                    st.session_state["capture_rework_note"] = f"Loan draft sent back for rework{assignee_txt}."
+                    st.session_state["capture_loan_step"] = 1
+                    st.rerun()
+            with col_dismiss:
+                if st.button("Dismiss", key="cap_dismiss_t3"):
                     for k in list(st.session_state.keys()):
                         if k.startswith("capture_"):
                             st.session_state.pop(k, None)
+                    st.session_state["loan_docs_staged"] = []
+                    st.success("Loan draft dismissed and removed from the capture flow.")
                     st.rerun()
             with col_back:
                 if st.button("← Back", key="cap_back_2"):
                     st.session_state["capture_loan_step"] = 1
                     st.rerun()
+
+def approve_loans_ui():
+    """Approval inbox for loan drafts submitted from capture Stage 2."""
+    st.subheader("Approve loans")
+    search_col1, search_col2, search_col3 = st.columns(3)
+    with search_col1:
+        search_txt = st.text_input("Search", placeholder="Draft ID / Customer ID / Product / Loan type", key="approve_loan_search")
+    with search_col2:
+        show_status = st.selectbox("Status", ["PENDING", "REWORK", "APPROVED", "DISMISSED"], index=0, key="approve_loan_status")
+    with search_col3:
+        assigned_only = st.checkbox("Assigned to me only", value=False, key="approve_assigned_only")
+
+    assigned_filter = None
+    if assigned_only and _users_for_rm_available:
+        users = list_users_for_selection() or []
+        current_uid = st.session_state.get("user_id")
+        if current_uid is not None:
+            try:
+                assigned_filter = int(current_uid)
+            except Exception:
+                assigned_filter = None
+
+    drafts = list_loan_approval_drafts(
+        status=show_status,
+        search=search_txt.strip() or None,
+        assigned_approver_id=assigned_filter,
+        limit=300,
+    )
+    if not drafts:
+        st.info("No loan drafts found for the selected filters.")
+        return
+
+    df = pd.DataFrame(drafts)
+    show_cols = [c for c in ["id", "customer_id", "loan_type", "product_code", "assigned_approver_id", "status", "submitted_at", "loan_id"] if c in df.columns]
+    st.dataframe(df[show_cols], width="stretch", hide_index=True, height=230)
+
+    sel_col1, sel_col2 = st.columns(2)
+    with sel_col1:
+        draft_options = [int(r["id"]) for r in drafts]
+        selected_draft_id = st.selectbox("Select draft", draft_options, key="approve_selected_draft")
+    with sel_col2:
+        manual_draft_id = st.number_input("Or load draft ID", min_value=1, step=1, value=int(selected_draft_id), key="approve_manual_draft_id")
+
+    load_id = int(manual_draft_id) if manual_draft_id else int(selected_draft_id)
+    draft = get_loan_approval_draft(load_id)
+    if not draft:
+        st.warning(f"Draft #{load_id} not found.")
+        return
+
+    details = draft.get("details_json") or {}
+    schedule_rows = draft.get("schedule_json") or []
+    df_schedule = pd.DataFrame(schedule_rows) if schedule_rows else pd.DataFrame()
+    customer_name = get_display_name(int(draft["customer_id"])) if _customers_available else f"Customer #{draft['customer_id']}"
+
+    st.markdown("**Draft details**")
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        st.write(f"Draft ID: {draft.get('id')}")
+        st.write(f"Customer: {customer_name} (ID {draft.get('customer_id')})")
+        st.write(f"Loan type: {draft.get('loan_type')}")
+    with d2:
+        st.write(f"Product: {draft.get('product_code') or '—'}")
+        st.write(f"Principal: {float(details.get('principal') or 0):,.2f}")
+        st.write(f"Disbursed: {float(details.get('disbursed_amount') or 0):,.2f}")
+    with d3:
+        st.write(f"Status: {draft.get('status')}")
+        st.write(f"Assigned approver: {draft.get('assigned_approver_id') or '—'}")
+        st.write(f"Submitted: {draft.get('submitted_at')}")
+
+    with st.expander("View documents", expanded=False):
+        if _documents_available:
+            docs = list_documents(entity_type="loan_approval_draft", entity_id=int(load_id))
+            if not docs:
+                st.info("No documents attached to this draft.")
+            else:
+                doc_df = pd.DataFrame(docs)
+                show_doc_cols = [c for c in ["id", "category_name", "file_name", "file_size", "uploaded_by", "uploaded_at", "notes"] if c in doc_df.columns]
+                st.dataframe(doc_df[show_doc_cols], width="stretch", hide_index=True)
+        else:
+            st.info("Document module is unavailable.")
+
+    with st.expander("Schedule", expanded=False):
+        if df_schedule.empty:
+            st.info("No schedule found for this draft.")
+        else:
+            st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
+
+    note = st.text_input("Reviewer note (optional)", key="approve_reviewer_note")
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        if st.button("Approve and create loan", type="primary", key="approve_create_loan_btn"):
+            try:
+                loan_id = approve_loan_approval_draft(int(load_id), approved_by="approver_ui")
+                # Copy draft documents to final loan entity.
+                doc_count = 0
+                if _documents_available:
+                    docs = list_documents(entity_type="loan_approval_draft", entity_id=int(load_id))
+                    for row in docs:
+                        full = get_document(int(row["id"]))
+                        if not full:
+                            continue
+                        upload_document(
+                            "loan",
+                            int(loan_id),
+                            int(full["category_id"]),
+                            str(full["file_name"]),
+                            str(full["file_type"]),
+                            int(full["file_size"]),
+                            full["file_content"],
+                            uploaded_by="System User",
+                            notes=str(full.get("notes") or ""),
+                        )
+                        doc_count += 1
+                st.success(f"Draft approved. Loan #{loan_id} created. {doc_count} document(s) copied.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not approve draft: {e}")
+    with a2:
+        if st.button("Send back for rework", key="approve_send_back_btn"):
+            try:
+                send_back_loan_approval_draft(int(load_id), note=note or "", actor="approver_ui")
+                st.success("Draft sent back for rework.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not send back draft: {e}")
+    with a3:
+        if st.button("Dismiss draft", key="approve_dismiss_btn"):
+            try:
+                dismiss_loan_approval_draft(int(load_id), note=note or "", actor="approver_ui")
+                st.success("Draft dismissed.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not dismiss draft: {e}")
 
 
 def customers_ui():
@@ -3826,17 +4186,46 @@ def customers_ui():
             except Exception as e:
                 st.error(f"Could not load customers: {e}")
                 customers_list = []
+            # Compact actions: keep toggles at top; only then ask for customer selection.
+            action_col1, action_col2 = st.columns(2)
+            with action_col1:
+                show_status_tools = st.checkbox(
+                    "Change customer status",
+                    value=False,
+                    key="cust_show_status_tools_top",
+                )
+            with action_col2:
+                show_contact_docs_tools = st.checkbox(
+                    "Contact person documents",
+                    value=False,
+                    key="cust_show_contact_docs_tools_top",
+                )
             if not customers_list:
                 st.info("No customers found. Add one in the tabs above.")
-            else:
-                df = pd.DataFrame(customers_list)
-                df["display_name"] = df["id"].apply(lambda i: get_display_name(i))
-                st.dataframe(df[["id", "type", "status", "display_name", "created_at"]], width="stretch", hide_index=True)
-            st.divider()
-            view_id = st.number_input("View customer by ID", min_value=1, value=customers_list[0]["id"] if customers_list else 1, step=1, key="cust_view_id")
-            if st.button("Load customer", key="cust_load"):
-                st.session_state["cust_loaded_id"] = int(view_id)
-            loaded_id = st.session_state.get("cust_loaded_id")
+            loaded_id = None
+            if (show_status_tools or show_contact_docs_tools) and customers_list:
+                cust_options = [(int(c["id"]), get_display_name(int(c["id"])) or f"Customer #{c['id']}") for c in customers_list]
+                labels = [f"{name} (ID {cid})" for cid, name in cust_options]
+                sel_idx = 0
+                if st.session_state.get("cust_loaded_id") is not None:
+                    try:
+                        prev_id = int(st.session_state["cust_loaded_id"])
+                        sel_idx = next(i for i, (cid, _n) in enumerate(cust_options) if cid == prev_id)
+                    except Exception:
+                        sel_idx = 0
+                st.divider()
+                selected_label = st.selectbox(
+                    "Select customer for selected action(s)",
+                    labels,
+                    index=sel_idx,
+                    key="cust_action_select",
+                )
+                loaded_id = cust_options[labels.index(selected_label)][0] if selected_label else None
+                st.session_state["cust_loaded_id"] = loaded_id
+            elif not (show_status_tools or show_contact_docs_tools):
+                st.caption("Enable an action above to select and manage a customer.")
+                st.session_state.pop("cust_loaded_id", None)
+
             if loaded_id is not None:
                 rec = get_customer(loaded_id)
                 if not rec:
@@ -3844,17 +4233,81 @@ def customers_ui():
                     st.session_state.pop("cust_loaded_id", None)
                 else:
                     st.subheader(f"Customer #{loaded_id}")
-                    st.json(rec)
-                    current_status = rec.get("status", "active")
-                    new_active = st.radio("Set status", ["active", "inactive"], index=0 if current_status == "active" else 1, key="cust_set_status")
-                    if st.button("Update status", key="cust_update_status"):
-                        set_active(loaded_id, new_active == "active")
-                        st.success(f"Status set to **{new_active}**.")
-                        st.session_state["cust_loaded_id"] = loaded_id
-                        st.rerun()
+                    # Human-readable profile view (avoid dumping raw JSON/object repr in UI).
+                    ctype = rec.get("type") or "—"
+                    cstatus = rec.get("status") or "—"
+                    sector_id = rec.get("sector_id")
+                    subsector_id = rec.get("subsector_id")
+                    if ctype == "individual":
+                        ind = rec.get("individual") or {}
+                        cname = ind.get("name") or "—"
+                        st.markdown(f"**Name:** {cname}")
+                        st.caption(
+                            f"Type: {ctype} · Status: {cstatus} · "
+                            f"Sector: {sector_id if sector_id is not None else '—'} · "
+                            f"Subsector: {subsector_id if subsector_id is not None else '—'}"
+                        )
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.write(f"**National ID:** {ind.get('national_id') or '—'}")
+                            st.write(f"**Phone 1:** {ind.get('phone1') or '—'}")
+                            st.write(f"**Email 1:** {ind.get('email1') or '—'}")
+                        with c2:
+                            st.write(f"**Employer details:** {ind.get('employer_details') or '—'}")
+                            st.write(f"**Phone 2:** {ind.get('phone2') or '—'}")
+                            st.write(f"**Email 2:** {ind.get('email2') or '—'}")
+                    else:
+                        corp = rec.get("corporate") or {}
+                        cname = corp.get("trading_name") or corp.get("legal_name") or "—"
+                        st.markdown(f"**Corporate name:** {cname}")
+                        st.caption(
+                            f"Type: {ctype} · Status: {cstatus} · "
+                            f"Sector: {sector_id if sector_id is not None else '—'} · "
+                            f"Subsector: {subsector_id if subsector_id is not None else '—'}"
+                        )
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.write(f"**Legal name:** {corp.get('legal_name') or '—'}")
+                            st.write(f"**Registration number:** {corp.get('reg_number') or '—'}")
+                        with c2:
+                            st.write(f"**Trading name:** {corp.get('trading_name') or '—'}")
+                            st.write(f"**TIN:** {corp.get('tin') or '—'}")
+
+                    addrs = rec.get("addresses") or []
+                    if addrs:
+                        st.markdown("**Addresses**")
+                        for i, a in enumerate(addrs, start=1):
+                            line = ", ".join(
+                                str(x).strip()
+                                for x in [
+                                    a.get("line1"),
+                                    a.get("line2"),
+                                    a.get("city"),
+                                    a.get("region"),
+                                    a.get("postal_code"),
+                                    a.get("country"),
+                                ]
+                                if x
+                            )
+                            atype = a.get("address_type") or f"Address {i}"
+                            st.write(f"- {atype}: {line or '—'}")
+
+                    if show_status_tools:
+                        current_status = rec.get("status", "active")
+                        new_active = st.radio(
+                            "Set status",
+                            ["active", "inactive"],
+                            index=0 if current_status == "active" else 1,
+                            key="cust_set_status",
+                        )
+                        if st.button("Update status", key="cust_update_status"):
+                            set_active(loaded_id, new_active == "active")
+                            st.success(f"Status set to **{new_active}**.")
+                            st.session_state["cust_loaded_id"] = loaded_id
+                            st.rerun()
 
                     # Direct document upload to corporate sub-entities (separate buckets/IDs).
-                    if rec.get("type") == "corporate" and _documents_available:
+                    if show_contact_docs_tools and rec.get("type") == "corporate" and _documents_available:
                         doc_cats = list_document_categories(active_only=True) or []
                         # Contact person + directors share Individual KYC types plus Other.
                         name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
@@ -3959,6 +4412,16 @@ def customers_ui():
                                     )
                                     st.success("Director document uploaded.")
 
+            st.divider()
+            if customers_list:
+                df = pd.DataFrame(customers_list)
+                df["display_name"] = df["id"].apply(lambda i: get_display_name(i))
+                st.dataframe(
+                    df[["id", "type", "status", "display_name", "created_at"]],
+                    width="stretch",
+                    hide_index=True,
+                )
+
     with tab4:
         st.subheader("Agents")
         col_main4, _ = st.columns([1, 1])
@@ -3979,185 +4442,205 @@ def customers_ui():
                     cols_show = [c for c in cols_show if c in df_agents.columns]
                     st.dataframe(df_agents[cols_show], width="stretch", hide_index=True)
                 else:
-                    st.info("No agents found. Add one below.")
+                    st.info("No agents found.")
                 st.divider()
-                st.subheader("Add agent")
-                with st.form("add_agent_form", clear_on_submit=True):
-                    col_a1, col_a2 = st.columns(2)
-                    with col_a1:
-                        aname = st.text_input("Agent name *", key="agent_name")
-                        atype_label = st.selectbox("Agent type", ["Individual", "Corporate"], key="agent_type")
-                        aid_number = st.text_input("ID number", placeholder="e.g. 111111111x11", key="agent_id_number")
-                        aaddr1 = st.text_input("Address line 1", key="agent_addr1")
-                        acity = st.text_input("City", key="agent_city")
-                        aphone1 = st.text_input("Phone 1", key="agent_phone1")
-                        aemail = st.text_input("Email", key="agent_email")
-                    with col_a2:
-                        aaddr2 = st.text_input("Address line 2", key="agent_addr2")
-                        acountry = st.text_input("Country", key="agent_country")
-                        aphone2 = st.text_input("Phone 2", key="agent_phone2")
-                    acommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, format="%.2f", key="agent_commission")
-                    atin = st.text_input("TIN number", key="agent_tin")
-                    atax_expiry = st.date_input("Tax clearance expiry", value=None, key="agent_tax_expiry")
-                    # Agent documents (optional)
-                    if "agent_docs_staged" not in st.session_state:
-                        st.session_state["agent_docs_staged"] = []
-                    staged_agent_docs = st.session_state["agent_docs_staged"]
-                    with st.expander("Agent documents (optional)"):
-                        if _documents_available:
-                            atype_internal = "individual" if atype_label.lower().startswith("individual") else "corporate"
-                            doc_cats = list_document_categories(active_only=True)
-                            allowed = AGENT_INDIVIDUAL_DOC_TYPES if atype_internal == "individual" else AGENT_CORPORATE_DOC_TYPES
-                            name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in allowed}
-                            if not name_to_cat:
-                                st.info("No matching document categories configured for agents.")
-                            else:
-                                doc_type = st.selectbox(
-                                    "Document type",
-                                    sorted(name_to_cat.keys()),
-                                    key="agent_doc_type",
-                                )
-                                other_label = ""
-                                if doc_type == "Other":
-                                    other_label = st.text_input(
-                                        "If Other, describe the document",
-                                        key="agent_doc_other_label",
-                                    )
-                                f = st.file_uploader(
-                                    "Choose file",
-                                    type=["pdf", "png", "jpg", "jpeg"],
-                                    key="agent_doc_file",
-                                )
-                                notes = st.text_input("Notes (optional)", key="agent_doc_notes")
-                                add_agent_doc = st.form_submit_button("Save document to list", key="agent_doc_add")
-                                if add_agent_doc and f is not None:
-                                    cat = name_to_cat[doc_type]
-                                    label = other_label.strip() if doc_type == "Other" else notes.strip()
-                                    staged_agent_docs.append(
-                                        {
-                                            "category_id": cat["id"],
-                                            "file": f,
-                                            "notes": label or "",
-                                        }
-                                    )
-                                    st.session_state["agent_docs_staged"] = staged_agent_docs
-                                    st.success(f"Staged {f.name} as {doc_type}.")
-                            if staged_agent_docs:
-                                st.markdown("**Staged documents:**")
-                                for idx, row in enumerate(staged_agent_docs, start=1):
-                                    st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'no notes'})")
-                        else:
-                            st.info("Document module is unavailable.")
+                ag_col1, ag_col2 = st.columns(2)
+                with ag_col1:
+                    show_add_agent = st.checkbox(
+                        "Add Agent",
+                        value=False,
+                        key="agent_show_add_toggle",
+                    )
+                with ag_col2:
+                    show_edit_agent = st.checkbox(
+                        "Edit Agent",
+                        value=False,
+                        key="agent_show_edit_toggle",
+                    )
 
-                    submitted_create_agent = st.form_submit_button("Create agent")
-                    if submitted_create_agent and aname.strip():
-                        try:
-                            atype_internal = "individual" if atype_label.lower().startswith("individual") else "corporate"
-                            aid = create_agent(
-                                name=aname.strip(),
-                                agent_type=atype_internal,
-                                id_number=aid_number.strip() or None,
-                                address_line1=aaddr1.strip() or None,
-                                address_line2=aaddr2.strip() or None,
-                                city=acity.strip() or None,
-                                country=acountry.strip() or None,
-                                phone1=aphone1.strip() or None,
-                                phone2=aphone2.strip() or None,
-                                email=aemail.strip() or None,
-                                commission_rate_pct=acommission if acommission else None,
-                                tin_number=atin.strip() or None,
-                                tax_clearance_expiry=atax_expiry,
-                            )
-                            # Upload any staged agent documents
-                            staged_agent_docs = st.session_state.get("agent_docs_staged") or []
-                            if _documents_available and staged_agent_docs:
-                                doc_count = 0
-                                for row in staged_agent_docs:
-                                    cat_id = row["category_id"]
-                                    f = row["file"]
-                                    notes = row.get("notes") or ""
-                                    try:
-                                        upload_document(
-                                            "agent",
-                                            aid,
-                                            cat_id,
-                                            f.name,
-                                            f.type,
-                                            f.size,
-                                            f.getvalue(),
-                                            uploaded_by="System User",
-                                            notes=notes,
-                                        )
-                                        doc_count += 1
-                                    except Exception as e:
-                                        st.error(f"Failed to upload {f.name}: {e}")
-                                if doc_count > 0:
-                                    st.success(f"Successfully uploaded {doc_count} agent document(s).")
+                if not show_add_agent and not show_edit_agent:
+                    st.caption("Enable an action above to add or edit an agent.")
+
+                if show_add_agent:
+                    st.subheader("Add agent")
+                    with st.form("add_agent_form", clear_on_submit=True):
+                        col_a1, col_a2 = st.columns(2)
+                        with col_a1:
+                            aname = st.text_input("Agent name *", key="agent_name")
+                            atype_label = st.selectbox("Agent type", ["Individual", "Corporate"], key="agent_type")
+                            aid_number = st.text_input("ID number", placeholder="e.g. 111111111x11", key="agent_id_number")
+                            aaddr1 = st.text_input("Address line 1", key="agent_addr1")
+                            acity = st.text_input("City", key="agent_city")
+                            aphone1 = st.text_input("Phone 1", key="agent_phone1")
+                            aemail = st.text_input("Email", key="agent_email")
+                        with col_a2:
+                            aaddr2 = st.text_input("Address line 2", key="agent_addr2")
+                            acountry = st.text_input("Country", key="agent_country")
+                            aphone2 = st.text_input("Phone 2", key="agent_phone2")
+                        acommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=0.0, step=0.5, format="%.2f", key="agent_commission")
+                        atin = st.text_input("TIN number", key="agent_tin")
+                        atax_expiry = st.date_input("Tax clearance expiry", value=None, key="agent_tax_expiry")
+                        # Agent documents (optional)
+                        if "agent_docs_staged" not in st.session_state:
                             st.session_state["agent_docs_staged"] = []
-                            st.success(f"Agent created. Agent ID: **{aid}**.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Could not create agent: {e}")
-                    elif submitted_create_agent and not aname.strip():
-                        st.warning("Please enter agent name.")
-            st.divider()
-            st.subheader("Edit agent")
-            edit_agent_id = st.number_input("Agent ID to edit", min_value=1, value=1, step=1, key="edit_agent_id")
-            if st.button("Load agent", key="agent_load_btn"):
-                st.session_state["agent_edit_loaded_id"] = edit_agent_id
-            loaded_agent_id = st.session_state.get("agent_edit_loaded_id")
-            if loaded_agent_id is not None:
-                arec = get_agent(loaded_agent_id)
-                if not arec:
-                    st.warning("Agent not found.")
-                    st.session_state.pop("agent_edit_loaded_id", None)
-                else:
-                    with st.form("edit_agent_form"):
-                        ename = st.text_input("Agent name *", value=arec.get("name") or "", key="edit_agent_name")
-                        eid_number = st.text_input("ID number", value=arec.get("id_number") or "", key="edit_agent_id_number")
-                        eaddr1 = st.text_input("Address line 1", value=arec.get("address_line1") or "", key="edit_agent_addr1")
-                        eaddr2 = st.text_input("Address line 2", value=arec.get("address_line2") or "", key="edit_agent_addr2")
-                        ecity = st.text_input("City", value=arec.get("city") or "", key="edit_agent_city")
-                        ecountry = st.text_input("Country", value=arec.get("country") or "", key="edit_agent_country")
-                        ephone1 = st.text_input("Phone 1", value=arec.get("phone1") or "", key="edit_agent_phone1")
-                        ephone2 = st.text_input("Phone 2", value=arec.get("phone2") or "", key="edit_agent_phone2")
-                        eemail = st.text_input("Email", value=arec.get("email") or "", key="edit_agent_email")
-                        ecommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=float(arec.get("commission_rate_pct") or 0), step=0.5, format="%.2f", key="edit_agent_commission")
-                        etin = st.text_input("TIN number", value=arec.get("tin_number") or "", key="edit_agent_tin")
-                        etax_expiry = st.date_input("Tax clearance expiry", value=arec.get("tax_clearance_expiry"), key="edit_agent_tax_expiry")
-                        estatus = st.selectbox("Status", ["active", "inactive"], index=0 if (arec.get("status") or "active") == "active" else 1, key="edit_agent_status")
-                        e_agent_type_label = st.selectbox(
-                            "Agent type",
-                            ["Individual", "Corporate"],
-                            index=0 if (arec.get("agent_type") or "individual") == "individual" else 1,
-                            key="edit_agent_type",
-                        )
-                        submitted_update_agent = st.form_submit_button("Update agent")
-                        if submitted_update_agent and ename.strip():
+                        staged_agent_docs = st.session_state["agent_docs_staged"]
+                        with st.expander("Agent documents (optional)"):
+                            if _documents_available:
+                                atype_internal = "individual" if atype_label.lower().startswith("individual") else "corporate"
+                                doc_cats = list_document_categories(active_only=True)
+                                allowed = AGENT_INDIVIDUAL_DOC_TYPES if atype_internal == "individual" else AGENT_CORPORATE_DOC_TYPES
+                                name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in allowed}
+                                if not name_to_cat:
+                                    st.info("No matching document categories configured for agents.")
+                                else:
+                                    doc_type = st.selectbox(
+                                        "Document type",
+                                        sorted(name_to_cat.keys()),
+                                        key="agent_doc_type",
+                                    )
+                                    other_label = ""
+                                    if doc_type == "Other":
+                                        other_label = st.text_input(
+                                            "If Other, describe the document",
+                                            key="agent_doc_other_label",
+                                        )
+                                    f = st.file_uploader(
+                                        "Choose file",
+                                        type=["pdf", "png", "jpg", "jpeg"],
+                                        key="agent_doc_file",
+                                    )
+                                    notes = st.text_input("Notes (optional)", key="agent_doc_notes")
+                                    add_agent_doc = st.form_submit_button("Save document to list", key="agent_doc_add")
+                                    if add_agent_doc and f is not None:
+                                        cat = name_to_cat[doc_type]
+                                        label = other_label.strip() if doc_type == "Other" else notes.strip()
+                                        staged_agent_docs.append(
+                                            {
+                                                "category_id": cat["id"],
+                                                "file": f,
+                                                "notes": label or "",
+                                            }
+                                        )
+                                        st.session_state["agent_docs_staged"] = staged_agent_docs
+                                        st.success(f"Staged {f.name} as {doc_type}.")
+                                if staged_agent_docs:
+                                    st.markdown("**Staged documents:**")
+                                    for idx, row in enumerate(staged_agent_docs, start=1):
+                                        st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'no notes'})")
+                            else:
+                                st.info("Document module is unavailable.")
+
+                        submitted_create_agent = st.form_submit_button("Create agent")
+                        if submitted_create_agent and aname.strip():
                             try:
-                                update_agent(
-                                    loaded_agent_id,
-                                    name=ename.strip(),
-                                    id_number=eid_number.strip() or None,
-                                    address_line1=eaddr1.strip() or None,
-                                    address_line2=eaddr2.strip() or None,
-                                    city=ecity.strip() or None,
-                                    country=ecountry.strip() or None,
-                                    phone1=ephone1.strip() or None,
-                                    phone2=ephone2.strip() or None,
-                                    email=eemail.strip() or None,
-                                    commission_rate_pct=ecommission if ecommission else None,
-                                    tin_number=etin.strip() or None,
-                                    tax_clearance_expiry=etax_expiry,
-                                    status=estatus,
-                                    agent_type="individual" if e_agent_type_label.lower().startswith("individual") else "corporate",
+                                atype_internal = "individual" if atype_label.lower().startswith("individual") else "corporate"
+                                aid = create_agent(
+                                    name=aname.strip(),
+                                    agent_type=atype_internal,
+                                    id_number=aid_number.strip() or None,
+                                    address_line1=aaddr1.strip() or None,
+                                    address_line2=aaddr2.strip() or None,
+                                    city=acity.strip() or None,
+                                    country=acountry.strip() or None,
+                                    phone1=aphone1.strip() or None,
+                                    phone2=aphone2.strip() or None,
+                                    email=aemail.strip() or None,
+                                    commission_rate_pct=acommission if acommission else None,
+                                    tin_number=atin.strip() or None,
+                                    tax_clearance_expiry=atax_expiry,
                                 )
-                                st.success("Agent updated.")
+                                # Upload any staged agent documents
+                                staged_agent_docs = st.session_state.get("agent_docs_staged") or []
+                                if _documents_available and staged_agent_docs:
+                                    doc_count = 0
+                                    for row in staged_agent_docs:
+                                        cat_id = row["category_id"]
+                                        f = row["file"]
+                                        notes = row.get("notes") or ""
+                                        try:
+                                            upload_document(
+                                                "agent",
+                                                aid,
+                                                cat_id,
+                                                f.name,
+                                                f.type,
+                                                f.size,
+                                                f.getvalue(),
+                                                uploaded_by="System User",
+                                                notes=notes,
+                                            )
+                                            doc_count += 1
+                                        except Exception as e:
+                                            st.error(f"Failed to upload {f.name}: {e}")
+                                    if doc_count > 0:
+                                        st.success(f"Successfully uploaded {doc_count} agent document(s).")
+                                st.session_state["agent_docs_staged"] = []
+                                st.success(f"Agent created. Agent ID: **{aid}**.")
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Could not update agent: {e}")
-                        elif submitted_update_agent and not ename.strip():
+                                st.error(f"Could not create agent: {e}")
+                        elif submitted_create_agent and not aname.strip():
                             st.warning("Please enter agent name.")
+
+                if show_edit_agent:
+                    st.divider()
+                    st.subheader("Edit agent")
+                    edit_agent_id = st.number_input("Agent ID to edit", min_value=1, value=1, step=1, key="edit_agent_id")
+                    if st.button("Load agent", key="agent_load_btn"):
+                        st.session_state["agent_edit_loaded_id"] = edit_agent_id
+                    loaded_agent_id = st.session_state.get("agent_edit_loaded_id")
+                    if loaded_agent_id is not None:
+                        arec = get_agent(loaded_agent_id)
+                        if not arec:
+                            st.warning("Agent not found.")
+                            st.session_state.pop("agent_edit_loaded_id", None)
+                        else:
+                            with st.form("edit_agent_form"):
+                                ename = st.text_input("Agent name *", value=arec.get("name") or "", key="edit_agent_name")
+                                eid_number = st.text_input("ID number", value=arec.get("id_number") or "", key="edit_agent_id_number")
+                                eaddr1 = st.text_input("Address line 1", value=arec.get("address_line1") or "", key="edit_agent_addr1")
+                                eaddr2 = st.text_input("Address line 2", value=arec.get("address_line2") or "", key="edit_agent_addr2")
+                                ecity = st.text_input("City", value=arec.get("city") or "", key="edit_agent_city")
+                                ecountry = st.text_input("Country", value=arec.get("country") or "", key="edit_agent_country")
+                                ephone1 = st.text_input("Phone 1", value=arec.get("phone1") or "", key="edit_agent_phone1")
+                                ephone2 = st.text_input("Phone 2", value=arec.get("phone2") or "", key="edit_agent_phone2")
+                                eemail = st.text_input("Email", value=arec.get("email") or "", key="edit_agent_email")
+                                ecommission = st.number_input("Commission rate %", min_value=0.0, max_value=100.0, value=float(arec.get("commission_rate_pct") or 0), step=0.5, format="%.2f", key="edit_agent_commission")
+                                etin = st.text_input("TIN number", value=arec.get("tin_number") or "", key="edit_agent_tin")
+                                etax_expiry = st.date_input("Tax clearance expiry", value=arec.get("tax_clearance_expiry"), key="edit_agent_tax_expiry")
+                                estatus = st.selectbox("Status", ["active", "inactive"], index=0 if (arec.get("status") or "active") == "active" else 1, key="edit_agent_status")
+                                e_agent_type_label = st.selectbox(
+                                    "Agent type",
+                                    ["Individual", "Corporate"],
+                                    index=0 if (arec.get("agent_type") or "individual") == "individual" else 1,
+                                    key="edit_agent_type",
+                                )
+                                submitted_update_agent = st.form_submit_button("Update agent")
+                                if submitted_update_agent and ename.strip():
+                                    try:
+                                        update_agent(
+                                            loaded_agent_id,
+                                            name=ename.strip(),
+                                            id_number=eid_number.strip() or None,
+                                            address_line1=eaddr1.strip() or None,
+                                            address_line2=eaddr2.strip() or None,
+                                            city=ecity.strip() or None,
+                                            country=ecountry.strip() or None,
+                                            phone1=ephone1.strip() or None,
+                                            phone2=ephone2.strip() or None,
+                                            email=eemail.strip() or None,
+                                            commission_rate_pct=ecommission if ecommission else None,
+                                            tin_number=etin.strip() or None,
+                                            tax_clearance_expiry=etax_expiry,
+                                            status=estatus,
+                                            agent_type="individual" if e_agent_type_label.lower().startswith("individual") else "corporate",
+                                        )
+                                        st.success("Agent updated.")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Could not update agent: {e}")
+                                elif submitted_update_agent and not ename.strip():
+                                    st.warning("Please enter agent name.")
 
 
 def view_schedule_ui():
@@ -4166,19 +4649,20 @@ def view_schedule_ui():
         st.error(f"Loan management module is not available. ({_loan_management_error})")
         return
 
-    st.markdown(
-        "<div style='background-color: #0EA5E9; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.1rem;'>View loan schedule</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.caption("Select a loan by ID or by customer to see its stored repayment schedule (installments).")
+    st.caption("Select a loan by ID or customer to view the stored repayment schedule.")
 
     loan_id = None
     search_by = st.radio("Find loan by", ["Loan ID", "Customer"], key="view_sched_by", horizontal=True)
 
     if search_by == "Loan ID":
-        lid_input = st.number_input("Loan ID", min_value=1, value=1, step=1, key="view_sched_loan_id")
-        if st.button("Load schedule", key="view_sched_load_by_id"):
+        id_col, btn_col = st.columns([2, 1])
+        with id_col:
+            lid_input = st.number_input("Loan ID", min_value=1, value=1, step=1, key="view_sched_loan_id")
+        with btn_col:
+            st.write("")
+            st.write("")
+            load_by_id = st.button("Load schedule", key="view_sched_load_by_id", use_container_width=True)
+        if load_by_id:
             loan = get_loan(int(lid_input)) if _loan_management_available else None
             if not loan:
                 st.warning(f"Loan #{lid_input} not found.")
@@ -4250,10 +4734,9 @@ def teller_ui():
         return
 
     st.markdown(
-        "<div style='background-color: #7C3AED; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.1rem;'>Teller</div>",
+        "<div style='color:#16A34A; font-weight:700; font-size:2rem; margin:0.25rem 0 0.75rem 0;'>Teller</div>",
         unsafe_allow_html=True,
     )
-    st.markdown("<br>", unsafe_allow_html=True)
 
     # Extend Teller module with dedicated GL tabs for borrowings and write‑off recoveries.
     from accounting_service import AccountingService
@@ -4285,7 +4768,9 @@ def teller_ui():
                     idx = next(i for i, (cid, _) in enumerate(options) if cid == st.session_state["teller_customer_id"])
                 except StopIteration:
                     pass
-            sel = st.selectbox("Select customer", labels, index=idx, key="teller_cust_select")
+            pick_col1, pick_col2 = st.columns(2)
+            with pick_col1:
+                sel = st.selectbox("Select customer", labels, index=idx, key="teller_cust_select")
             cid = options[labels.index(sel)][0] if sel and labels else None
             st.session_state["teller_customer_id"] = cid
 
@@ -4297,7 +4782,8 @@ def teller_ui():
                 else:
                     loan_options = [(l["id"], f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('principal', 0):,.2f}") for l in loans_active]
                     loan_labels = [t[1] for t in loan_options]
-                    loan_sel = st.selectbox("Select loan", loan_labels, key="teller_loan_select")
+                    with pick_col2:
+                        loan_sel = st.selectbox("Select loan", loan_labels, key="teller_loan_select")
                     loan_id = loan_options[loan_labels.index(loan_sel)][0] if loan_sel and loan_labels else None
 
                     if loan_id:
@@ -4327,9 +4813,12 @@ def teller_ui():
                         now = datetime.now()
                         _sys = _get_system_date()
                         with st.form("teller_single_form", clear_on_submit=True):
-                            amount = st.number_input("Amount", min_value=0.01, value=100.0, step=100.0, format="%.2f", key="teller_amount")
-                            customer_ref = st.text_input("Customer reference (appears on loan statement)", placeholder="e.g. Receipt #123", key="teller_cust_ref")
-                            company_ref = st.text_input("Company reference (appears in general ledger)", placeholder="e.g. GL ref", key="teller_company_ref")
+                            f_col1, f_col2 = st.columns(2)
+                            with f_col1:
+                                amount = st.number_input("Amount", min_value=0.01, value=100.0, step=100.0, format="%.2f", key="teller_amount")
+                                customer_ref = st.text_input("Customer reference (appears on loan statement)", placeholder="e.g. Receipt #123", key="teller_cust_ref")
+                            with f_col2:
+                                company_ref = st.text_input("Company reference (appears in general ledger)", placeholder="e.g. GL ref", key="teller_company_ref")
                             col1, col2 = st.columns(2)
                             with col1:
                                 value_date = st.date_input("Value date", value=_sys, key="teller_value_date")
@@ -4367,15 +4856,17 @@ def teller_ui():
         buf = BytesIO()
         template_df.to_excel(buf, index=False, engine="openpyxl")
         buf.seek(0)
-        st.download_button(
-            "Download template (Excel)",
-            data=buf,
-            file_name="teller_batch_template.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="teller_download_template",
-        )
-
-        uploaded = st.file_uploader("Upload Excel file", type=["xlsx", "xls"], key="teller_batch_upload")
+        b_col1, b_col2 = st.columns(2)
+        with b_col1:
+            st.download_button(
+                "Download template (Excel)",
+                data=buf,
+                file_name="teller_batch_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="teller_download_template",
+            )
+        with b_col2:
+            uploaded = st.file_uploader("Upload Excel file", type=["xlsx", "xls"], key="teller_batch_upload")
         if uploaded:
             try:
                 df = pd.read_excel(uploaded, engine="openpyxl")
@@ -4387,7 +4878,12 @@ def teller_ui():
                     st.dataframe(df.head(20), width="stretch", hide_index=True)
                     if len(df) > 20:
                         st.caption(f"Showing first 20 of {len(df)} rows.")
-                    if st.button("Process batch", type="primary", key="teller_batch_process"):
+                    p_col1, p_col2 = st.columns(2)
+                    with p_col1:
+                        process_batch = st.button("Process batch", type="primary", key="teller_batch_process")
+                    with p_col2:
+                        st.caption(f"Rows loaded: {len(df)}")
+                    if process_batch:
                         valid_rows = []
                         parse_errors = []
                         for i, r in df.iterrows():
@@ -4455,7 +4951,9 @@ def teller_ui():
                     idx = next(i for i, (cid, _) in enumerate(options) if cid == st.session_state["teller_rev_customer_id"])
                 except StopIteration:
                     pass
-            sel = st.selectbox("Select customer", labels, index=idx, key="teller_rev_cust_select")
+            rev_col1, rev_col2 = st.columns(2)
+            with rev_col1:
+                sel = st.selectbox("Select customer", labels, index=idx, key="teller_rev_cust_select")
             cid = options[labels.index(sel)][0] if sel and labels else None
             st.session_state["teller_rev_customer_id"] = cid
 
@@ -4470,7 +4968,8 @@ def teller_ui():
                         for l in loans_active
                     ]
                     loan_labels = [t[1] for t in loan_options]
-                    loan_sel = st.selectbox("Select loan", loan_labels, key="teller_rev_loan_select")
+                    with rev_col2:
+                        loan_sel = st.selectbox("Select loan", loan_labels, key="teller_rev_loan_select")
                     loan_id = loan_options[loan_labels.index(loan_sel)][0] if loan_sel and loan_labels else None
 
                     if loan_id:
@@ -4521,26 +5020,37 @@ def teller_ui():
                                 st.error("Enter a valid receipt ID or select a receipt from the list.")
                             else:
                                 try:
-                                    rev_result: ReverseRepaymentResult = reverse_repayment(target_id)
+                                    st.info(
+                                        f"**Reversal in progress** for receipt **{target_id}**. "
+                                        "This will (1) save the reversal and (2) replay/reallocate EOD for the loan."
+                                    )
+                                    with st.spinner("Reversing receipt and recalculating loan state…"):
+                                        rev_result: ReverseRepaymentResult = reverse_repayment(target_id)
+
+                                    st.success(
+                                        f"Reversal saved for receipt **{target_id}**. "
+                                        f"Reversal repayment id **{rev_result.reversal_repayment_id}**."
+                                    )
+
                                     if rev_result.eod_rerun_success:
                                         st.success(
-                                            f"Receipt **{target_id}** reversed successfully. "
-                                            f"Reversal repayment id **{rev_result.reversal_repayment_id}**. "
-                                            f"Loan **{rev_result.loan_id}** daily state was recalculated from "
-                                            f"**{rev_result.eod_from_date.isoformat()}** through "
+                                            f"Re-allocation/EOD replay **successful** for loan **{rev_result.loan_id}** "
+                                            f"from **{rev_result.eod_from_date.isoformat()}** through "
                                             f"**{rev_result.eod_to_date.isoformat()}**."
                                         )
                                     else:
-                                        st.warning(
-                                            f"Receipt **{target_id}** was reversed and reversal id "
-                                            f"**{rev_result.reversal_repayment_id}** was saved, but **re-running EOD "
-                                            f"for the loan failed**. "
-                                            f"Expected refresh window: **{rev_result.eod_from_date.isoformat()}** → "
-                                            f"**{rev_result.eod_to_date.isoformat()}**. "
-                                            f"**Error:** {rev_result.eod_rerun_error or 'unknown'}"
+                                        st.error(
+                                            f"Reversal was saved, but **re-allocation/EOD replay failed** for loan "
+                                            f"**{rev_result.loan_id}** (window "
+                                            f"**{rev_result.eod_from_date.isoformat()}** → "
+                                            f"**{rev_result.eod_to_date.isoformat()}**). "
+                                            f"**Failed stage:** `{(rev_result.eod_rerun_error or 'unknown')}`"
                                         )
                                 except Exception as e:
-                                    st.error(f"Could not reverse receipt {target_id}: {e}")
+                                    st.error(
+                                        f"Could not reverse receipt **{target_id}**. "
+                                        f"**Failed stage:** `reverse_repayment` | **Error:** {e}"
+                                    )
                                     st.exception(e)
 
     with tab_borrowing_payment:
@@ -4554,26 +5064,29 @@ def teller_ui():
         now = datetime.now()
 
         with st.form("teller_borrowing_payment_form"):
-            value_date = st.date_input("Payment value date", value=_sys, key="teller_borrowing_value_date")
-            system_date = st.date_input("System date", value=_sys, key="teller_borrowing_system_date")
-            amount = st.number_input(
-                "Payment amount",
-                min_value=0.01,
-                value=1000.00,
-                step=100.00,
-                format="%.2f",
-                key="teller_borrowing_amount",
-            )
-            reference = st.text_input(
-                "Reference",
-                placeholder="e.g. Borrowing repayment ref",
-                key="teller_borrowing_ref",
-            )
-            description = st.text_input(
-                "Narration (Description)",
-                placeholder="e.g. Payment of borrowing to financier X",
-                key="teller_borrowing_desc",
-            )
+            bw_col1, bw_col2 = st.columns(2)
+            with bw_col1:
+                value_date = st.date_input("Payment value date", value=_sys, key="teller_borrowing_value_date")
+                amount = st.number_input(
+                    "Payment amount",
+                    min_value=0.01,
+                    value=1000.00,
+                    step=100.00,
+                    format="%.2f",
+                    key="teller_borrowing_amount",
+                )
+                reference = st.text_input(
+                    "Reference",
+                    placeholder="e.g. Borrowing repayment ref",
+                    key="teller_borrowing_ref",
+                )
+            with bw_col2:
+                system_date = st.date_input("System date", value=_sys, key="teller_borrowing_system_date")
+                description = st.text_input(
+                    "Narration (Description)",
+                    placeholder="e.g. Payment of borrowing to financier X",
+                    key="teller_borrowing_desc",
+                )
 
             submitted = st.form_submit_button("Post borrowing payment")
             if submitted:
@@ -4616,7 +5129,9 @@ def teller_ui():
                     )
                 except StopIteration:
                     pass
-            sel = st.selectbox("Select customer", labels, index=idx, key="teller_wr_cust_select")
+            wr_col1, wr_col2 = st.columns(2)
+            with wr_col1:
+                sel = st.selectbox("Select customer", labels, index=idx, key="teller_wr_cust_select")
             cid = options[labels.index(sel)][0] if sel and labels else None
             st.session_state["teller_wr_customer_id"] = cid
 
@@ -4634,9 +5149,10 @@ def teller_ui():
                         for l in loans_list
                     ]
                     loan_labels = [t[1] for t in loan_options]
-                    loan_sel = st.selectbox(
-                        "Select written-off loan (or target loan)", loan_labels, key="teller_wr_loan"
-                    )
+                    with wr_col2:
+                        loan_sel = st.selectbox(
+                            "Select written-off loan (or target loan)", loan_labels, key="teller_wr_loan"
+                        )
                     loan_id = loan_options[loan_labels.index(loan_sel)][0] if loan_sel and loan_labels else None
 
                     if loan_id:
@@ -4644,30 +5160,33 @@ def teller_ui():
                         now = datetime.now()
 
                         with st.form("teller_writeoff_recovery_form"):
-                            value_date = st.date_input(
-                                "Receipt value date", value=_sys, key="teller_wr_value_date"
-                            )
-                            system_date = st.date_input(
-                                "System date", value=_sys, key="teller_wr_system_date"
-                            )
-                            amount = st.number_input(
-                                "Recovery amount",
-                                min_value=0.01,
-                                value=100.00,
-                                step=10.00,
-                                format="%.2f",
-                                key="teller_wr_amount",
-                            )
-                            customer_ref = st.text_input(
-                                "Customer reference (optional)",
-                                placeholder="e.g. Recovery receipt #123",
-                                key="teller_wr_cust_ref",
-                            )
-                            company_ref = st.text_input(
-                                "Company reference (optional)",
-                                placeholder="e.g. GL ref",
-                                key="teller_wr_company_ref",
-                            )
+                            wrf_col1, wrf_col2 = st.columns(2)
+                            with wrf_col1:
+                                value_date = st.date_input(
+                                    "Receipt value date", value=_sys, key="teller_wr_value_date"
+                                )
+                                amount = st.number_input(
+                                    "Recovery amount",
+                                    min_value=0.01,
+                                    value=100.00,
+                                    step=10.00,
+                                    format="%.2f",
+                                    key="teller_wr_amount",
+                                )
+                                customer_ref = st.text_input(
+                                    "Customer reference (optional)",
+                                    placeholder="e.g. Recovery receipt #123",
+                                    key="teller_wr_cust_ref",
+                                )
+                            with wrf_col2:
+                                system_date = st.date_input(
+                                    "System date", value=_sys, key="teller_wr_system_date"
+                                )
+                                company_ref = st.text_input(
+                                    "Company reference (optional)",
+                                    placeholder="e.g. GL ref",
+                                    key="teller_wr_company_ref",
+                                )
                             submitted = st.form_submit_button("Post recovery receipt")
 
                             if submitted and amount > 0:
@@ -5075,6 +5594,33 @@ def statements_ui():
         "Arrears": "Arrears (total delinquency, incl. fees)",
     }
 
+    def _normalize_customer_id(v):
+        if isinstance(v, dict):
+            v = v.get("id")
+        try:
+            return int(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _customer_label(cid):
+        cid_n = _normalize_customer_id(cid)
+        if cid_n is None:
+            return f"Customer #{cid}"
+        try:
+            nm = get_display_name(cid_n) if _customers_available else ""
+        except Exception:
+            nm = ""
+        # Defensive: if a dict leaks through from any upstream helper/session state, avoid raw JSON UI labels.
+        if isinstance(nm, dict):
+            nm = (
+                (nm.get("individual") or {}).get("name")
+                or (nm.get("corporate") or {}).get("trading_name")
+                or (nm.get("corporate") or {}).get("legal_name")
+                or ""
+            )
+        nm_s = str(nm or "").strip()
+        return nm_s if nm_s else f"Customer #{cid_n}"
+
     tab_loan, tab_gl = st.tabs(["Customer loan statement", "General Ledger"])
     with tab_loan:
         st.subheader("Customer loan statement")
@@ -5101,25 +5647,26 @@ def statements_ui():
                 from loan_management import get_loan
                 loan = get_loan(lid)
                 if loan and loan.get("customer_id"):
-                    preselect_cust_id = loan["customer_id"]
+                    preselect_cust_id = _normalize_customer_id(loan["customer_id"])
                     preselect_loan_id = lid
             except ValueError:
                 pass
             if preselect_loan_id is None:
                 search_lower = search.lower()
-                customers = [c for c in customers if search_lower in (get_display_name(c["id"]) or "").lower()]
+                customers = [c for c in customers if search_lower in _customer_label(c.get("id")).lower()]
 
         if not customers and preselect_cust_id is None:
             st.info("No customers found. Create a customer or enter a valid Loan ID.")
         else:
-            cust_options = [(c["id"], get_display_name(c["id"]) or f"Customer #{c['id']}") for c in customers]
+            cust_options = [(_normalize_customer_id(c.get("id")), _customer_label(c.get("id"))) for c in customers]
+            cust_options = [t for t in cust_options if t[0] is not None]
             cust_labels = [t[1] for t in cust_options]
             default_idx = 0
             if preselect_cust_id is not None:
                 try:
                     default_idx = next(i for i, t in enumerate(cust_options) if t[0] == preselect_cust_id)
                 except StopIteration:
-                    cust_options.insert(0, (preselect_cust_id, get_display_name(preselect_cust_id) or f"Customer #{preselect_cust_id}"))
+                    cust_options.insert(0, (preselect_cust_id, _customer_label(preselect_cust_id)))
                     cust_labels.insert(0, cust_options[0][1])
                     default_idx = 0
             fc1, fc2 = st.columns(2)
@@ -5195,8 +5742,8 @@ def statements_ui():
                             df = pd.DataFrame(rows)
                             start = meta.get("start_date")
                             end = meta.get("end_date")
-                            cust_id = meta.get("customer_id")
-                            customer_name = get_display_name(cust_id) if cust_id is not None else "—"
+                            cust_id = _normalize_customer_id(meta.get("customer_id"))
+                            customer_name = _customer_label(cust_id) if cust_id is not None else "—"
                             start_fmt = start.strftime("%d%b%Y") if hasattr(start, "strftime") else str(start)
                             end_fmt = end.strftime("%d%b%Y") if hasattr(end, "strftime") else str(end)
                             gen = meta.get("generated_at")
@@ -5253,7 +5800,7 @@ def statements_ui():
                                 "<div class='stmt-header'>"
                                 f"<strong style='font-size: 1.25rem; display: block; margin-bottom: 0.5rem;'>{statement_title}</strong>"
                                 f"<span style='display: block;'><strong>Customer:</strong> {customer_name}</span>"
-                                f"<span style='display: block;'><strong>Customer ID:</strong> {cust_id or '—'}</span>"
+                                f"<span style='display: block;'><strong>Customer ID:</strong> {cust_id if cust_id is not None else '—'}</span>"
                                 f"<span style='display: block;'><strong>Loan ID:</strong> {loan_id}</span>"
                                 f"<span style='display: block; margin-top: 0.25rem;'><strong>Period covered:</strong> {start_fmt} to {end_fmt}</span>"
                                 "</div>"
@@ -5278,7 +5825,7 @@ def statements_ui():
                             csv_header_lines = [
                                 f"# {statement_title}",
                                 f"# Customer: {customer_name}",
-                                f"# Customer ID: {cust_id or '—'}",
+                                f"# Customer ID: {cust_id if cust_id is not None else '—'}",
                                 f"# Loan ID: {loan_id}",
                                 f"# Period covered: {start_fmt} to {end_fmt}",
                                 "#",
@@ -6935,28 +7482,44 @@ def render_loan_app_section(nav: str) -> None:
 
         render_suspense_ui()
     elif nav == "Loan management":
-        tab_capture, tab_schedule, tab_calculators = st.tabs(
-            ["Loan capture", "View schedule", "Loan calculators"]
+        st.markdown(
+            "<div style='color:#16A34A; font-weight:700; font-size:2rem; margin:0.25rem 0 0.75rem 0;'>Loan Management</div>",
+            unsafe_allow_html=True,
+        )
+        pending_approval_count = 0
+        try:
+            pending_approval_count = len(
+                list_loan_approval_drafts(status="PENDING", limit=10000) or []
+            )
+        except Exception:
+            pending_approval_count = 0
+        tab_capture, tab_schedule, tab_calculators, tab_approve = st.tabs(
+            [
+                "Loan capture",
+                "View schedule",
+                "Loan calculators",
+                f"Approve loans ({pending_approval_count})",
+            ]
         )
         with tab_capture:
             capture_loan_ui()
         with tab_schedule:
             view_schedule_ui()
         with tab_calculators:
-            calc_type = st.radio(
-                "Loan type",
-                ["Consumer Loan", "Term Loan", "Bullet Loan", "Customised Repayments"],
-                key="nav_loan_type",
-                horizontal=True,
-            )
-            if calc_type == "Consumer Loan":
-                consumer_loan_ui()
-            elif calc_type == "Term Loan":
-                term_loan_ui()
-            elif calc_type == "Bullet Loan":
-                bullet_loan_ui()
-            else:
-                customised_repayments_ui()
+            st.caption("All calculators are available on one page. Open any section below.")
+            col_left, col_right = st.columns(2)
+            with col_left:
+                with st.expander("Consumer Loan Calculator", expanded=True):
+                    consumer_loan_ui()
+                with st.expander("Bullet Loan Calculator", expanded=False):
+                    bullet_loan_ui()
+            with col_right:
+                with st.expander("Term Loan Calculator", expanded=True):
+                    term_loan_ui()
+                with st.expander("Customised Repayments Calculator", expanded=False):
+                    customised_repayments_ui()
+        with tab_approve:
+            approve_loans_ui()
     elif nav == "Accounting":
         accounting_ui()
     elif nav == "Journals":

@@ -372,8 +372,9 @@ def _apply_customer_facing_arrears_before_first_receipt(loan_id: int, out: list[
             narr = str(r.get("Narration") or "")
             if narr.startswith("Total outstanding balance as at"):
                 continue
-            if narr.startswith("Liquidation of unapplied"):
-                # Keep liquidation rows at their computed post-liquidation arrears.
+            if narr.startswith("Liquidation of unapplied") or narr.startswith("Reversal of unapplied"):
+                # Keep unapplied ledger movement rows (incl reversals) at their computed
+                # post-movement arrears. These are internal allocation movements, not cash receipts.
                 continue
             if _is_external_cash_receipt_row(r):
                 continue
@@ -407,6 +408,10 @@ def _generate_periodic_statement(
     today = as_of_date or _get_effective_date()
     start = start_date or disbursement or today
     end = end_date or today
+    # Never render statement schedule rows beyond system "today"/as_of_date,
+    # even if the caller requests a future end date.
+    if end > today:
+        end = today
     if start > end:
         start, end = end, start
 
@@ -1077,6 +1082,22 @@ def generate_customer_facing_statement(
                     r.get("_arrears_credit_impact") if r.get("_arrears_credit_impact") is not None else credits_alloc
                 ),
             })
+        elif narration.startswith("Reversal of unapplied liquidation"):
+            # Undo of a liquidation: show it as a Debit of the same magnitude,
+            # so the statement reads like "Liquidation" (credit) then "REV" (debit).
+            credits_alloc = _to_dec(r.get("Portion of Credit Allocated to Interest") or 0) + \
+                            _to_dec(r.get("Credit Allocated to Fees") or 0) + \
+                            _to_dec(r.get("Credit Allocated to Capital") or 0)
+            debits_alloc = abs(credits_alloc)
+            out.append({
+                "Due Date": r.get("Due Date"),
+                "Narration": narration,
+                "Debits": _f3(debits_alloc),
+                "Credits": 0.0,
+                "Balance": 0.0,
+                "Arrears": arrears,
+                "Unapplied funds": unapplied,
+            })
         elif narration.startswith("Unapplied funds credit") or narration.startswith("Reversal of unapplied"):
             out.append({
                 "Due Date": r.get("Due Date"),
@@ -1327,43 +1348,7 @@ def generate_customer_facing_statement(
             except Exception:
                 pass
 
-    # Background reconciliation notification: for non-due dates, statement end-of-date Balance
-    # may drift below daily_state total outstanding. The drift should be explainable by
-    # unbilled/unmoved charge balances that exist in daily_state but are not yet reflected
-    # in the statement running balance:
-    #   interest_accrued_balance + penalty_interest_balance + default_interest_balance + fees_charges_balance
-    # If not, we flag it (notification only, not an error).
-    notifications: list[str] = []
-    for d, last_i in last_idx_by_due_date.items():
-        if d in due_dates:
-            continue
-        row_last = out[last_i]
-        try:
-            exact_ds = get_loan_daily_state_balances(loan_id, d)
-        except Exception:
-            exact_ds = None
-        if not exact_ds:
-            continue
-        daily_total = _to_dec(_f3(_total_outstanding_from_ds(exact_ds)))
-        stmt_total = _to_dec(row_last.get("Balance") or 0)
-        drift = daily_total - stmt_total
-        if drift <= Decimal("0.01"):
-            continue
-        explain = _to_dec(
-            _f3(
-                float(exact_ds.get("interest_accrued_balance") or 0)
-                + float(exact_ds.get("penalty_interest_balance") or 0)
-                + float(exact_ds.get("default_interest_balance") or 0)
-                + float(exact_ds.get("fees_charges_balance") or 0)
-            )
-        )
-        if abs(drift - explain) > Decimal("0.05"):
-            notifications.append(
-                f"Statement balance drift on {d.isoformat()} is {float(drift):,.2f} "
-                f"but expected unbilled charges (accrued+penalty+default+fees) are {float(explain):,.2f}."
-            )
-    if notifications:
-        meta["notifications"] = notifications
+    # (Drift notification logic removed.)
 
     for _row in out:
         _row.pop("_repayment_id", None)

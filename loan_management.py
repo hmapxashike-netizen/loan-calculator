@@ -91,6 +91,416 @@ class ReverseRepaymentResult:
     eod_rerun_error: str | None = None
 
 
+def repost_gl_for_loan_date_range(
+    loan_id: int,
+    start_date: date,
+    end_date: date,
+    *,
+    created_by: str = "system",
+) -> None:
+    """
+    Re-post deterministic GL journals so GL matches the latest allocation state.
+
+    Why needed:
+    - EOD replay can overwrite allocations/daily_state for later receipts/liquidations.
+    - Original GL journals posted at capture time remain stale unless we re-post.
+
+    Safety:
+    - AccountingRepository.save_journal_entry replaces journals by (event_id, event_tag),
+      so re-posting is idempotent and converges GL to the latest computed values.
+    """
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    try:
+        from accounting_service import AccountingService
+    except Exception as exc:
+        raise RuntimeError(f"gl_repost: AccountingService unavailable: {exc}") from exc
+
+    svc = AccountingService()
+
+    def _p(v: Any) -> float:
+        return float(v or 0)
+
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Teller receipts (and their reversal rows), excluding internal system liquidations.
+            cur.execute(
+                """
+                SELECT
+                    lr.id,
+                    lr.status,
+                    lr.original_repayment_id,
+                    (COALESCE(lr.value_date, lr.payment_date))::date AS eff_date,
+                    lra.alloc_principal_not_due,
+                    lra.alloc_principal_arrears,
+                    lra.alloc_interest_accrued,
+                    lra.alloc_interest_arrears,
+                    lra.alloc_default_interest,
+                    lra.alloc_penalty_interest,
+                    lra.alloc_fees_charges,
+                    lra.unallocated
+                FROM loan_repayments lr
+                JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
+                WHERE lr.loan_id = %s
+                  AND (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
+                  AND NOT (
+                    COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.reference, '') ILIKE '%%Reversal of unapplied funds%%'
+                    OR COALESCE(lr.customer_reference, '') ILIKE '%%Reversal of unapplied funds%%'
+                    OR COALESCE(lr.company_reference, '') ILIKE '%%Reversal of unapplied funds%%'
+                  )
+                ORDER BY (COALESCE(lr.value_date, lr.payment_date))::date, lr.id
+                """,
+                (loan_id, start_date, end_date),
+            )
+            receipt_rows = cur.fetchall()
+
+            for r in receipt_rows:
+                rid = int(r["id"])
+                eff = r["eff_date"]
+                status = (r.get("status") or "").strip().lower()
+                orig_id = r.get("original_repayment_id")
+                orig_id_int = int(orig_id) if orig_id is not None else None
+
+                apr = _p(r.get("alloc_principal_arrears"))
+                pnd = _p(r.get("alloc_principal_not_due"))
+                aiar = _p(r.get("alloc_interest_arrears"))
+                aia = _p(r.get("alloc_interest_accrued"))
+                adi = _p(r.get("alloc_default_interest"))
+                api = _p(r.get("alloc_penalty_interest"))
+                afc = _p(r.get("alloc_fees_charges"))
+                unalloc = _p(r.get("unallocated"))
+
+                # Base reference for receipt journals.
+                base_ref = _repayment_journal_reference(loan_id, rid)
+
+                # Original receipt journals (only meaningful for posted receipts).
+                if status == "posted":
+                    if unalloc > 1e-6:
+                        ref_u = _unapplied_original_reference(
+                            "credit", loan_id=loan_id, repayment_id=rid, value_date=eff
+                        )
+                        svc.post_event(
+                            event_type="UNAPPLIED_FUNDS_OVERPAYMENT",
+                            reference=ref_u,
+                            description="Unapplied funds on overpayment",
+                            event_id=ref_u,
+                            created_by=created_by,
+                            entry_date=eff,
+                            amount=Decimal(str(unalloc)),
+                        )
+                    if apr > 1e-6:
+                        p = Decimal(str(apr))
+                        svc.post_event(
+                            event_type="PAYMENT_PRINCIPAL",
+                            reference=base_ref,
+                            description=f"Principal (arrears) — {base_ref}",
+                            event_id=f"REPAY-{rid}-PRIN-ARR",
+                            created_by=created_by,
+                            entry_date=eff,
+                            payload={"cash_operating": p, "principal_arrears": p},
+                        )
+                    if pnd > 1e-6:
+                        p = Decimal(str(pnd))
+                        svc.post_event(
+                            event_type="PAYMENT_PRINCIPAL_NOT_YET_DUE",
+                            reference=base_ref,
+                            description=f"Principal (not yet due) — {base_ref}",
+                            event_id=f"REPAY-{rid}-PRIN-NYD",
+                            created_by=created_by,
+                            entry_date=eff,
+                            payload={"cash_operating": p, "loan_principal": p},
+                        )
+                    if aiar > 1e-6:
+                        p = Decimal(str(aiar))
+                        svc.post_event(
+                            event_type="PAYMENT_REGULAR_INTEREST",
+                            reference=base_ref,
+                            description=f"Interest (arrears) — {base_ref}",
+                            event_id=f"REPAY-{rid}-INT-ARR",
+                            created_by=created_by,
+                            entry_date=eff,
+                            payload={"cash_operating": p, "regular_interest_arrears": p},
+                        )
+                    if aia > 1e-6:
+                        p = Decimal(str(aia))
+                        svc.post_event(
+                            event_type="PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+                            reference=base_ref,
+                            description=f"Interest (accrued / not billed) — {base_ref}",
+                            event_id=f"REPAY-{rid}-INT-ACC",
+                            created_by=created_by,
+                            entry_date=eff,
+                            payload={"cash_operating": p, "regular_interest_accrued": p},
+                        )
+                    if api > 1e-6:
+                        p = Decimal(str(api))
+                        svc.post_event(
+                            event_type="PAYMENT_PENALTY_INTEREST",
+                            reference=base_ref,
+                            description=f"Penalty interest — {base_ref}",
+                            event_id=f"REPAY-{rid}-PEN",
+                            created_by=created_by,
+                            entry_date=eff,
+                            payload=None,
+                        )
+                    if adi > 1e-6:
+                        p = Decimal(str(adi))
+                        svc.post_event(
+                            event_type="PAYMENT_DEFAULT_INTEREST",
+                            reference=base_ref,
+                            description=f"Default interest — {base_ref}",
+                            event_id=f"REPAY-{rid}-DEF",
+                            created_by=created_by,
+                            entry_date=eff,
+                            payload=None,
+                        )
+                    if afc > 1e-6:
+                        p = Decimal(str(afc))
+                        svc.post_event(
+                            event_type="PASS_THROUGH_COST_RECOVERY",
+                            reference=base_ref,
+                            description=f"Fees/charges — {base_ref}",
+                            event_id=f"REPAY-{rid}-FEES",
+                            created_by=created_by,
+                            entry_date=eff,
+                            amount=p,
+                            payload=None,
+                        )
+
+                # Reversal receipt journals (only meaningful when receipt is reversed).
+                if status == "reversed" and orig_id_int is not None:
+                    # Reverse the original receipt journals using deterministic REV ids.
+                    if unalloc > 1e-6:
+                        orig_ref_u = _unapplied_original_reference(
+                            "credit", loan_id=loan_id, repayment_id=orig_id_int, value_date=eff
+                        )
+                        rev_ref_u = _unapplied_reversal_reference(orig_ref_u)
+                        svc.post_event(
+                            event_type="UNAPPLIED_FUNDS_OVERPAYMENT",
+                            reference=rev_ref_u,
+                            description=f"Reversal of unapplied overpayment: {orig_ref_u}",
+                            event_id=rev_ref_u,
+                            created_by=created_by,
+                            entry_date=eff,
+                            amount=Decimal(str(unalloc)),
+                            is_reversal=True,
+                        )
+                    if apr > 1e-6:
+                        p = Decimal(str(apr))
+                        svc.post_event(
+                            event_type="PAYMENT_PRINCIPAL",
+                            reference=_repayment_journal_reference(loan_id, orig_id_int),
+                            description=f"Reversal of principal (arrears) — Loan {loan_id}, Repayment id {orig_id_int}",
+                            event_id=f"REV-REPAY-{orig_id_int}-PRIN-ARR",
+                            created_by=created_by,
+                            entry_date=eff,
+                            payload={"cash_operating": p, "principal_arrears": p},
+                            amount=p,
+                            is_reversal=True,
+                        )
+                    if pnd > 1e-6:
+                        p = Decimal(str(pnd))
+                        svc.post_event(
+                            event_type="PAYMENT_PRINCIPAL_NOT_YET_DUE",
+                            reference=_repayment_journal_reference(loan_id, orig_id_int),
+                            description=f"Reversal of principal (not yet due) — Loan {loan_id}, Repayment id {orig_id_int}",
+                            event_id=f"REV-REPAY-{orig_id_int}-PRIN-NYD",
+                            created_by=created_by,
+                            entry_date=eff,
+                            payload={"cash_operating": p, "loan_principal": p},
+                            amount=p,
+                            is_reversal=True,
+                        )
+                    if aiar > 1e-6:
+                        p = Decimal(str(aiar))
+                        svc.post_event(
+                            event_type="PAYMENT_REGULAR_INTEREST",
+                            reference=_repayment_journal_reference(loan_id, orig_id_int),
+                            description=f"Reversal of interest (arrears) — Loan {loan_id}, Repayment id {orig_id_int}",
+                            event_id=f"REV-REPAY-{orig_id_int}-INT-ARR",
+                            created_by=created_by,
+                            entry_date=eff,
+                            payload={"cash_operating": p, "regular_interest_arrears": p},
+                            amount=p,
+                            is_reversal=True,
+                        )
+                    if aia > 1e-6:
+                        p = Decimal(str(aia))
+                        svc.post_event(
+                            event_type="PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+                            reference=_repayment_journal_reference(loan_id, orig_id_int),
+                            description=f"Reversal of interest (accrued / not billed) — Loan {loan_id}, Repayment id {orig_id_int}",
+                            event_id=f"REV-REPAY-{orig_id_int}-INT-ACC",
+                            created_by=created_by,
+                            entry_date=eff,
+                            payload={"cash_operating": p, "regular_interest_accrued": p},
+                            amount=p,
+                            is_reversal=True,
+                        )
+                    if api > 1e-6:
+                        p = Decimal(str(api))
+                        svc.post_event(
+                            event_type="PAYMENT_PENALTY_INTEREST",
+                            reference=_repayment_journal_reference(loan_id, orig_id_int),
+                            description=f"Reversal of penalty interest — Loan {loan_id}, Repayment id {orig_id_int}",
+                            event_id=f"REV-REPAY-{orig_id_int}-PEN",
+                            created_by=created_by,
+                            entry_date=eff,
+                            amount=p,
+                            is_reversal=True,
+                        )
+                    if adi > 1e-6:
+                        p = Decimal(str(adi))
+                        svc.post_event(
+                            event_type="PAYMENT_DEFAULT_INTEREST",
+                            reference=_repayment_journal_reference(loan_id, orig_id_int),
+                            description=f"Reversal of default interest — Loan {loan_id}, Repayment id {orig_id_int}",
+                            event_id=f"REV-REPAY-{orig_id_int}-DEF",
+                            created_by=created_by,
+                            entry_date=eff,
+                            amount=p,
+                            is_reversal=True,
+                        )
+                    if afc > 1e-6:
+                        p = Decimal(str(afc))
+                        svc.post_event(
+                            event_type="PASS_THROUGH_COST_RECOVERY",
+                            reference=_repayment_journal_reference(loan_id, orig_id_int),
+                            description=f"Reversal of fees/charges — Loan {loan_id}, Repayment id {orig_id_int}",
+                            event_id=f"REV-REPAY-{orig_id_int}-FEES",
+                            created_by=created_by,
+                            entry_date=eff,
+                            amount=p,
+                            is_reversal=True,
+                        )
+
+            # Unapplied liquidations and liquidation reversals (system rows).
+            cur.execute(
+                """
+                SELECT
+                    (COALESCE(lr.value_date, lr.payment_date))::date AS eff_date,
+                    lra.event_type,
+                    lra.source_repayment_id,
+                    lra.alloc_principal_not_due,
+                    lra.alloc_principal_arrears,
+                    lra.alloc_interest_accrued,
+                    lra.alloc_interest_arrears,
+                    lra.alloc_default_interest,
+                    lra.alloc_penalty_interest,
+                    lra.alloc_fees_charges
+                FROM loan_repayment_allocation lra
+                JOIN loan_repayments lr ON lr.id = lra.repayment_id
+                WHERE lr.loan_id = %s
+                  AND (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
+                  AND lra.event_type IN ('unapplied_funds_allocation', 'unallocation_parent_reversed')
+                  AND lra.source_repayment_id IS NOT NULL
+                ORDER BY (COALESCE(lr.value_date, lr.payment_date))::date, lr.id
+                """,
+                (loan_id, start_date, end_date),
+            )
+            liq_rows = cur.fetchall()
+            for r in liq_rows:
+                eff = r["eff_date"]
+                src = int(r["source_repayment_id"])
+                evt = str(r.get("event_type") or "")
+                is_rev = evt == "unallocation_parent_reversed"
+
+                liq_ref = _unapplied_original_reference(
+                    "liquidation", loan_id=loan_id, repayment_id=src, value_date=eff
+                )
+                event_id = _unapplied_reversal_reference(liq_ref) if is_rev else liq_ref
+
+                apr = _p(r.get("alloc_principal_not_due"))
+                apa = _p(r.get("alloc_principal_arrears"))
+                aia = _p(r.get("alloc_interest_accrued"))
+                aiar = _p(r.get("alloc_interest_arrears"))
+                adi = _p(r.get("alloc_default_interest"))
+                api = _p(r.get("alloc_penalty_interest"))
+                afc = _p(r.get("alloc_fees_charges"))
+
+                if apr > 1e-6:
+                    svc.post_event(
+                        event_type="PAYMENT_PRINCIPAL_NOT_YET_DUE",
+                        reference=event_id,
+                        description=f"{'Reversal of ' if is_rev else ''}unapplied liquidation: principal not yet due ({liq_ref})",
+                        event_id=event_id,
+                        created_by=created_by,
+                        entry_date=eff,
+                        amount=Decimal(str(apr)),
+                        is_reversal=is_rev,
+                    )
+                if apa > 1e-6:
+                    svc.post_event(
+                        event_type="PAYMENT_PRINCIPAL",
+                        reference=event_id,
+                        description=f"{'Reversal of ' if is_rev else ''}unapplied liquidation: principal arrears ({liq_ref})",
+                        event_id=event_id,
+                        created_by=created_by,
+                        entry_date=eff,
+                        amount=Decimal(str(apa)),
+                        is_reversal=is_rev,
+                    )
+                if aia > 1e-6:
+                    svc.post_event(
+                        event_type="PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+                        reference=event_id,
+                        description=f"{'Reversal of ' if is_rev else ''}unapplied liquidation: interest accrued ({liq_ref})",
+                        event_id=event_id,
+                        created_by=created_by,
+                        entry_date=eff,
+                        amount=Decimal(str(aia)),
+                        is_reversal=is_rev,
+                    )
+                if aiar > 1e-6:
+                    svc.post_event(
+                        event_type="PAYMENT_REGULAR_INTEREST",
+                        reference=event_id,
+                        description=f"{'Reversal of ' if is_rev else ''}unapplied liquidation: interest arrears ({liq_ref})",
+                        event_id=event_id,
+                        created_by=created_by,
+                        entry_date=eff,
+                        amount=Decimal(str(aiar)),
+                        is_reversal=is_rev,
+                    )
+                if adi > 1e-6:
+                    svc.post_event(
+                        event_type="PAYMENT_DEFAULT_INTEREST",
+                        reference=event_id,
+                        description=f"{'Reversal of ' if is_rev else ''}unapplied liquidation: default interest ({liq_ref})",
+                        event_id=event_id,
+                        created_by=created_by,
+                        entry_date=eff,
+                        amount=Decimal(str(adi)),
+                        is_reversal=is_rev,
+                    )
+                if api > 1e-6:
+                    svc.post_event(
+                        event_type="PAYMENT_PENALTY_INTEREST",
+                        reference=event_id,
+                        description=f"{'Reversal of ' if is_rev else ''}unapplied liquidation: penalty interest ({liq_ref})",
+                        event_id=event_id,
+                        created_by=created_by,
+                        entry_date=eff,
+                        amount=Decimal(str(api)),
+                        is_reversal=is_rev,
+                    )
+                if afc > 1e-6:
+                    svc.post_event(
+                        event_type="PASS_THROUGH_COST_RECOVERY",
+                        reference=event_id,
+                        description=f"{'Reversal of ' if is_rev else ''}unapplied liquidation: fees/charges ({liq_ref})",
+                        event_id=event_id,
+                        created_by=created_by,
+                        entry_date=eff,
+                        amount=Decimal(str(afc)),
+                        is_reversal=is_rev,
+                    )
+
+
 def _reversal_posting_calendar_date(system_date: datetime | str | date | None) -> date:
     """Calendar date used as the upper horizon when replaying EOD after a reversal."""
     sdate = system_date
@@ -573,6 +983,247 @@ def save_loan(
     return loan_id
 
 
+def _ensure_loan_approval_drafts_table(conn: Any) -> None:
+    """Create approval draft queue table if it does not yet exist."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS loan_approval_drafts (
+                id BIGSERIAL PRIMARY KEY,
+                customer_id INTEGER NOT NULL,
+                loan_type VARCHAR(64) NOT NULL,
+                product_code VARCHAR(64),
+                details_json JSONB NOT NULL,
+                schedule_json JSONB NOT NULL,
+                assigned_approver_id VARCHAR(128),
+                status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+                created_by VARCHAR(128),
+                approved_by VARCHAR(128),
+                rework_note TEXT,
+                dismissed_note TEXT,
+                loan_id INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                approved_at TIMESTAMPTZ,
+                dismissed_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_loan_approval_drafts_status ON loan_approval_drafts(status)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_loan_approval_drafts_assignee ON loan_approval_drafts(assigned_approver_id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_loan_approval_drafts_customer ON loan_approval_drafts(customer_id)"
+        )
+        # Older runs may have created this as INTEGER; allow UUID/text user ids.
+        cur.execute(
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'loan_approval_drafts'
+                      AND column_name = 'assigned_approver_id'
+                      AND data_type IN ('integer', 'bigint', 'smallint')
+                ) THEN
+                    ALTER TABLE loan_approval_drafts
+                    ALTER COLUMN assigned_approver_id TYPE VARCHAR(128)
+                    USING assigned_approver_id::text;
+                END IF;
+            END $$;
+            """
+        )
+
+
+def save_loan_approval_draft(
+    customer_id: int,
+    loan_type: str,
+    details: dict[str, Any],
+    schedule_df: pd.DataFrame,
+    *,
+    product_code: str | None = None,
+    assigned_approver_id: str | None = None,
+    created_by: str | None = None,
+) -> int:
+    """Persist a loan draft for approval queue (no loan tables/GL posting)."""
+    with _connection() as conn:
+        _ensure_loan_approval_drafts_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO loan_approval_drafts (
+                    customer_id, loan_type, product_code, details_json, schedule_json,
+                    assigned_approver_id, status, created_by, submitted_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, 'PENDING', %s, NOW(), NOW())
+                RETURNING id
+                """,
+                (
+                    int(customer_id),
+                    str(loan_type),
+                    product_code,
+                    Json(details or {}),
+                    Json(schedule_df.to_dict(orient="records")),
+                    str(assigned_approver_id) if assigned_approver_id is not None else None,
+                    created_by,
+                ),
+            )
+            return int(cur.fetchone()[0])
+
+
+def list_loan_approval_drafts(
+    *,
+    status: str = "PENDING",
+    search: str | None = None,
+    assigned_approver_id: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """List loan approval drafts for inbox/review."""
+    with _connection() as conn:
+        _ensure_loan_approval_drafts_table(conn)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            where = ["TRUE"]
+            params: list[Any] = []
+            if status:
+                where.append("d.status = %s")
+                params.append(status)
+            if assigned_approver_id is not None:
+                where.append("d.assigned_approver_id = %s")
+                params.append(str(assigned_approver_id))
+            if search:
+                where.append(
+                    "("
+                    "CAST(d.id AS TEXT) ILIKE %s OR "
+                    "CAST(d.customer_id AS TEXT) ILIKE %s OR "
+                    "COALESCE(d.product_code, '') ILIKE %s OR "
+                    "COALESCE(d.loan_type, '') ILIKE %s"
+                    ")"
+                )
+                like = f"%{search.strip()}%"
+                params.extend([like, like, like, like])
+            params.append(int(limit))
+            cur.execute(
+                f"""
+                SELECT
+                    d.id, d.customer_id, d.loan_type, d.product_code, d.assigned_approver_id,
+                    d.status, d.created_by, d.submitted_at, d.approved_at, d.dismissed_at, d.loan_id
+                FROM loan_approval_drafts d
+                WHERE {' AND '.join(where)}
+                ORDER BY d.submitted_at DESC, d.id DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            return list(cur.fetchall() or [])
+
+
+def get_loan_approval_draft(draft_id: int) -> dict[str, Any] | None:
+    with _connection() as conn:
+        _ensure_loan_approval_drafts_table(conn)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM loan_approval_drafts
+                WHERE id = %s
+                """,
+                (int(draft_id),),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def approve_loan_approval_draft(
+    draft_id: int,
+    *,
+    approved_by: str | None = None,
+) -> int:
+    """Approve a pending draft and create the actual loan + schedule + GL."""
+    draft = get_loan_approval_draft(draft_id)
+    if not draft:
+        raise ValueError(f"Draft #{draft_id} was not found.")
+    if str(draft.get("status") or "").upper() != "PENDING":
+        raise ValueError(f"Draft #{draft_id} is not pending (status={draft.get('status')}).")
+
+    details = draft.get("details_json") or {}
+    schedule_rows = draft.get("schedule_json") or []
+    schedule_df = pd.DataFrame(schedule_rows)
+    loan_id = save_loan(
+        int(draft["customer_id"]),
+        str(draft["loan_type"]),
+        details,
+        schedule_df,
+        product_code=draft.get("product_code"),
+    )
+
+    with _connection() as conn:
+        _ensure_loan_approval_drafts_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE loan_approval_drafts
+                SET status = 'APPROVED',
+                    approved_at = NOW(),
+                    approved_by = %s,
+                    loan_id = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (approved_by, int(loan_id), int(draft_id)),
+            )
+    return int(loan_id)
+
+
+def send_back_loan_approval_draft(
+    draft_id: int,
+    *,
+    note: str | None = None,
+    actor: str | None = None,
+) -> None:
+    with _connection() as conn:
+        _ensure_loan_approval_drafts_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE loan_approval_drafts
+                SET status = 'REWORK',
+                    rework_note = %s,
+                    approved_by = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (note, actor, int(draft_id)),
+            )
+
+
+def dismiss_loan_approval_draft(
+    draft_id: int,
+    *,
+    note: str | None = None,
+    actor: str | None = None,
+) -> None:
+    with _connection() as conn:
+        _ensure_loan_approval_drafts_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE loan_approval_drafts
+                SET status = 'DISMISSED',
+                    dismissed_note = %s,
+                    approved_by = %s,
+                    dismissed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (note, actor, int(draft_id)),
+            )
+
+
 def record_repayment(
     loan_id: int,
     amount: float,
@@ -755,8 +1406,6 @@ def reverse_repayment(
 
                 # GL reversal for the unapplied overpayment credit.
                 if svc_unapplied is not None and float(uf_row.get("amount") or 0) > 1e-6:
-                    from decimal import Decimal
-
                     orig_ref = _unapplied_original_reference(
                         "credit",
                         loan_id=loan_id,
@@ -895,8 +1544,6 @@ def reverse_repayment(
                 # We reverse the same event types that would have been posted when the
                 # unapplied funds were liquidated into loan arrears/buckets.
                 if svc_unapplied is not None and amount_applied > 1e-6:
-                    from decimal import Decimal
-
                     liq_orig_ref = _unapplied_original_reference(
                         "liquidation",
                         loan_id=loan_id,
@@ -1210,18 +1857,37 @@ def reverse_repayment(
 
     eod_from = saved_value_date
     posting_cal = _reversal_posting_calendar_date(system_date)
-    eod_to = max(eod_from, posting_cal)
     try:
         from system_business_date import get_effective_date
         from eod import run_single_loan_eod_date_range
 
-        eod_to = max(eod_from, get_effective_date(), posting_cal)
+        # Never replay beyond current system business date.
+        sys_d = get_effective_date()
+        desired_to = max(eod_from, posting_cal)
+        eod_to = desired_to if desired_to <= sys_d else sys_d
+        if eod_from > eod_to:
+            return ReverseRepaymentResult(
+                reversal_repayment_id=saved_new_id,
+                loan_id=saved_loan_id,
+                value_date=saved_value_date,
+                eod_from_date=eod_from,
+                eod_to_date=eod_to,
+                eod_rerun_success=False,
+                eod_rerun_error=(
+                    "eod_replay: skipped (receipt value_date is after current system date)"
+                ),
+            )
         cfg = load_system_config_from_db() or {}
         eod_ok, eod_err = run_single_loan_eod_date_range(
             saved_loan_id, eod_from, eod_to, sys_cfg=cfg
         )
+        if eod_ok:
+            try:
+                repost_gl_for_loan_date_range(saved_loan_id, eod_from, eod_to, created_by="system")
+            except Exception as exc:
+                eod_ok, eod_err = False, f"gl_repost: {exc}"
     except Exception as exc:
-        eod_ok, eod_err = False, str(exc)
+        eod_ok, eod_err = False, f"eod_replay: {exc}"
 
     return ReverseRepaymentResult(
         reversal_repayment_id=saved_new_id,
@@ -1504,6 +2170,14 @@ def get_loan_daily_state_balances(loan_id: int, as_of_date: date) -> dict[str, f
 
 def get_loan_daily_state_range(loan_id: int, start_date: date, end_date: date) -> list[dict]:
     """All loan_daily_state rows for a loan in [start_date, end_date] ordered by as_of_date."""
+    try:
+        from system_business_date import get_effective_date
+
+        eff = get_effective_date()
+        if end_date > eff:
+            end_date = eff
+    except Exception:
+        pass
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(

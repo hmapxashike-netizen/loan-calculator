@@ -14,31 +14,30 @@ period_accrual,,2,2025-03-28,,,Accruals for period ending 2025-03-28,,,,,,,,6879
 period_accrual,,2,2025-04-28,,,Accruals for period ending 2025-04-28,,,,,,,,6750.9310895579,374.2330567904,1456.7363786341
 period_accrual,,2,2025-05-28,,,Accruals for period ending 2025-05-28,,,,,,,,6613.173120687,559.6289241012,2085.1047048452
 repayment_credit,neutral,2,2025-06-01,4,4,Repayment no 4 : Transfer exCBZ Bank 12510622,40426.64,0,7631.8246148034,27243.7810651028,1153.8231697815,4397.2111503123,0,,,
-period_accrual,,2,2025-06-28,,,Accruals for period ending 2025-06-28,,,,,,,,6465.7720939926,109.2683648955,384.8029878478
+repayment_credit,neutral,2,2025-06-01,17,REV-4,Repayment no REV-4 : REV 4,-40426.64,0,-7631.8246148034,-27243.7810651028,-1153.8231697815,-4397.2111503123,0,,,
+period_accrual,,2,2025-06-28,,,Accruals for period ending 2025-06-28,,,,,,,,6465.7720939926,796.1325802284,2836.743283706
 repayment_credit,neutral,2,2025-07-07,8,8,Repayment no 8 : Payment ex CB Bank Limited ifo lincap,203.44,0,0,0,0,203.44,0,,,
 repayment_credit,neutral,2,2025-07-07,9,9,Repayment no 9 : cabs,1000,0,0,825.6206052,93.0336284303,81.3457663697,0,,,
 repayment_credit,neutral,2,2025-07-07,10,10,Repayment no 10 : free,2000,0,0,1825.6206052,93.0336284303,81.3457663697,0,,,
 repayment_credit,neutral,2,2025-07-07,12,12,Repayment no 12 : b,6000,0,1359.8485112071,4640.1514887929,0,0,0,,,
 repayment_credit,neutral,2,2025-07-07,13,REV-9,Repayment no REV-9 : rcabs,-1000,0,0,-825.6206052,-93.0336284303,-81.3457663697,0,,,
-period_accrual,,2,2025-07-28,,,Accruals for period ending 2025-07-28,,,,,,,,1892.415898629,67.5939777993,193.9731628194
+repayment_credit,neutral,2,2025-07-07,18,REV-8,Repayment no REV-8 : REV 8,-203.44,0,0,0,0,-203.44,0,,,
+repayment_credit,neutral,2,2025-07-07,19,REV-10,Repayment no REV-10 : REV 10,-2000,0,0,-1825.6206052,-93.0336284303,-81.3457663697,0,,,
 period_accrual,,3,2025-01-30,,,Accruals for period ending 2025-01-30,,,,,,,,0,0,0
 period_accrual,,4,2025-02-15,,,Accruals for period ending 2025-02-15,,,,,,,,0,0,0
 period_accrual,,4,2025-03-30,,,Accruals for period ending 2025-03-30,,,,,,,,14333.3333333319,0,0
 period_accrual,,4,2025-04-30,,,Accruals for period ending 2025-04-30,,,,,,,,10333.3333333323,0,1324.444444445
 period_accrual,,4,2025-05-30,,,Accruals for period ending 2025-05-30,,,,,,,,9999.999999999,0,2499.9999999994
 period_accrual,,4,2025-06-30,,,Accruals for period ending 2025-06-30,,,,,,,,10333.3333333323,0,3616.666666668
-period_accrual,,4,2025-07-30,,,Accruals for period ending 2025-07-30,,,,,,,,2333.3333333331,0,1050
 period_accrual,,5,2025-02-28,,,Accruals for period ending 2025-02-28,,,,,,,,0,0,0
 period_accrual,,5,2025-03-28,,,Accruals for period ending 2025-03-28,,,,,,,,9824.56140351,0,0
 period_accrual,,5,2025-04-28,,,Accruals for period ending 2025-04-28,,,,,,,,10859.0643274848,15.7894736832,920.4074074075
 period_accrual,,5,2025-05-28,,,Accruals for period ending 2025-05-28,,,,,,,,11594.678362572,17.543859648,2107.0115009743
 period_accrual,,5,2025-06-28,,,Accruals for period ending 2025-06-28,,,,,,,,12145.9510721233,18.1286549696,3375.9112599103
-period_accrual,,5,2025-07-28,,,Accruals for period ending 2025-07-28,,,,,,,,3890.6223918129,5.2631578944,1332.7276549707
 period_accrual,,6,2025-03-15,,,Accruals for period ending 2025-03-15,,,,,,,,0,0,0
 period_accrual,,6,2025-04-15,,,Accruals for period ending 2025-04-15,,,,,,,,10333.3333333323,0,0
 period_accrual,,6,2025-05-15,,,Accruals for period ending 2025-05-15,,,,,,,,11033.333333334,0,932.3333333322
 period_accrual,,6,2025-06-15,,,Accruals for period ending 2025-06-15,,,,,,,,12541.2222222236,0,2249.6929629623
-period_accrual,,6,2025-07-15,,,Accruals for period ending 2025-07-15,,,,,,,,9819.9118518512,0,2486.5785185186
 period_accrual,,7,2025-03-30,,,Accruals for period ending 2025-03-30,,,,,,,,0,0,0
 period_accrual,,7,2025-04-30,,,Accruals for period ending 2025-04-30,,,,,,,,10877.1929824575,0,0
 period_accrual,,7,2025-05-31,,,Accruals for period ending 2025-05-31,,,,,,,,10387.2466114222,444.1653606638,1013.5715237919
@@ -46,7 +45,6 @@ period_accrual,,7,2025-06-30,,,Accruals for period ending 2025-06-30,,,,,,,,9529
 period_accrual,,8,2025-04-15,,,Accruals for period ending 2025-04-15,,,,,,,,0,0,0
 period_accrual,,8,2025-05-15,,,Accruals for period ending 2025-05-15,,,,,,,,105.263157894,0,0
 period_accrual,,8,2025-06-15,,,Accruals for period ending 2025-06-15,,,,,,,,107.4023628159,1.2298975822,9.831692087
-period_accrual,,8,2025-07-15,,,Accruals for period ending 2025-07-15,,,,,,,,75.405955922,1.7870265336,15.595471518
 period_accrual,,9,2025-04-30,,,Accruals for period ending 2025-04-30,,,,,,,,0,0,0
 period_accrual,,9,2025-05-31,,,Accruals for period ending 2025-05-31,,,,,,,,5438.5964912272,0,0
 repayment_credit,credit,9,2025-06-17,5,5,Repayment no 5 : a,5656.1403508777,343.8596491223,0,5438.5964912281,0,217.5438596496,0,,,
@@ -57,4 +55,3 @@ repayment_credit,credit,9,2025-07-07,11,11,Repayment no 11 : trefedd,4952.093567
 repayment_credit,reversal,9,2025-07-07,15,REV-11,Reversal from receipt no REV-11 : rtrefedd,-4952.0935672519,-1047.9064327481,0,-4919.2982456145,0,-32.7953216374,0,,,
 period_accrual,,10,2025-05-14,,,Accruals for period ending 2025-05-14,,,,,,,,0,0,0
 period_accrual,,10,2025-06-14,,,Accruals for period ending 2025-06-14,,,,,,,,6820,0,0
-period_accrual,,10,2025-07-14,,,Accruals for period ending 2025-07-14,,,,,,,,5582.8666666659,0,431.9333333327

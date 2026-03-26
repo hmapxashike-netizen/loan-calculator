@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from decimal import Decimal
 
 import psycopg2
@@ -231,6 +232,7 @@ class AccountingRepository:
                 LEFT JOIN journal_entries je
                     ON ji.entry_id = je.id
                    AND je.status = 'POSTED'
+                   AND COALESCE(je.is_active, TRUE) = TRUE
                    AND je.entry_date >= %s
                    AND je.entry_date <= %s
                 WHERE p.code = %s
@@ -440,49 +442,218 @@ class AccountingRepository:
                 context=f"journal save (reference={reference!r}, event_tag={event_tag!r})",
             )
         with self.conn.cursor() as cur:
-            # EOD (and other flows) pass deterministic identifiers via (event_id, event_tag).
-            # If the same event is posted twice (user re-runs EOD, auto-EOD overlaps, or a
-            # previous run partially succeeded), journal_entries can be duplicated because
-            # the schema currently has no uniqueness constraint on event_id.
-            #
-            # DAL guard: if journal exists for this (event_id, event_tag), replace it
-            # so the persisted GL matches the *latest* deterministic computation.
-            if event_id is not None and event_tag is not None:
+            def _insert_header_and_lines(
+                *,
+                hdr_entry_date,
+                hdr_reference,
+                hdr_description,
+                hdr_event_id,
+                hdr_event_tag,
+                hdr_entry_type,
+                hdr_created_by,
+                journal_lines,
+            ):
+                cur.execute(
+                    """
+                    INSERT INTO journal_entries (
+                        entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
+                    RETURNING id
+                    """,
+                    (
+                        hdr_entry_date,
+                        hdr_reference,
+                        hdr_description,
+                        hdr_event_id,
+                        hdr_event_tag,
+                        hdr_entry_type,
+                        hdr_created_by,
+                    ),
+                )
+                new_id = cur.fetchone()["id"]
+                for line in journal_lines:
+                    cur.execute(
+                        """
+                        INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (
+                            new_id,
+                            line["account_id"],
+                            line.get("debit", 0.0),
+                            line.get("credit", 0.0),
+                            line.get("memo"),
+                        ),
+                    )
+                return new_id
+
+            def _active_entry_for_event(eid, etag):
+                if eid is None or etag is None:
+                    return None
+                cur.execute(
+                    """
+                    SELECT id, entry_date
+                    FROM journal_entries
+                    WHERE event_id = %s
+                      AND event_tag = %s
+                      AND COALESCE(is_active, TRUE) = TRUE
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (eid, etag),
+                )
+                return cur.fetchone()
+
+            def _period_is_closed(period_key: str) -> bool:
+                try:
+                    cur.execute(
+                        "SELECT is_closed FROM financial_periods WHERE period_key = %s",
+                        (period_key,),
+                    )
+                    r = cur.fetchone()
+                    return bool(r and r.get("is_closed"))
+                except psycopg2.errors.UndefinedTable:
+                    return False
+
+            def _earliest_open_period_posting_date():
+                # Post adjustments in earliest open period, first day of that month.
                 try:
                     cur.execute(
                         """
-                        SELECT id
-                        FROM journal_entries
-                        WHERE event_id = %s AND event_tag = %s
-                        ORDER BY created_at DESC
+                        SELECT period_key
+                        FROM financial_periods
+                        WHERE is_closed = FALSE
+                        ORDER BY period_key
                         LIMIT 1
-                        """,
-                        (event_id, event_tag),
+                        """
                     )
-                    row = cur.fetchone()
-                    if row is not None:
-                        existing_entry_id = row["id"]
-                        # Delete header (ON DELETE CASCADE should remove items if FK exists).
-                        cur.execute("DELETE FROM journal_entries WHERE id = %s", (existing_entry_id,))
-                        # In case cascade is missing in the current DB, also delete items explicitly.
-                        try:
-                            cur.execute("DELETE FROM journal_items WHERE entry_id = %s", (existing_entry_id,))
-                        except psycopg2.errors.UndefinedColumn:
-                            pass
-                except psycopg2.errors.UndefinedColumn:
-                    # Older schemas may not yet have event_id/event_tag; fall back to insert.
+                    r = cur.fetchone()
+                    if r and r.get("period_key"):
+                        ym = str(r["period_key"])
+                        y, m = ym.split("-")
+                        return date(int(y), int(m), 1)
+                except psycopg2.errors.UndefinedTable:
                     pass
-            cur.execute("""
-                INSERT INTO journal_entries (entry_date, reference, description, event_id, event_tag, created_by)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
-            """, (entry_date, reference, description, event_id, event_tag, created_by))
-            entry_id = cur.fetchone()["id"]
-            
-            for line in lines:
-                cur.execute("""
-                    INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (entry_id, line["account_id"], line.get("debit", 0.0), line.get("credit", 0.0), line.get("memo")))
+                # Fallback to posting on the provided entry date if periods table unavailable.
+                return entry_date
+
+            def _load_lines_by_entry(entry_id):
+                cur.execute(
+                    """
+                    SELECT account_id, COALESCE(debit, 0) AS debit, COALESCE(credit, 0) AS credit, memo
+                    FROM journal_items
+                    WHERE entry_id = %s
+                    """,
+                    (entry_id,),
+                )
+                return cur.fetchall()
+
+            def _build_delta_lines(old_lines, new_lines, memo_prefix: str):
+                from collections import defaultdict
+
+                old_by_acc = defaultdict(lambda: {"debit": Decimal("0"), "credit": Decimal("0")})
+                new_by_acc = defaultdict(lambda: {"debit": Decimal("0"), "credit": Decimal("0")})
+                for l in old_lines:
+                    acc = l["account_id"]
+                    old_by_acc[acc]["debit"] += as_10dp(l.get("debit") or 0)
+                    old_by_acc[acc]["credit"] += as_10dp(l.get("credit") or 0)
+                for l in new_lines:
+                    acc = l["account_id"]
+                    new_by_acc[acc]["debit"] += as_10dp(l.get("debit") or 0)
+                    new_by_acc[acc]["credit"] += as_10dp(l.get("credit") or 0)
+
+                all_acc = set(old_by_acc.keys()) | set(new_by_acc.keys())
+                out = []
+                for acc in all_acc:
+                    d = as_10dp(new_by_acc[acc]["debit"] - old_by_acc[acc]["debit"])
+                    c = as_10dp(new_by_acc[acc]["credit"] - old_by_acc[acc]["credit"])
+                    if abs(d) <= Decimal("0.0000000001") and abs(c) <= Decimal("0.0000000001"):
+                        continue
+                    out.append(
+                        {
+                            "account_id": acc,
+                            "debit": d,
+                            "credit": c,
+                            "memo": memo_prefix,
+                        }
+                    )
+                return out
+
+            existing = _active_entry_for_event(event_id, event_tag)
+            original_entry_date = existing["entry_date"] if existing else entry_date
+            period_key = original_entry_date.strftime("%Y-%m")
+            period_closed = _period_is_closed(period_key)
+
+            if not period_closed:
+                # OPEN period: correction by replacement (soft-supersede old active row).
+                existing_entry_id = existing["id"] if existing else None
+                entry_id = _insert_header_and_lines(
+                    hdr_entry_date=entry_date,
+                    hdr_reference=reference,
+                    hdr_description=description,
+                    hdr_event_id=event_id,
+                    hdr_event_tag=event_tag,
+                    hdr_entry_type="EVENT",
+                    hdr_created_by=created_by,
+                    journal_lines=lines,
+                )
+                if existing_entry_id is not None:
+                    try:
+                        cur.execute(
+                            """
+                            UPDATE journal_entries
+                            SET is_active = FALSE,
+                                superseded_at = NOW(),
+                                superseded_by_id = %s
+                            WHERE id = %s
+                            """,
+                            (entry_id, existing_entry_id),
+                        )
+                    except psycopg2.errors.UndefinedColumn:
+                        pass
+            else:
+                # CLOSED period: keep original active and post delta adjustment in earliest open period.
+                old_lines = _load_lines_by_entry(existing["id"]) if existing else []
+                delta_lines = _build_delta_lines(
+                    old_lines,
+                    lines,
+                    memo_prefix=f"Adjustment for {event_id or 'event'}",
+                )
+                if delta_lines:
+                    assert_journal_lines_balanced(
+                        delta_lines,
+                        context=f"journal adjustment save (event_id={event_id!r}, event_tag={event_tag!r})",
+                    )
+                    posting_date = _earliest_open_period_posting_date()
+                    adj_event_id = f"ADJ::{event_tag or 'EVENT'}::{event_id or reference or 'UNKNOWN'}"
+                    adj_event_tag = "PERIOD_ADJUSTMENT"
+                    existing_adj = _active_entry_for_event(adj_event_id, adj_event_tag)
+                    adj_entry_id = _insert_header_and_lines(
+                        hdr_entry_date=posting_date,
+                        hdr_reference=reference,
+                        hdr_description=(
+                            f"Adjustment for {event_id} originally dated {original_entry_date.isoformat()}"
+                            if event_id is not None
+                            else f"Adjustment originally dated {original_entry_date.isoformat()}"
+                        ),
+                        hdr_event_id=adj_event_id,
+                        hdr_event_tag=adj_event_tag,
+                        hdr_entry_type="PERIOD_ADJUSTMENT",
+                        hdr_created_by=created_by,
+                        journal_lines=delta_lines,
+                    )
+                    if existing_adj is not None:
+                        cur.execute(
+                            """
+                            UPDATE journal_entries
+                            SET is_active = FALSE,
+                                superseded_at = NOW(),
+                                superseded_by_id = %s
+                            WHERE id = %s
+                            """,
+                            (adj_entry_id, existing_adj["id"]),
+                        )
         self.conn.commit()
 
     def list_unbalanced_journal_entries(self):
@@ -505,6 +676,7 @@ class AccountingRepository:
                          - ROUND(SUM(ROUND(COALESCE(ji.credit, 0), 10)), 2) AS imbalance_2dp
                 FROM journal_entries je
                 JOIN journal_items ji ON ji.entry_id = je.id
+                WHERE COALESCE(je.is_active, TRUE) = TRUE
                 GROUP BY je.id, je.entry_date, je.reference, je.event_id, je.event_tag
                 HAVING ROUND(SUM(ROUND(COALESCE(ji.debit, 0), 10)), 2)
                     <> ROUND(SUM(ROUND(COALESCE(ji.credit, 0), 10)), 2)
@@ -515,7 +687,7 @@ class AccountingRepository:
 
     def get_journal_entries(self, start_date=None, end_date=None, account_code=None):
         with self.conn.cursor() as cur:
-            where_clauses = []
+            where_clauses = ["COALESCE(je.is_active, TRUE) = TRUE"]
             params = []
             
             if start_date:
@@ -570,14 +742,21 @@ class AccountingRepository:
             cur.execute(f"""
                 SELECT COALESCE(SUM(ji.debit), 0) as ob_debit, COALESCE(SUM(ji.credit), 0) as ob_credit
                 FROM journal_items ji
-                JOIN journal_entries je ON ji.entry_id = je.id AND je.status = 'POSTED'
+                JOIN journal_entries je
+                  ON ji.entry_id = je.id
+                 AND je.status = 'POSTED'
+                 AND COALESCE(je.is_active, TRUE) = TRUE
                 WHERE ji.account_id = %s {ob_date_filter}
             """, tuple(ob_params))
             ob = cur.fetchone()
             
             # Fetch transactions
             tx_params = [account['id']]
-            tx_where_clauses = ["ji.account_id = %s", "je.status = 'POSTED'"]
+            tx_where_clauses = [
+                "ji.account_id = %s",
+                "je.status = 'POSTED'",
+                "COALESCE(je.is_active, TRUE) = TRUE",
+            ]
             
             if start_date:
                 tx_where_clauses.append("je.entry_date >= %s")
@@ -597,9 +776,9 @@ class AccountingRepository:
                 ORDER BY
                     je.entry_date ASC,
                     /* Same-day ordering rule:
-                       Reversal journals (event_id like 'REV-%') must appear after originals. */
+                       Reversal journals (event_id like 'REV-*') must appear after originals. */
                     CASE
-                        WHEN je.event_id IS NOT NULL AND je.event_id LIKE 'REV-%' THEN 1
+                        WHEN je.event_id IS NOT NULL AND je.event_id LIKE 'REV-%%' THEN 1
                         ELSE 0
                     END ASC,
                     je.created_at ASC
@@ -626,7 +805,9 @@ class AccountingRepository:
                     SELECT ji.account_id, ji.debit, ji.credit
                     FROM journal_items ji
                     JOIN journal_entries je ON ji.entry_id = je.id
-                    WHERE je.status = 'POSTED' {date_filter}
+                    WHERE je.status = 'POSTED'
+                      AND COALESCE(je.is_active, TRUE) = TRUE
+                      {date_filter}
                 ) ji ON a.id = ji.account_id
                 GROUP BY a.code, a.name, a.category
                 ORDER BY a.code
@@ -658,7 +839,9 @@ class AccountingRepository:
                     SELECT ji.account_id, ji.debit, ji.credit
                     FROM journal_items ji
                     JOIN journal_entries je ON ji.entry_id = je.id
-                    WHERE je.status = 'POSTED' {date_filter}
+                    WHERE je.status = 'POSTED'
+                      AND COALESCE(je.is_active, TRUE) = TRUE
+                      {date_filter}
                 ) ji ON a.id = ji.account_id
                 WHERE a.category IN ({placeholders})
                 GROUP BY a.code, a.name, a.category
@@ -705,6 +888,7 @@ class AccountingRepository:
                     JOIN journal_entries je
                       ON ji.entry_id = je.id
                      AND je.status = 'POSTED'
+                     AND COALESCE(je.is_active, TRUE) = TRUE
                      AND je.entry_date >= %s
                      AND je.entry_date <= %s
                     GROUP BY a.id, a.code, a.name
@@ -719,6 +903,7 @@ class AccountingRepository:
                     LEFT JOIN journal_entries je
                       ON ji.entry_id = je.id
                      AND je.status = 'POSTED'
+                     AND COALESCE(je.is_active, TRUE) = TRUE
                      AND je.entry_date::timestamptz <= COALESCE(r.transitioned_to_parent_at, '9999-12-31'::timestamptz)
                     GROUP BY r.id
                 ),
@@ -782,6 +967,7 @@ class AccountingRepository:
                     JOIN journal_entries je
                       ON ji.entry_id = je.id
                      AND je.status = 'POSTED'
+                     AND COALESCE(je.is_active, TRUE) = TRUE
                      AND je.entry_date >= %s
                      AND je.entry_date <= %s
                     GROUP BY a.id, a.code, a.name
