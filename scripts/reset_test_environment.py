@@ -1,5 +1,5 @@
 """
-Reset transactional LMS data for testing.
+Reset transactional FarndaCred data for testing.
 
 This script removes loan/GL operational data and resets the system business date.
 It keeps master/configuration data (users, products, chart of accounts, templates)
@@ -57,7 +57,7 @@ OPTIONAL_CUSTOMER_TABLES = [
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Reset LMS transactional test data.")
+    parser = argparse.ArgumentParser(description="Reset FarndaCred transactional test data.")
     parser.add_argument(
         "--system-date",
         default="2025-11-02",

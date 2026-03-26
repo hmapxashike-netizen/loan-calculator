@@ -1,0 +1,7 @@
+id,created_at,event_type,loan_id,as_of_date,repayment_id,original_repayment_id,narration,details
+1,2026-03-25T11:47:49.535542+02:00,reversal_add_back,2,2025-07-07,,9,Reversal of receipt allocation,"{'alloc_interest_arrears': 825.6206052, 'alloc_penalty_interest': 93.0336284303, 'alloc_principal_arrears': 0.0}"
+2,2026-03-25T12:00:19.202516+02:00,reallocate_after_reversal,2,2025-07-07,8,,system auto rev,{'reason': 'Receipt reallocated after reversal on same day'}
+3,2026-03-25T12:00:19.838266+02:00,reallocate_after_reversal,2,2025-07-07,10,,system auto rev,{'reason': 'Receipt reallocated after reversal on same day'}
+4,2026-03-25T12:00:20.277463+02:00,reallocate_after_reversal,2,2025-07-07,12,,system auto rev,{'reason': 'Receipt reallocated after reversal on same day'}
+6,2026-03-25T12:31:05.664141+02:00,reversal_add_back,9,2025-06-17,,5,Reversal of receipt allocation,"{'alloc_interest_arrears': 5438.5964912281, 'alloc_penalty_interest': 0.0, 'alloc_principal_arrears': 0.0}"
+7,2026-03-25T12:52:22.407018+02:00,reversal_add_back,9,2025-07-07,,11,Reversal of receipt allocation,"{'alloc_interest_arrears': 4919.2982456145, 'alloc_penalty_interest': 0.0, 'alloc_principal_arrears': 0.0}"

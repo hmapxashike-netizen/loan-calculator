@@ -2,13 +2,13 @@
 """
 Print how a receipt was allocated across waterfall buckets (from loan_repayment_allocation).
 
-Examples (from project root, with LMS_DATABASE_URL / config set like the app):
+Examples (from project root, with FARNDACRED_DATABASE_URL / LMS_DATABASE_URL / config set like the app):
 
   python scripts/breakdown_repayment_allocation.py --loan-id 1 --amount 100000
   python scripts/breakdown_repayment_allocation.py --repayment-id 42
   python scripts/breakdown_repayment_allocation.py --loan-id 1 --amount 100000 --tolerance 0.02
 
-Uses the same DB URL as the app: config.get_database_url() / env LMS_DATABASE_URL.
+Uses the same DB URL as the app: config.get_database_url() / env FARNDACRED_DATABASE_URL (or LMS_DATABASE_URL).
 
 "Delinquency (5 buckets)" = principal_arrears + interest_arrears + default + penalty + fees
 (same components as statement total delinquency when comparing to loan_daily_state).

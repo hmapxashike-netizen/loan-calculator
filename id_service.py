@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 """
-ID generation utilities for the Loan Management System.
+ID generation utilities for FarndaCred.
 
 Why not just use auto‑incrementing integers?
 --------------------------------------------
 Relying only on sequential integers (1, 2, 3, ...) for customer and loan
-identifiers has a few drawbacks in a production LMS:
+identifiers has a few drawbacks in a production FarndaCred deployment:
 
 - Security / privacy:
   - Sequential IDs are easy to guess and enumerate (e.g. /loan/1, /loan/2, ...),

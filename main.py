@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 import pandas as pd
@@ -13,18 +15,87 @@ from auth_service import AuthService
 import app as loan_app  # reuse existing Streamlit loan UI
 
 
+def render_footer() -> None:
+    st.markdown("---")
+    st.markdown(
+        "<div style='text-align:center; color:#64748B; font-size:0.85rem; padding-bottom:0.5rem;'>"
+        "Copyright Farnda Solutions 2026. All rights reserved."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _logo_path() -> Path:
+    base_dir = Path(__file__).resolve().parent
+    for file_name in ("FarndaCred logo with.svg", "FarndaCred logo with.png"):
+        candidate = base_dir / file_name
+        if candidate.exists():
+            return candidate
+    return base_dir / "FarndaCred logo with.png"
+
+
+def render_sidebar_branding() -> None:
+    logo_path = _logo_path()
+    if logo_path.exists():
+        mime = "image/svg+xml" if logo_path.suffix.lower() == ".svg" else "image/png"
+        logo_b64 = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+        st.sidebar.markdown(
+            f"""
+            <div style="background:#E5E7EB; border-radius:10px; padding:0.55rem; margin-bottom:0.35rem;">
+                <img src="data:{mime};base64,{logo_b64}" style="width:100%; height:auto; display:block;" />
+            </div>
+            <div style="font-size:0.82rem; color:#374151; margin-top:0.15rem; text-align:center;">
+                Calculated Value, Unmatched Trust
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.sidebar.markdown(
+            "<div style='font-size:0.82rem; color:#374151; text-align:center;'>Calculated Value, Unmatched Trust</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _format_sidebar_name(full_name: str) -> str:
+    parts = [part.strip() for part in full_name.split() if part.strip()]
+    if not parts:
+        return "User"
+    if len(parts) == 1:
+        return parts[0]
+    initials = "".join(f"{part[0].upper()}." for part in parts[:-1] if part)
+    surname = parts[-1]
+    return f"{initials} {surname}".strip()
+
+
+def render_sidebar_user_meta(user: dict, system_date, calendar_date) -> None:
+    display_name = _format_sidebar_name(user.get("full_name", "User"))
+    role = user.get("role", "USER")
+    st.sidebar.markdown(
+        f"""
+        <div style="background:#F3F4F6; border:1px solid #D1D5DB; border-radius:10px; padding:0.7rem; margin-top:0.3rem;">
+            <div style="font-size:0.75rem; color:#6B7280; margin-bottom:0.2rem;">Logged in as</div>
+            <div style="font-weight:600; color:#111827; margin-bottom:0.4rem;">{display_name} ({role})</div>
+            <div style="font-size:1.02rem; color:#16A34A; font-weight:700;">System date: {system_date.isoformat()}</div>
+            <div style="font-size:0.85rem; color:#374151;">Calendar date: {calendar_date.isoformat()}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def borrower_home():
-    st.title("Borrower Home")
+    st.header("Borrower Home")
     st.write("Borrower self-service pages can go here (loan applications, statements, etc.).")
 
 
 def officer_home():
-    st.title("Loan Officer Dashboard")
-    st.write("Loan officer workspace. Use the 'Loan Management App' entry for full calculators.")
+    st.header("Loan Officer Dashboard")
+    st.write("Loan officer workspace. Use the 'FarndaCred App' entry for full calculators.")
 
 
 def admin_home():
-    st.title("Admin Dashboard")
+    st.header("Admin Dashboard")
 
     tab_users, tab_audit = st.tabs(["User Management", "Security Audit Log"])
 
@@ -195,61 +266,71 @@ def loan_management_app():
     loan_app.main()
 
 
-def build_menu_for_role(role: str):
-    """
-    Returns an ordered mapping: label -> callable for pages allowed for this role.
-    """
+def build_menu_for_role(role: str) -> dict[str, callable]:
     if role == "BORROWER":
-        return {
-            "Home": borrower_home,
-        }
+        return {"Home": borrower_home}
+
+    loan_sections = loan_app.get_loan_app_sections()
+
     if role == "LOAN_OFFICER":
-        return {
-            "Officer Dashboard": officer_home,
-            "Loan Management App": loan_management_app,
-        }
+        allowed = [s for s in loan_sections if s != "System configurations"]
+        menu: dict[str, callable] = {"Officer Dashboard": officer_home}
+        for section in allowed:
+            menu[section] = lambda section_name=section: loan_app.render_loan_app_section(section_name)
+        return menu
+
     if role == "ADMIN":
-        return {
-            "Admin Dashboard": admin_home,
-            "Loan Management App": loan_management_app,
-        }
+        menu: dict[str, callable] = {"Admin Dashboard": admin_home}
+        for section in loan_sections:
+            menu[section] = lambda section_name=section: loan_app.render_loan_app_section(section_name)
+        return menu
+
     return {}
 
 
 def main():
-    st.set_page_config(page_title="LMS – Secure", layout="wide")
+    st.set_page_config(page_title="FarndaCred – Secure", layout="wide")
 
     user = get_current_user()
     if user is None:
         # Not logged in: only show auth page (login/register)
         auth_page()
+        render_footer()
         return
 
     # Logged in: show role-filtered sidebar
-    st.sidebar.write(f"Logged in as **{user['full_name']}** ({user['role']})")
     try:
         from system_business_date import get_effective_date
         system_date = get_effective_date()
     except ImportError:
         system_date = datetime.now().date()
-    now = datetime.now()
-    st.sidebar.caption(f"**System date:** {system_date.isoformat()}")
-    st.sidebar.caption(f"**Calendar date:** {now.strftime('%Y-%m-%d %H:%M:%S')}")
-    if st.sidebar.button("Log out"):
-        clear_current_user()
-        st.rerun() 
+    now = datetime.now().date()
 
     menu = build_menu_for_role(user["role"])
     if not menu:
         st.error("No pages available for your role.")
         return
 
-    choice = st.sidebar.radio("Navigation", list(menu.keys()))
+    render_sidebar_branding()
+    st.sidebar.divider()
+    st.sidebar.markdown(
+        "<div style='font-weight:700; font-size:125%; margin-bottom:0.15rem;'>Navigation</div>",
+        unsafe_allow_html=True,
+    )
+    choice = st.sidebar.radio("Navigation", list(menu.keys()), label_visibility="collapsed")
+    st.sidebar.divider()
+    render_sidebar_user_meta(user=user, system_date=system_date, calendar_date=now)
 
     # Global guard to ensure we never render a page without a user
     require_login()
     page_fn = menu[choice]
     page_fn()
+    st.sidebar.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
+    st.sidebar.divider()
+    if st.sidebar.button("Log out", key="sidebar_logout"):
+        clear_current_user()
+        st.rerun()
+    render_footer()
 
 
 if __name__ == "__main__":

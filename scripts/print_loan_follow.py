@@ -10,7 +10,7 @@ Run from project root:
   # EOD ran in the past (e.g. Jan 2025): use an explicit range — default is only LAST --days FROM TODAY
   python scripts/print_loan_follow.py --sections daily_state --start-date 2025-01-01 --end-date 2025-06-30
 
-Uses the same DB connection as the app (config.get_database_url / env LMS_DATABASE_URL).
+Uses the same DB connection as the app (config.get_database_url / env FARNDACRED_DATABASE_URL or LMS_DATABASE_URL).
 """
 from __future__ import annotations
 

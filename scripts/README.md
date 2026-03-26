@@ -1,6 +1,6 @@
 # Scripts (utilities & one-offs)
 
-These are **not** part of the running LMS application. They are maintenance, export, and example scripts. Run from the **project root** so that `config` and other modules resolve correctly.
+These are **not** part of the running FarndaCred application. They are maintenance, export, and example scripts. Run from the **project root** so that `config` and other modules resolve correctly.
 
 ## How to correct an existing loan (before recent allocation/EOD changes)
 

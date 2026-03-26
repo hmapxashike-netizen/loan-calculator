@@ -1,11 +1,11 @@
 """
-Export loan tables to CSV in the LMS project folder.
+Export loan tables to CSV in the FarndaCred project folder.
 Run from project root:
   python scripts/export_loan_tables.py
   python scripts/export_loan_tables.py --start-date 2025-01-01 --end-date 2025-06-30
 
 Date range: pass --start-date and --end-date (YYYY-MM-DD), or edit DEFAULT_* below.
-Saves to ./lms_exports/ (at project root). If a file is open (e.g. Excel), writes to *_new.csv.
+Saves to ./farndacred_exports/ (at project root). If a file is open (e.g. Excel), writes to *_new.csv.
 
 Repayments/allocation: filtered by value_date (or payment_date) so receipts on END_DATE are included.
 Loan daily state: filtered by as_of_date; include END_DATE or later to see impact of receipts on state.
@@ -41,7 +41,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-EXPORT_DIR = os.path.join(_PROJECT_ROOT, "lms_exports")
+EXPORT_DIR = os.path.join(_PROJECT_ROOT, "farndacred_exports")
 
 
 def _decimal_to_plain_string(d: Decimal) -> str:
@@ -184,9 +184,9 @@ def build_export_queries(start_date: str, end_date: str) -> list:
         LEFT JOIN corporates c ON c.customer_id = l.customer_id
         WHERE COALESCE(lr.value_date, lr.payment_date) BETWEEN %s AND %s
           AND NOT (
-            COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
-            OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-            OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+            COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
+            OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+            OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
           )
         ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lr.id DESC
         """,
@@ -201,9 +201,9 @@ def build_export_queries(start_date: str, end_date: str) -> list:
         JOIN loan_repayments lr ON lr.id = lra.repayment_id
         WHERE COALESCE(lr.value_date, lr.payment_date) BETWEEN %s AND %s
           AND NOT (
-            COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
-            OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-            OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+            COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
+            OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+            OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
           )
         ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lra.repayment_id, lra.id
         """,
@@ -414,9 +414,9 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
                 LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
                 WHERE (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
                   AND NOT (
-                    COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+                    COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
                   )
                 GROUP BY lr.id, lr.loan_id, lr.value_date, lr.payment_date, lr.amount
             ),
@@ -447,10 +447,10 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
             liquidations AS (
                 -- Liquidations come from unapplied_funds_allocation plus its reversal rows.
                 SELECT
-                    lra.source_repayment_id AS repayment_id,
+                    lr.id AS repayment_id,
                     CASE
-                        WHEN lra.event_type = 'unapplied_funds_allocation' THEN lra.source_repayment_id::text
-                        ELSE 'REV-' || lra.source_repayment_id::text
+                        WHEN lra.event_type = 'unapplied_funds_allocation' THEN lr.id::text
+                        ELSE 'REV-' || lr.original_repayment_id::text
                     END AS repayment_key,
                     lr.loan_id AS loan_id,
                     (COALESCE(lr.value_date, lr.payment_date))::date AS value_date,
@@ -458,7 +458,7 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
                         WHEN lra.event_type = 'unapplied_funds_allocation' THEN 'liquidation'
                         ELSE 'reversal'
                     END AS entry_kind,
-                    MIN(lra.repayment_id) AS liquidation_repayment_id,
+                    NULL::integer AS liquidation_repayment_id,
                     -SUM(COALESCE(lra.alloc_principal_total,0)
                        + COALESCE(lra.alloc_interest_total,0)
                        + COALESCE(lra.alloc_fees_total,0)) AS unapplied_delta,
@@ -473,7 +473,8 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
                   AND (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
                   AND lra.source_repayment_id IS NOT NULL
                 GROUP BY
-                    lra.source_repayment_id,
+                    lr.id,
+                    lr.original_repayment_id,
                     lr.loan_id,
                     (COALESCE(lr.value_date, lr.payment_date))::date,
                     lra.event_type
@@ -558,9 +559,9 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                 LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
                 WHERE (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
                   AND NOT (
-                    COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+                    COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
                   )
                 GROUP BY
                     lr.loan_id, lr.id, lr.value_date, lr.payment_date,
@@ -593,6 +594,13 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                 WHERE lra.event_type IN ('unapplied_funds_allocation', 'unallocation_parent_reversed')
                   AND lra.source_repayment_id IS NOT NULL
                   AND (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
+                  AND NOT (
+                      lra.event_type = 'unallocation_parent_reversed'
+                      AND EXISTS (
+                          SELECT 1 FROM loan_repayments lr_rev
+                          WHERE lr_rev.original_repayment_id = lra.source_repayment_id
+                      )
+                  )
                 GROUP BY
                     lr.loan_id,
                     lra.source_repayment_id,
@@ -759,7 +767,7 @@ def _export_loans_capture_rates(conn, export_dir: str) -> None:
 
 def _parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Export loan-related tables to CSV under ./lms_exports/",
+        description="Export loan-related tables to CSV under ./farndacred_exports/",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  %(prog)s --start-date 2025-01-01 --end-date 2025-06-30\n  %(prog)s   # uses DEFAULT_START_DATE / DEFAULT_END_DATE in script",
     )

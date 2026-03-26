@@ -2,7 +2,7 @@
 Run EOD automatically when is_auto_eod_enabled and current time >= eod_auto_run_time.
 
 Use with cron, Windows Task Scheduler, or similar. Example (cron, daily at 23:05):
-  5 23 * * * cd /path/to/LMS-Project && python scripts/run_eod_auto.py
+  5 23 * * * cd /path/to/FarndaCred && python scripts/run_eod_auto.py
 
 When run manually, run_eod_process() still advances current_system_date by +1 day on success.
 """

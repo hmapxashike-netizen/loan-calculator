@@ -5,7 +5,7 @@ Creates allocation_audit_log table for reversal add-back and system reallocation
 From project root:
   python scripts/run_migration_18.py
 
-Prompts for database password if LMS_DB_PASSWORD is not set.
+Prompts for database password if FARNDACRED_DB_PASSWORD / LMS_DB_PASSWORD is not set.
 """
 import os
 import sys
@@ -33,7 +33,7 @@ def main():
         sql = f.read()
 
     url = get_database_url()
-    if not url or "/" not in url or not os.environ.get("LMS_DB_PASSWORD"):
+    if not url or "/" not in url or not (os.environ.get("FARNDACRED_DB_PASSWORD") or os.environ.get("LMS_DB_PASSWORD")):
         try:
             import getpass
             from config import DB_USER, DB_HOST, DB_PORT, DB_NAME
@@ -45,7 +45,7 @@ def main():
         except Exception:
             pass
     if not url or "/" not in url:
-        print("Database URL not configured. Set LMS_DB_PASSWORD or enter password when prompted.", file=sys.stderr)
+        print("Database URL not configured. Set FARNDACRED_DB_PASSWORD (or LMS_DB_PASSWORD) or enter password when prompted.", file=sys.stderr)
         sys.exit(1)
 
     try:

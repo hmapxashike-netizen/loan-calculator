@@ -14,7 +14,7 @@ lines/entries after repayment deletion (optional).
 
 **loan_daily_state** is NOT recalculated — re-run EOD / fix state after destructive deletes.
 
-Usage (from project root, LMS_DATABASE_URL or config as for the app):
+Usage (from project root, FARNDACRED_DATABASE_URL/LMS_DATABASE_URL or config as for the app):
 
   # Preview
   python scripts/delete_loan_receipts.py --repayment-id 1

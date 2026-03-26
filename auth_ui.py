@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from dal import get_conn, UserRepository
@@ -7,13 +9,19 @@ from auth_service import AuthService
 from middleware import set_current_user, clear_current_user
 
 
+def _logo_path() -> Path:
+    base_dir = Path(__file__).resolve().parent
+    for file_name in ("FarndaCred logo with.svg", "FarndaCred logo with.png"):
+        candidate = base_dir / file_name
+        if candidate.exists():
+            return candidate
+    return base_dir / "FarndaCred logo with.png"
+
+
 def login_form():
     st.subheader("Login")
-    # Use a centered, narrower column so fields are not full-width
-    col_left, col_center, col_right = st.columns([1, 2, 1])
-    with col_center:
-        email = st.text_input("Email", key="login_email")
-        password = st.text_input("Password", type="password", key="login_password")
+    email = st.text_input("Email", key="login_email")
+    password = st.text_input("Password", type="password", key="login_password")
 
     if st.button("Login", type="primary"):
         if not email or not password:
@@ -51,11 +59,9 @@ def login_form():
 
 def registration_form():
     st.subheader("Register (Borrower)")
-    col_left, col_center, col_right = st.columns([1, 2, 1])
-    with col_center:
-        email = st.text_input("Email", key="reg_email")
-        full_name = st.text_input("Full name", key="reg_full_name")
-        password = st.text_input("Password", type="password", key="reg_password")
+    email = st.text_input("Email", key="reg_email")
+    full_name = st.text_input("Full name", key="reg_full_name")
+    password = st.text_input("Password", type="password", key="reg_password")
 
     if st.button("Create account"):
         if not (email and full_name and password):
@@ -90,19 +96,39 @@ def registration_form():
 
 
 def auth_page():
-    st.title("Loan Management System")
+    st.markdown(
+        """
+        <style>
+        /* Increase auth page typography by ~50% */
+        div[data-testid="stTabs"] button[role="tab"] p { font-size: 1.5rem !important; }
+        div[data-testid="stTextInput"] label p { font-size: 1.5rem !important; }
+        div[data-testid="stTextInput"] input { font-size: 1.5rem !important; }
+        div[data-testid="stButton"] button p { font-size: 1.5rem !important; }
+        h3 { font-size: 2.25rem !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    if "current_user" in st.session_state:
-        u = st.session_state["current_user"]
-        st.info(f"Logged in as {u['email']} ({u['role']})")
-        if st.button("Log out"):
-            clear_current_user()
-            st.rerun()
-        return
+    col_left, col_center, col_right = st.columns([1, 2, 1])
+    with col_center:
+        logo_path = _logo_path()
+        if logo_path.exists():
+            logo_left, logo_mid, logo_right = st.columns([1, 2, 1])
+            with logo_mid:
+                st.image(str(logo_path), width=320)
 
-    tab_login, tab_register = st.tabs(["Login", "Register"])
-    with tab_login:
-        login_form()
-    with tab_register:
-        registration_form()
+        if "current_user" in st.session_state:
+            u = st.session_state["current_user"]
+            st.info(f"Logged in as {u['email']} ({u['role']})")
+            if st.button("Log out"):
+                clear_current_user()
+                st.rerun()
+            return
+
+        tab_login, tab_register = st.tabs(["Login", "Register"])
+        with tab_login:
+            login_form()
+        with tab_register:
+            registration_form()
 

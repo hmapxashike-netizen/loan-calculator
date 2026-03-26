@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-End-of-day (EOD) processing for the Loan Management System.
+End-of-day (EOD) processing for FarndaCred.
 
 High-level design
 -----------------
@@ -244,9 +244,9 @@ def _batch_fetch_yesterday_states(
 
 _UNAPPLIED_FILTER_SQL = """
     AND NOT (
-        COALESCE(lr.reference, '')          ILIKE 'Unapplied funds allocation%%'
-        OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-        OR COALESCE(lr.company_reference, '')  ILIKE 'Unapplied funds allocation%%'
+        COALESCE(lr.reference, '')          ILIKE '%%napplied funds allocation%%'
+        OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+        OR COALESCE(lr.company_reference, '')  ILIKE '%%napplied funds allocation%%'
     )
 """
 
@@ -1403,5 +1403,39 @@ def run_single_loan_eod(
     _run_loan_engine_for_date(as_of_date, sys_cfg, loan_ids_filter=[loan_id])
 
 
-__all__ = ["run_eod_for_date", "run_single_loan_eod", "EODResult", "ConcurrentEODError"]
+def run_single_loan_eod_date_range(
+    loan_id: int,
+    start_date: date,
+    end_date: date,
+    *,
+    sys_cfg: Dict[str, Any] | None = None,
+) -> tuple[bool, str | None]:
+    """
+    Run the loan EOD engine for one loan for each calendar day in [start_date, end_date]
+    (inclusive). Used after a receipt reversal so `loan_daily_state` is replayed from the
+    receipt value date through the current business / posting horizon.
+
+    Returns (success, error_message). On first failure, stops and returns False with detail.
+    """
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    if sys_cfg is None:
+        sys_cfg = load_system_config_from_db() or {}
+    current = start_date
+    while current <= end_date:
+        try:
+            _run_loan_engine_for_date(current, sys_cfg, loan_ids_filter=[loan_id])
+        except Exception as e:
+            return False, f"EOD failed for loan_id={loan_id} on {current.isoformat()}: {e}"
+        current += timedelta(days=1)
+    return True, None
+
+
+__all__ = [
+    "run_eod_for_date",
+    "run_single_loan_eod",
+    "run_single_loan_eod_date_range",
+    "EODResult",
+    "ConcurrentEODError",
+]
 

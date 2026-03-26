@@ -594,7 +594,15 @@ class AccountingRepository:
                 FROM journal_items ji
                 JOIN journal_entries je ON ji.entry_id = je.id
                 WHERE {tx_where}
-                ORDER BY je.entry_date ASC, je.created_at ASC
+                ORDER BY
+                    je.entry_date ASC,
+                    /* Same-day ordering rule:
+                       Reversal journals (event_id like 'REV-%') must appear after originals. */
+                    CASE
+                        WHEN je.event_id IS NOT NULL AND je.event_id LIKE 'REV-%' THEN 1
+                        ELSE 0
+                    END ASC,
+                    je.created_at ASC
             """, tuple(tx_params))
             transactions = cur.fetchall()
             

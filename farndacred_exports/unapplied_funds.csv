@@ -1,0 +1,12 @@
+id,loan_id,repayment_id,amount,currency,value_date,created_at,applied_at,status,notes,entry_type,reference,allocation_repayment_id,source_repayment_id,source_unapplied_id,movement_type
+1,1,,18366.7750978744,USD,2025-06-01,2026-03-22T16:56:56.178885+02:00,,pending,,credit,Overpayment,,,,from_receipt
+2,1,3,18592.4059019157,USD,2025-06-01,2026-03-22T20:57:21.093896+02:00,,pending,,credit,Overpayment,,,,from_receipt
+4,1,,-13537.85,USD,2025-06-30,2026-03-23T19:01:14.275853+02:00,,pending,,debit,Applied to arrears (EOD),6,3,,to_loan_arrears_eod
+7,2,12,106.715917886,USD,2025-07-07,2026-03-25T11:40:36.829414+02:00,,pending,,credit,Overpayment,,,,from_receipt
+8,2,,-106.715917886,USD,2025-07-07,2026-03-25T11:52:15.850592+02:00,,pending,,debit,Reallocate (remove prior unapplied),,12,,other
+3,9,5,343.8596491223,USD,2025-06-17,2026-03-23T15:25:00.642061+02:00,,pending,,credit,Overpayment,,,,from_receipt
+10,9,,-343.8596491223,USD,2025-06-17,2026-03-25T12:31:05.664141+02:00,,pending,,debit,Reversal of receipt,,5,,other
+5,9,,-343.8596491223,USD,2025-06-30,2026-03-23T19:01:14.728487+02:00,,pending,,debit,Applied to arrears (EOD),7,5,,to_loan_arrears_eod
+11,9,,343.8596491223,USD,2025-06-30,2026-03-25T12:31:05.664141+02:00,,pending,,credit,Reversal of allocation (parent receipt reversed),,5,,other
+6,9,11,1047.9064327481,USD,2025-07-07,2026-03-25T11:38:41.840625+02:00,,pending,,credit,Overpayment,,,,from_receipt
+12,9,,-1047.9064327481,USD,2025-07-07,2026-03-25T12:52:22.407018+02:00,,pending,,debit,Reversal of receipt,,11,,other

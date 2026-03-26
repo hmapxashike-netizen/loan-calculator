@@ -1,5 +1,5 @@
 """
-Shared decimal precision utilities for LMS.
+Shared decimal precision utilities for FarndaCred.
 All numeric columns (except dates) store and compute at 10 decimal places.
 """
 from decimal import Decimal, ROUND_HALF_UP

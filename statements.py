@@ -191,12 +191,49 @@ def _total_delinquency_arrears(ds: dict | None) -> float:
     )
 
 
+def _repayment_statement_narration(
+    *,
+    amount: float,
+    repayment_id: int,
+    teller_ref: str,
+    original_repayment_id: Any = None,
+) -> str:
+    """
+    One customer-facing receipt line per loan_repayments row.
+    Reversals reference the original receipt id (REV n), not the reversing row's PK.
+    """
+    ref = (teller_ref or "").strip() or "Receipt"
+    if amount < 0:
+        if original_repayment_id is not None:
+            try:
+                oid = int(original_repayment_id)
+            except (TypeError, ValueError):
+                oid = 0
+            if oid > 0:
+                return f"REV {oid}"
+        base = f"Repayment id {repayment_id}: {ref}" if repayment_id else ref
+        return f"Reversal of {base}"
+    return f"Repayment id {repayment_id}: {ref}" if repayment_id else ref
+
+
+def _is_statement_reversal_narration(narration: str) -> bool:
+    n = str(narration or "")
+    if "Reversal of unapplied" in n:
+        return False
+    return n.startswith("REV ") or n.startswith("Reversal of")
+
+
 def _is_external_cash_receipt_row(row: dict[str, Any]) -> bool:
     """
     Customer-facing rows that represent external cash in (credit, no debit).
     These are sorted after same-day accruals/charges for presentation.
     Excludes liquidation-of-unapplied (internal allocation) and closing lines.
     """
+    # Bucket-component rows (e.g., "Default interest" rendered as credits for a
+    # reversal) can have Credits>0. We only want actual cash receipt/reversal
+    # rows, which always carry a `_repayment_id`.
+    if row.get("_repayment_id") is None:
+        return False
     narr = str(row.get("Narration") or "")
     credits = _to_dec(row.get("Credits") or 0)
     debits = _to_dec(row.get("Debits") or 0)
@@ -237,12 +274,46 @@ def _reorder_customer_facing_rows_receipts_last(rows: list[dict[str, Any]]) -> l
     reordered: list[dict[str, Any]] = []
     for d in date_order:
         chunk = by_date[d]
-        non_rcpt = [r for r in chunk if not _is_external_cash_receipt_row(r)]
+        # Same-day ordering rule:
+        # - Original external cash receipts (credits) should appear first (after charges)
+        # - Reversal rows (debit side, REV n / legacy "Reversal of") after original receipts same day.
         rcpt = [r for r in chunk if _is_external_cash_receipt_row(r)]
-        if non_rcpt and rcpt:
-            reordered.extend(non_rcpt + rcpt)
-        else:
-            reordered.extend(chunk)
+        reversal = [r for r in chunk if _is_statement_reversal_narration(str(r.get("Narration") or ""))]
+        # For "period to date" interest components, we intentionally display
+        # them *after* receipts and reversals on the same day. This allows
+        # the running Balance to drift (vs daily-state) until the
+        # current-period correction lines are applied.
+        def _is_period_to_date_interest_after(row: dict[str, Any]) -> bool:
+            narr = str(row.get("Narration") or "")
+            if not narr.endswith("(period to date)"):
+                return False
+            return (
+                narr.startswith("Accrued interest")
+                or narr.startswith("Penalty interest")
+                or narr.startswith("Default interest")
+            )
+            
+        def _is_unapplied_ledger_line(row: dict[str, Any]) -> bool:
+            narr = str(row.get("Narration") or "")
+            return (
+                "Unapplied funds credit" in narr
+                or narr.startswith("Liquidation of unapplied")
+                or "Reversal of unapplied" in narr
+            )
+
+        other_before = [
+            r for r in chunk 
+            if r not in rcpt and r not in reversal and not _is_period_to_date_interest_after(r) and not _is_unapplied_ledger_line(r)
+        ]
+        other_after = [
+            r for r in chunk 
+            if r not in rcpt and r not in reversal and _is_period_to_date_interest_after(r)
+        ]
+        unapplied_lines_after = [
+            r for r in chunk 
+            if _is_unapplied_ledger_line(r)
+        ]
+        reordered.extend(other_before + rcpt + reversal + other_after + unapplied_lines_after)
 
     reordered.extend(closing)
     return reordered
@@ -381,8 +452,23 @@ def _generate_periodic_statement(
     if disbursement and due_entries and due_entries[0][0] == disbursement:
         due_entries = due_entries[1:]
 
+    # True payment-due dates from the amortisation schedule (in statement range).
+    # Used by customer-facing Balance snap — must not include ad-hoc dates that only
+    # carry receipt allocation component rows (e.g. "Default interest paid").
+    meta["schedule_due_dates"] = sorted({due_d for due_d, *_ in due_entries})
+
+    # Repayments that allocate to default/penalty/fees for a given schedule due are only
+    # those with value_date in (period_start_d, due_d], where period_start_d is the prior
+    # schedule due (or disbursement for the first period). That window must not be
+    # polluted by statement start/end: loads from before `start` when needed so
+    # in-period receipts are not dropped from allocation / receipt rows.
+    repay_start = start
+    if due_entries:
+        earliest_schedule_anchor = min(period_start for _, period_start, *_ in due_entries)
+        repay_start = min(start, earliest_schedule_anchor)
+
     daily_states = get_loan_daily_state_range(loan_id, start, end)
-    repayments = get_repayments_with_allocations(loan_id, start, end, include_reversed=True)
+    repayments = get_repayments_with_allocations(loan_id, repay_start, end, include_reversed=True)
     unapplied_lines = get_unapplied_ledger_entries_for_statement(loan_id, start, end)
     unapplied_lines_sorted = sorted(
         unapplied_lines,
@@ -479,32 +565,41 @@ def _generate_periodic_statement(
         fees_now = float(state_at_due.get("fees_charges_balance") or 0) if state_at_due else 0.0
         fees_in_period = max(0.0, fees_now - prev_fees)
         prev_fees = fees_now
-        # When these components are settled before due date, show the movement on
-        # settlement date and net it off the due-date row.
+        # Gross schedule-period accrual at the due date from loan_daily_state
+        # (same as sum of daily accruals in that period for default/penalty; fees delta
+        # from balance). Do not net receipts into these columns: repayments and bucket
+        # lines are shown separately so "accrued to date" on the due line stays aligned
+        # with default_interest_period_to_date / penalty_interest_period_to_date (and
+        # fees movement), not a misleading residual after earlier-in-period allocations.
         due_penalty_before_settlement = sum_penalty
         due_default_before_settlement = sum_default
         due_fees_before_settlement = fees_in_period
-        period_paid_penalty = 0.0
-        period_paid_default = 0.0
-        period_paid_fees = 0.0
+        # Receipt attribution for this due: only value_date strictly inside the current
+        # amortisation period (after prior due, up to and including this due). Payments
+        # on or before period_start_d belong to earlier schedule periods and must not
+        # affect this period's default/penalty/fees paid lines or remaining_paid_* caps.
+        period_pos_penalty = 0.0
+        period_pos_default = 0.0
+        period_pos_fees = 0.0
         for rr in repayments:
             vd_rr = _date_conv(rr.get("value_date") or rr.get("payment_date"))
             if not vd_rr or vd_rr <= period_start_d or vd_rr > due_d:
                 continue
-            period_paid_penalty += float(rr.get("alloc_penalty_interest") or 0)
-            period_paid_default += float(rr.get("alloc_default_interest") or 0)
-            period_paid_fees += float(rr.get("alloc_fees_charges") or 0)
-        # Robust cap: only move current-period component amounts to payment date.
-        # Do not move historical arrears settlements as new period debits.
-        period_paid_penalty = min(period_paid_penalty, due_penalty_before_settlement)
-        period_paid_default = min(period_paid_default, due_default_before_settlement)
-        period_paid_fees = min(period_paid_fees, due_fees_before_settlement)
-        sum_penalty = max(0.0, due_penalty_before_settlement - period_paid_penalty)
-        sum_default = max(0.0, due_default_before_settlement - period_paid_default)
-        fees_in_period = max(0.0, due_fees_before_settlement - period_paid_fees)
-        remaining_paid_penalty = period_paid_penalty
-        remaining_paid_default = period_paid_default
-        remaining_paid_fees = period_paid_fees
+            ap = float(rr.get("alloc_penalty_interest") or 0)
+            ad = float(rr.get("alloc_default_interest") or 0)
+            af = float(rr.get("alloc_fees_charges") or 0)
+            period_pos_penalty += max(0.0, ap)
+            period_pos_default += max(0.0, ad)
+            period_pos_fees += max(0.0, af)
+        period_pos_penalty = min(period_pos_penalty, due_penalty_before_settlement)
+        period_pos_default = min(period_pos_default, due_default_before_settlement)
+        period_pos_fees = min(period_pos_fees, due_fees_before_settlement)
+        sum_penalty = max(0.0, due_penalty_before_settlement)
+        sum_default = max(0.0, due_default_before_settlement)
+        fees_in_period = max(0.0, due_fees_before_settlement)
+        remaining_paid_penalty = period_pos_penalty
+        remaining_paid_default = period_pos_default
+        remaining_paid_fees = period_pos_fees
         tot_out = _total_outstanding(state_at_due) if state_at_due else None
 
         # Narration from row content (Interest & Principal & Fees etc.) instead of redundant "Due date"
@@ -547,7 +642,7 @@ def _generate_periodic_statement(
             bill_row["_arrears_debit_impact"] = _f3(principal_c)
             rows.append(bill_row)
 
-        # Receipts in period: value_date in (period_start_d, due_d] (due date is first day of next period)
+        # Receipts in this schedule period only: (period_start_d, due_d]
         for r in repayments:
             vd = _date_conv(r.get("value_date") or r.get("payment_date"))
             if not vd or vd <= period_start_d or vd > due_d:
@@ -562,8 +657,12 @@ def _generate_periodic_statement(
                 or (r.get("reference") or "").strip()
                 or "Receipt"
             )
-            base_narr = f"Repayment id {rid_label}: {teller_ref}" if rid_label else teller_ref
-            rec_row["Narration"] = f"Reversal of {base_narr}" if amount < 0 else base_narr
+            rec_row["Narration"] = _repayment_statement_narration(
+                amount=amount,
+                repayment_id=rid_label,
+                teller_ref=teller_ref,
+                original_repayment_id=r.get("original_repayment_id"),
+            )
             rec_row["Credits"] = _f3(alloc_total)
             rec_row["Portion of Credit Allocated to Interest"] = _f3(float(r.get("alloc_interest_total") or 0))
             rec_row["Credit Allocated to Fees"] = _f3(float(r.get("alloc_fees_total") or 0))
@@ -586,12 +685,26 @@ def _generate_periodic_statement(
                 alloc_default = float(r.get("alloc_default_interest") or 0)
                 alloc_fees = float(r.get("alloc_fees_charges") or 0)
                 paid_components = [
-                    ("Penalty interest paid", min(alloc_penalty, remaining_paid_penalty), "Penalty"),
-                    ("Default interest paid", min(alloc_default, remaining_paid_default), "Default"),
-                    ("Fees & Charges paid", min(alloc_fees, remaining_paid_fees), "Fees"),
+                    (
+                        "Penalty interest paid",
+                        (min(alloc_penalty, remaining_paid_penalty) if alloc_penalty >= 0 else alloc_penalty),
+                        "Penalty",
+                    ),
+                    (
+                        "Default interest paid",
+                        (min(alloc_default, remaining_paid_default) if alloc_default >= 0 else alloc_default),
+                        "Default",
+                    ),
+                    (
+                        "Fees & Charges paid",
+                        (min(alloc_fees, remaining_paid_fees) if alloc_fees >= 0 else alloc_fees),
+                        "Fees",
+                    ),
                 ]
                 for pname, pamt, bucket in paid_components:
-                    if pamt <= 1e-9:
+                    # Reversal receipts carry negative allocation amounts.
+                    # We still want to emit the inverse movement for these buckets.
+                    if abs(pamt) <= 1e-9:
                         continue
                     prow = _blank_row_periodic()
                     prow["Due Date"] = vd
@@ -612,9 +725,20 @@ def _generate_periodic_statement(
                         include_same_day_liquidations=False,
                     )
                     rows.append(prow)
-                remaining_paid_penalty = max(0.0, remaining_paid_penalty - min(alloc_penalty, remaining_paid_penalty))
-                remaining_paid_default = max(0.0, remaining_paid_default - min(alloc_default, remaining_paid_default))
-                remaining_paid_fees = max(0.0, remaining_paid_fees - min(alloc_fees, remaining_paid_fees))
+                # Consume remaining_paid_* only from positive allocations; reversals
+                # do not reduce the positive cap used for sequential min() display.
+                remaining_paid_penalty = max(
+                    0.0,
+                    remaining_paid_penalty - max(0.0, min(alloc_penalty, remaining_paid_penalty)),
+                )
+                remaining_paid_default = max(
+                    0.0,
+                    remaining_paid_default - max(0.0, min(alloc_default, remaining_paid_default)),
+                )
+                remaining_paid_fees = max(
+                    0.0,
+                    remaining_paid_fees - max(0.0, min(alloc_fees, remaining_paid_fees)),
+                )
             rec_row["_arrears_credit_impact"] = _f3(
                 float(r.get("alloc_interest_arrears") or 0)
                 + float(r.get("alloc_penalty_interest") or 0)
@@ -634,7 +758,8 @@ def _generate_periodic_statement(
                 except (TypeError, ValueError):
                     pass
 
-    # Any receipts not falling into a schedule period but within [start, end] should still appear as credits
+    # Receipts not processed under any due row (e.g. value_date outside every schedule period
+    # we rendered), but still in the repayment fetch window overlapping the statement end.
     for r in repayments:
         rid = r.get("id")
         try:
@@ -644,7 +769,7 @@ def _generate_periodic_statement(
         if rid_int is not None and rid_int in processed_repayment_ids:
             continue
         vd = _date_conv(r.get("value_date") or r.get("payment_date"))
-        if not vd or vd < start or vd > end:
+        if not vd or vd < repay_start or vd > end:
             continue
         amount = float(r.get("amount") or 0)
         alloc_total = float(r.get("alloc_total") or 0)
@@ -656,8 +781,12 @@ def _generate_periodic_statement(
             or (r.get("reference") or "").strip()
             or "Receipt"
         )
-        base_narr = f"Repayment id {rid_label}: {teller_ref}" if rid_label else teller_ref
-        rec_row["Narration"] = f"Reversal of {base_narr}" if amount < 0 else base_narr
+        rec_row["Narration"] = _repayment_statement_narration(
+            amount=amount,
+            repayment_id=rid_label,
+            teller_ref=teller_ref,
+            original_repayment_id=r.get("original_repayment_id"),
+        )
         rec_row["Credits"] = _f3(alloc_total)
         rec_row["Portion of Credit Allocated to Interest"] = _f3(float(r.get("alloc_interest_total") or 0))
         rec_row["Credit Allocated to Fees"] = _f3(float(r.get("alloc_fees_total") or 0))
@@ -688,9 +817,49 @@ def _generate_periodic_statement(
                 pass
         rows.append(rec_row)
 
+        # Always emit bucket movement rows for penalty/default/fees allocations on the receipt date.
+        # This includes reversal receipts (negative allocations), which will be rendered as credits
+        # in the customer-facing statement to undo the earlier bucket debits.
+        rid_for_paid = int(r.get("id") or 0) if r.get("id") is not None else 0
+        if rid_for_paid:
+            alloc_penalty = float(r.get("alloc_penalty_interest") or 0)
+            alloc_default = float(r.get("alloc_default_interest") or 0)
+            alloc_fees = float(r.get("alloc_fees_charges") or 0)
+            paid_components_any = [
+                ("Penalty interest paid", alloc_penalty, "Penalty"),
+                ("Default interest paid", alloc_default, "Default"),
+                ("Fees & Charges paid", alloc_fees, "Fees"),
+            ]
+            for pname, pamt, bucket in paid_components_any:
+                if abs(pamt) <= 1e-9:
+                    continue
+                prow = _blank_row_periodic()
+                prow["Due Date"] = vd
+                prow["Narration"] = f"{pname} ({teller_ref})"
+                if bucket == "Penalty":
+                    prow["Penalty"] = _f3(pamt)
+                elif bucket == "Default":
+                    prow["Default"] = _f3(pamt)
+                else:
+                    prow["Fees"] = _f3(pamt)
+                bal_paid = _state_at(vd)
+                if bal_paid:
+                    prow["Total Outstanding Balance"] = _f3(_total_outstanding(bal_paid))
+                    prow["Arrears"] = _f3(_total_delinquency_arrears(bal_paid))
+                prow["Unapplied funds"] = _unapplied_at(
+                    vd,
+                    repayment_id=rid_for_paid,
+                    include_same_day_liquidations=False,
+                )
+                # Customer-facing uses Debits/Credits on component rows; paying a bucket
+                # reduces delinquency (credit impact), reversing that payment increases it.
+                if pamt >= 0:
+                    prow["_arrears_credit_impact"] = _f3(pamt)
+                else:
+                    prow["_arrears_debit_impact"] = _f3(abs(pamt))
+                rows.append(prow)
+
     # Unapplied ledger movements as explicit periodic rows.
-    # Reversals are intentionally not emitted as separate rows because
-    # the running unapplied balance already reflects them.
     for u in unapplied_lines:
         vd = _date_conv(u.get("value_date"))
         if not vd or vd < start or vd > end:
@@ -699,12 +868,23 @@ def _generate_periodic_statement(
         delta = float(u.get("unapplied_delta") or 0)
         if abs(delta) < 1e-9:
             continue
-        if kind != "liquidation":
-            continue
+            
         row = _blank_row_periodic()
         row["Due Date"] = vd
         rk = u.get("repayment_key") or ""
-        row["Narration"] = f"Liquidation of unapplied receipt no {rk}"
+        
+        if kind == "liquidation":
+            row["Narration"] = f"Liquidation of unapplied receipt no {rk}"
+        elif kind == "credit":
+            row["Narration"] = f"Unapplied funds credit from receipt no {rk}"
+        elif kind == "reversal":
+            if delta > 0:
+                row["Narration"] = f"Reversal of unapplied liquidation from receipt no {rk}"
+            else:
+                row["Narration"] = f"Reversal of unapplied funds credit from receipt no {rk}"
+        else:
+            continue
+
         # Internal movement only: no cash debit/credit impact on statement totals.
         row["Credits"] = 0.0
         row["Portion of Credit Allocated to Interest"] = _f3(
@@ -735,12 +915,17 @@ def _generate_periodic_statement(
     #   (b) no due dates have fallen yet (statement is entirely in the first period).
     last_due_in_range = due_entries[-1][0] if due_entries else None
     period_boundary = last_due_in_range or disbursement
+    end_bal_exact = ds_by_date.get(end)
+    last_persisted_ds_date = max(ds_by_date.keys()) if ds_by_date else end
     if period_boundary is not None and end > period_boundary:
         # Use period_to_date columns only when we have an exact daily-state row
         # for statement end date. If end-day EOD has not run yet, the fallback
         # from _state_at(end) may return prior-day period totals (e.g. due date),
         # which would incorrectly duplicate prior period accrual in the statement.
-        end_bal_exact = ds_by_date.get(end)
+        # If EOD for `end` has not run yet, daily-state only exists up to the
+        # last persisted date. Any "period to date" lines should be labelled
+        # with that last persisted daily-state date (not the requested `end`).
+        as_of_for_state = end if end_bal_exact else last_persisted_ds_date
         if end_bal_exact:
             cur_regular = float(end_bal_exact.get("regular_interest_period_to_date") or 0)
             cur_penalty = float(end_bal_exact.get("penalty_interest_period_to_date") or 0)
@@ -758,33 +943,68 @@ def _generate_periodic_statement(
                 cur_regular += float(ds.get("regular_interest_daily") or 0)
                 cur_penalty += float(ds.get("penalty_interest_daily") or 0)
                 cur_default += float(ds.get("default_interest_daily") or 0)
-        current_period_total = cur_regular + cur_penalty + cur_default
+        # Fees: no period_to_date column — use balance delta since last period boundary (daily state).
+        st_as_of = _state_at(as_of_for_state)
+        cur_fees = 0.0
+        if st_as_of:
+            fe_now = float(st_as_of.get("fees_charges_balance") or 0)
+            if last_due_in_range:
+                st_ld = _state_at(last_due_in_range)
+                fe_ld = float(st_ld.get("fees_charges_balance") or 0) if st_ld else 0.0
+            elif disbursement:
+                st0 = _state_at(disbursement)
+                fe_ld = float(st0.get("fees_charges_balance") or 0) if st0 else 0.0
+            else:
+                fe_ld = 0.0
+            cur_fees = max(0.0, fe_now - fe_ld)
+        current_period_total = cur_regular + cur_penalty + cur_default + cur_fees
         if abs(current_period_total) > 0.005:
             row = _blank_row_periodic()
-            row["Due Date"] = end
+            row["Due Date"] = as_of_for_state
             _narr_sfx = "since last due date" if last_due_in_range else "since disbursement"
             row["Narration"] = f"Current period interest ({_narr_sfx})"
             row["Interest"] = _f3(cur_regular)
             row["Penalty"] = _f3(cur_penalty)
             row["Default"] = _f3(cur_default)
-            end_bal = _state_at(end)
+            row["Fees"] = _f3(cur_fees) if cur_fees else 0.0
+            end_bal = _state_at(as_of_for_state)
             if end_bal:
                 row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
                 row["Arrears"] = _f3(_total_delinquency_arrears(end_bal))
-            row["Unapplied funds"] = _f3(unapplied_at_end)
+            row["Unapplied funds"] = _f3(_unapplied_at(as_of_for_state))
             rows.append(row)
 
     row = _blank_row_periodic()
-    row["Due Date"] = end
-    row["Narration"] = f"Total outstanding balance as at {end.isoformat()}"
-    end_bal = _state_at(end)
+    # Same as above: if EOD for `end` is not persisted yet, label totals
+    # using the last persisted daily-state date.
+    closing_as_of = end if end_bal_exact else last_persisted_ds_date
+    row["Due Date"] = closing_as_of
+    row["Narration"] = f"Total outstanding balance as at {closing_as_of.isoformat()}"
+    end_bal = _state_at(closing_as_of)
     if end_bal:
         row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
         row["Arrears"] = _f3(_total_delinquency_arrears(end_bal))
-    row["Unapplied funds"] = _f3(unapplied_at_end)
+    row["Unapplied funds"] = _f3(_unapplied_at(closing_as_of))
     rows.append(row)
 
-    rows.sort(key=lambda r: (r.get("Due Date") or date(9999, 12, 31), (0 if (r.get("Narration") or "").startswith("Total outstanding") else 1)))
+    def _sort_key(r: dict) -> tuple:
+        due_date = r.get("Due Date") or date(9999, 12, 31)
+        narr = r.get("Narration") or ""
+        
+        if narr.startswith("Total outstanding"):
+            order = 99
+        elif "Unapplied funds credit" in narr:
+            order = 5
+        elif narr.startswith("Liquidation of unapplied"):
+            order = 6
+        elif "Reversal of unapplied" in narr:
+            order = 7
+        else:
+            order = 1
+            
+        return (due_date, order, narr)
+
+    rows.sort(key=_sort_key)
     return rows, meta
 
 
@@ -857,6 +1077,16 @@ def generate_customer_facing_statement(
                     r.get("_arrears_credit_impact") if r.get("_arrears_credit_impact") is not None else credits_alloc
                 ),
             })
+        elif narration.startswith("Unapplied funds credit") or narration.startswith("Reversal of unapplied"):
+            out.append({
+                "Due Date": r.get("Due Date"),
+                "Narration": narration,
+                "Debits": 0.0,
+                "Credits": 0.0,
+                "Balance": 0.0,
+                "Arrears": arrears,
+                "Unapplied funds": unapplied,
+            })
         elif narration.startswith("Principal arrears billing"):
             out.append({
                 "Due Date": r.get("Due Date"),
@@ -918,6 +1148,15 @@ def generate_customer_facing_statement(
                 ("Fees & Charges", fees),
             ]
             raw_components = [(n, v) for n, v in raw_components if abs(v) > Decimal("0")]
+            narr_l = narration.lower()
+            # Receipt allocation split rows (periodic narration e.g. "Default interest paid (…)").
+            # They must post as Credits when paying down a bucket (positive alloc), not as Debits
+            # like schedule charges; labels should say "… paid" so they are not mistaken for reversals.
+            is_bucket_payment_line = (
+                "penalty interest paid" in narr_l
+                or "default interest paid" in narr_l
+                or "fees & charges paid" in narr_l
+            )
             if raw_components:
                 rounded_total = _q3(sum((v for _, v in raw_components), Decimal("0")))
                 rounded_components = [(n, _q3(v), v) for n, v in raw_components]
@@ -930,11 +1169,30 @@ def generate_customer_facing_statement(
                 for n, rv, _raw_v in rounded_components:
                     if rv == Decimal("0"):
                         continue
+                    if is_bucket_payment_line and " paid" not in n:
+                        if n.startswith("Accrued interest"):
+                            n = n.replace("Accrued interest", "Accrued interest paid", 1)
+                        elif n.startswith("Penalty interest"):
+                            n = n.replace("Penalty interest", "Penalty interest paid", 1)
+                        elif n.startswith("Default interest"):
+                            n = n.replace("Default interest", "Default interest paid", 1)
+                        elif n.startswith("Fees & Charges"):
+                            n = "Fees & Charges paid" if n == "Fees & Charges" else n.replace(
+                                "Fees & Charges", "Fees & Charges paid", 1
+                            )
+                    # Charges: positive -> Debit; negative (reversal of accrual) -> Credit.
+                    # Bucket payment lines: positive alloc -> Credit; negative -> Debit.
+                    if is_bucket_payment_line:
+                        component_debits = _f3(abs(rv)) if rv < 0 else 0.0
+                        component_credits = _f3(rv) if rv > 0 else 0.0
+                    else:
+                        component_debits = _f3(rv) if rv > 0 else 0.0
+                        component_credits = _f3(abs(rv)) if rv < 0 else 0.0
                     out.append({
                         "Due Date": r.get("Due Date"),
                         "Narration": n,
-                        "Debits": _f3(rv),
-                        "Credits": 0.0,
+                        "Debits": component_debits,
+                        "Credits": component_credits,
                         "Balance": 0.0,
                         "Arrears": arrears,
                         "Unapplied funds": unapplied,
@@ -956,11 +1214,43 @@ def generate_customer_facing_statement(
     except Exception:
         opening_arrears_d = Decimal("0")
 
+    indices_by_due_date: dict[date, list[int]] = {}
+    last_idx_by_due_date: dict[Any, int] = {}
+    # Last movement row per date (exclude closing "Total outstanding" line). Arrears snap to
+    # loan_daily_state must run here — otherwise the true last row is closing, snap never runs,
+    # and prior same-day rows show running arrears that disagree with persisted EOD delinquency.
+    last_non_closing_idx_by_due_date: dict[Any, int] = {}
+    for idx, row in enumerate(out):
+        d = row.get("Due Date")
+        if d is None:
+            continue
+        indices_by_due_date.setdefault(d, []).append(idx)
+        last_idx_by_due_date[d] = idx
+        narr_lc = str(row.get("Narration") or "")
+        if not narr_lc.startswith("Total outstanding balance as at"):
+            last_non_closing_idx_by_due_date[d] = idx
+
+    # Balance snap dates = schedule payment due dates only (from meta).
+    # Do not infer from arbitrary periodic rows with charge columns — that would treat
+    # same-day receipt allocation lines (e.g. 17 Jun default paid) as a "due date"
+    # and wrongly overwrite the running Balance with EOD daily_state on the reversal row.
+    due_dates: set[date] = set()
+    for d0 in meta.get("schedule_due_dates") or []:
+        dd = _date_conv(d0)
+        if dd is not None:
+            due_dates.add(dd)
+
     running_arrears_d = opening_arrears_d
-    for _ar_row in out:
+    for i, _ar_row in enumerate(out):
         narr = str(_ar_row.get("Narration") or "")
         if narr.startswith("Total outstanding balance as at"):
-            # Keep closing row arrears from periodic/state source.
+            # Align with persisted EOD delinquency (same as loan_daily_state for this date).
+            d_close = _date_conv(_ar_row.get("Due Date"))
+            if d_close is not None:
+                ds_close = get_loan_daily_state_balances(loan_id, d_close)
+                if ds_close:
+                    running_arrears_d = _to_dec(_f3(_total_delinquency_arrears(ds_close)))
+            _ar_row["Arrears"] = _f3(running_arrears_d)
             continue
 
         debit_imp = _to_dec(_ar_row.get("_arrears_debit_impact") or 0)
@@ -968,84 +1258,112 @@ def generate_customer_facing_statement(
 
         if debit_imp == Decimal("0") and credit_imp == Decimal("0"):
             if narr.startswith("Accrued interest") or narr.startswith("Penalty interest") or narr.startswith("Default interest") or narr.startswith("Fees & Charges"):
-                debit_imp = _to_dec(_ar_row.get("Debits") or 0)
+                deb = _to_dec(_ar_row.get("Debits") or 0)
+                cred = _to_dec(_ar_row.get("Credits") or 0)
+                if deb != Decimal("0"):
+                    debit_imp = deb
+                elif cred != Decimal("0"):
+                    credit_imp = cred
 
         running_arrears_d = running_arrears_d + debit_imp - credit_imp
         if running_arrears_d < Decimal("0"):
             running_arrears_d = Decimal("0")
 
-        # Anchor transaction-day arrears to exact persisted daily_state so statement
-        # cannot drift from loan_daily_state on receipt/liquidation rows.
-        is_liq = narr.startswith("Liquidation of unapplied")
-        if _is_external_cash_receipt_row(_ar_row) or is_liq:
-            vd = _date_conv(_ar_row.get("Due Date"))
-            if vd is not None:
-                exact_ds = get_loan_daily_state_balances(loan_id, vd)
-                if exact_ds:
-                    running_arrears_d = _to_dec(_f3(_total_delinquency_arrears(exact_ds)))
+        # Snap at end-of-day delinquency on the last *movement* row for this calendar date
+        # (not the closing total line — see last_non_closing_idx_by_due_date).
+        d_snap = _ar_row.get("Due Date")
+        snap_idx = last_non_closing_idx_by_due_date.get(d_snap)
+        if d_snap is not None and snap_idx is not None and snap_idx == i:
+            exact_ds = get_loan_daily_state_balances(loan_id, _date_conv(d_snap))
+            if exact_ds:
+                running_arrears_d = _to_dec(_f3(_total_delinquency_arrears(exact_ds)))
 
         _ar_row["Arrears"] = _f3(running_arrears_d)
 
-    # Compute running balance: Balance[i] = Balance[i-1] + Debits[i] - Credits[i]
+    def _total_outstanding_from_ds(ds: dict | None) -> float:
+        if not ds:
+            return 0.0
+        return (
+            float(ds.get("principal_not_due") or 0)
+            + float(ds.get("principal_arrears") or 0)
+            + float(ds.get("interest_accrued_balance") or 0)
+            + float(ds.get("interest_arrears_balance") or 0)
+            + float(ds.get("default_interest_balance") or 0)
+            + float(ds.get("penalty_interest_balance") or 0)
+            + float(ds.get("fees_charges_balance") or 0)
+        )
+
+    # Compute running Balance as:
+    # - start from prior-day daily_state total outstanding (day-start before statement start)
+    # - then Balance += Debits - Credits for each row in display order
+    # - at each schedule due date (end-of-date), snap Balance to persisted daily_state total outstanding.
     running_bal = Decimal("0")
-    for _rb_row in out:
+    stmt_start = meta.get("start_date")
+    try:
+        if stmt_start is not None:
+            opening_d = _date_conv(stmt_start) - timedelta(days=1)
+            ds_open = get_loan_daily_state_balances(loan_id, opening_d)
+            if ds_open:
+                running_bal = _to_dec(_f3(_total_outstanding_from_ds(ds_open)))
+    except Exception:
+        running_bal = Decimal("0")
+
+    for i, _rb_row in enumerate(out):
         running_bal += _to_dec(_rb_row.get("Debits") or 0) - _to_dec(_rb_row.get("Credits") or 0)
         _rb_row["Balance"] = _f3(running_bal)
 
-    # Deterministic reconciliation payload for audits/debugging.
-    closing_row = out[-1] if out else {}
-    closing_unapplied_d = _to_dec(closing_row.get("Unapplied funds") or 0)
-    # Use engine closing balance for reconciliation (running balance is display-only).
-    closing_balance_d = _to_dec(
-        (rows_periodic[-1].get("Total Outstanding Balance") if rows_periodic else 0) or 0
-    )
-    total_debits_d = sum((_to_dec(r.get("Debits") or 0) for r in out), Decimal("0"))
-    total_credits_d = sum((_to_dec(r.get("Credits") or 0) for r in out), Decimal("0"))
-    formula_lhs_d = total_debits_d - total_credits_d + closing_unapplied_d
-    formula_diff_d = formula_lhs_d - closing_balance_d
+        d = _rb_row.get("Due Date")
+        if d is None or last_idx_by_due_date.get(d) != i:
+            continue
 
-    # Customer cash inflow/outflow (external) split.
-    reversal_debits_d = sum(
-        (
-            _to_dec(r.get("Debits") or 0)
-            for r in out
-            if str(r.get("Narration") or "").startswith("Reversal of ")
-        ),
-        Decimal("0"),
-    )
-    external_cash_credits_d = sum(
-        (
-            _to_dec(r.get("Credits") or 0)
-            for r in out
-            if _to_dec(r.get("Credits") or 0) > Decimal("0")
-            and not str(r.get("Narration") or "").startswith("Liquidation of unapplied receipt no ")
-        ),
-        Decimal("0"),
-    )
+        # Due-date reconciliation: due date and closing line must equal daily_state.
+        narr = str(_rb_row.get("Narration") or "")
+        if d in due_dates or narr.startswith("Total outstanding balance as at"):
+            try:
+                exact_ds = get_loan_daily_state_balances(loan_id, d)
+                if exact_ds:
+                    running_bal = _to_dec(_f3(_total_outstanding_from_ds(exact_ds)))
+                    _rb_row["Balance"] = _f3(running_bal)
+            except Exception:
+                pass
 
-    # Internal movement sourced from periodic rows (liquidation allocation sum).
-    internal_liquidation_applied_d = Decimal("0")
-    for r in rows_periodic:
-        narr = str(r.get("Narration") or "")
-        if narr.startswith("Liquidation of unapplied receipt no "):
-            internal_liquidation_applied_d += (
-                _to_dec(r.get("Portion of Credit Allocated to Interest") or 0)
-                + _to_dec(r.get("Credit Allocated to Fees") or 0)
-                + _to_dec(r.get("Credit Allocated to Capital") or 0)
+    # Background reconciliation notification: for non-due dates, statement end-of-date Balance
+    # may drift below daily_state total outstanding. The drift should be explainable by
+    # unbilled/unmoved charge balances that exist in daily_state but are not yet reflected
+    # in the statement running balance:
+    #   interest_accrued_balance + penalty_interest_balance + default_interest_balance + fees_charges_balance
+    # If not, we flag it (notification only, not an error).
+    notifications: list[str] = []
+    for d, last_i in last_idx_by_due_date.items():
+        if d in due_dates:
+            continue
+        row_last = out[last_i]
+        try:
+            exact_ds = get_loan_daily_state_balances(loan_id, d)
+        except Exception:
+            exact_ds = None
+        if not exact_ds:
+            continue
+        daily_total = _to_dec(_f3(_total_outstanding_from_ds(exact_ds)))
+        stmt_total = _to_dec(row_last.get("Balance") or 0)
+        drift = daily_total - stmt_total
+        if drift <= Decimal("0.01"):
+            continue
+        explain = _to_dec(
+            _f3(
+                float(exact_ds.get("interest_accrued_balance") or 0)
+                + float(exact_ds.get("penalty_interest_balance") or 0)
+                + float(exact_ds.get("default_interest_balance") or 0)
+                + float(exact_ds.get("fees_charges_balance") or 0)
             )
-
-    meta["reconciliation"] = {
-        "total_debits": _f3(total_debits_d),
-        "total_credits": _f3(total_credits_d),
-        "external_cash_credits": _f3(external_cash_credits_d),
-        "reversal_debits": _f3(reversal_debits_d),
-        "internal_liquidation_applied": _f3(internal_liquidation_applied_d),
-        "closing_unapplied": _f3(closing_unapplied_d),
-        "closing_balance": _f3(closing_balance_d),
-        "formula_lhs": _f3(formula_lhs_d),
-        "formula_diff": _f3(formula_diff_d),
-        "rounding_adjustment_applied": 0.0,
-    }
+        )
+        if abs(drift - explain) > Decimal("0.05"):
+            notifications.append(
+                f"Statement balance drift on {d.isoformat()} is {float(drift):,.2f} "
+                f"but expected unbilled charges (accrued+penalty+default+fees) are {float(explain):,.2f}."
+            )
+    if notifications:
+        meta["notifications"] = notifications
 
     for _row in out:
         _row.pop("_repayment_id", None)

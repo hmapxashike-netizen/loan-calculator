@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -75,6 +76,33 @@ def _normalize_bucket_order(raw_order: list) -> list[str]:
 # Standard profile: do not allocate to these buckets (overpayment goes to unapplied).
 # Use Borrower-friendly profile if you want payments to reduce principal_not_due / interest_accrued on up-to-date loans.
 STANDARD_SKIP_BUCKETS = ("interest_accrued_balance", "principal_not_due")
+
+
+@dataclass(frozen=True)
+class ReverseRepaymentResult:
+    """Outcome of `reverse_repayment` after DB commit and optional EOD replay."""
+
+    reversal_repayment_id: int
+    loan_id: int
+    value_date: date
+    eod_from_date: date
+    eod_to_date: date
+    eod_rerun_success: bool
+    eod_rerun_error: str | None = None
+
+
+def _reversal_posting_calendar_date(system_date: datetime | str | date | None) -> date:
+    """Calendar date used as the upper horizon when replaying EOD after a reversal."""
+    sdate = system_date
+    if sdate is None:
+        sdate = datetime.now()
+    elif isinstance(sdate, str):
+        sdate = datetime.fromisoformat(sdate.replace("Z", "+00:00"))
+    if isinstance(sdate, datetime):
+        return sdate.date()
+    if isinstance(sdate, date):
+        return sdate
+    return date.today()
 
 
 def _get_waterfall_config(cfg: dict) -> tuple[str, list]:
@@ -601,15 +629,23 @@ def reverse_repayment(
     original_repayment_id: int,
     *,
     system_date: datetime | str | None = None,
-) -> int:
+) -> ReverseRepaymentResult:
     """
     Insert a reversing repayment row, leave the original immutable, and undo its
     allocation so state is correct for any later receipts on the same loan/date.
     - Adds the original's allocation back to loan_daily_state for its value_date.
     - Removes pending unapplied_funds for this repayment.
     - Reversal row has negative amount and status 'reversed'; original is marked 'reversed'.
+    - After commit, replays single-loan EOD for each day from the receipt value date through
+      max(system business date, reversal posting calendar date) so forward `loan_daily_state`
+      rows match the reversed reality.
+
+    Returns ReverseRepaymentResult; check eod_rerun_success / eod_rerun_error even when save succeeded.
     """
-    # Ensure original has allocation before we reverse (so reversal row gets unallocation_parent_reversed)
+    saved_new_id: int | None = None
+    saved_loan_id: int | None = None
+    saved_value_date: date | None = None
+    # Ensure original has allocation before we reverse (mirror row + liquidation unwind in DB).
     alloc_row = _get_allocation_sum_for_repayment(original_repayment_id)
     if not alloc_row:
         with _connection() as conn:
@@ -746,6 +782,7 @@ def reverse_repayment(
                 SELECT lra.id, lra.repayment_id, lra.alloc_principal_not_due, lra.alloc_principal_arrears,
                        lra.alloc_interest_accrued, lra.alloc_interest_arrears,
                        lra.alloc_default_interest, lra.alloc_penalty_interest, lra.alloc_fees_charges,
+                       lra.unallocated,
                        lr.value_date AS alloc_value_date
                 FROM loan_repayment_allocation lra
                 JOIN loan_repayments lr ON lr.id = lra.repayment_id
@@ -763,6 +800,7 @@ def reverse_repayment(
                 adi = _f(alloc["alloc_default_interest"])
                 api = _f(alloc["alloc_penalty_interest"])
                 afc = _f(alloc["alloc_fees_charges"])
+                unallocated_orig = _f(alloc.get("unallocated"))
                 alloc_date = alloc["alloc_value_date"]
                 if hasattr(alloc_date, "date"):
                     alloc_date = alloc_date.date() if callable(getattr(alloc_date, "date")) else alloc_date
@@ -789,8 +827,32 @@ def reverse_repayment(
                     """,
                     (loan_id, alloc_date),
                 )
-                # Insert negative allocation row (unallocation_parent_reversed)
+                # Persist the liquidation unwind on a NEW system repayment row so we don't overwrite the original.
+                cur.execute(
+                    """
+                    INSERT INTO loan_repayments (
+                        loan_id, amount, payment_date, reference, value_date, status, original_repayment_id
+                    ) VALUES (%s, %s, %s, %s, %s, 'reversed', %s)
+                    RETURNING id
+                    """,
+                    (
+                        loan_id,
+                        float(as_10dp(apr + apa + aia + aiar + adi + api + afc)),
+                        alloc_date,
+                        "Reversal of unapplied funds allocation",
+                        alloc_date,
+                        alloc["repayment_id"],
+                    )
+                )
+                row_liq_rev = cur.fetchone()
+                new_liq_rev_id = int(row_liq_rev["id"]) if row_liq_rev and "id" in row_liq_rev else None
+                if new_liq_rev_id is None:
+                    raise RuntimeError("Failed to insert reversal row for unapplied liquidation cascade.")
+
+                # Link back to the original source_repayment_id so the reversal correctly appears
+                # in the unapplied_funds_ledger to balance out the original liquidation.
                 rev_alloc_total = -(apr + apa + aia + aiar + adi + api + afc)
+                rev_unallocated = -unallocated_orig
                 cur.execute(
                     """
                     INSERT INTO loan_repayment_allocation (
@@ -798,17 +860,26 @@ def reverse_repayment(
                         alloc_interest_accrued, alloc_interest_arrears,
                         alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
                         alloc_principal_total, alloc_interest_total, alloc_fees_total,
-                        alloc_total, event_type, source_repayment_id
+                        alloc_total, unallocated, event_type, source_repayment_id
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'unallocation_parent_reversed', %s)
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        'unallocation_parent_reversed', %s
+                    )
                     """,
                     (
-                        alloc["repayment_id"],
+                        new_liq_rev_id,
                         float(as_10dp(-apr)), float(as_10dp(-apa)), float(as_10dp(-aia)), float(as_10dp(-aiar)),
                         float(as_10dp(-adi)), float(as_10dp(-api)), float(as_10dp(-afc)),
                         float(as_10dp(-(apr + apa))), float(as_10dp(-(aia + aiar + adi + api))), float(as_10dp(-afc)),
-                        float(as_10dp(rev_alloc_total)), original_repayment_id,
+                        float(as_10dp(rev_alloc_total)),
+                        float(as_10dp(rev_unallocated)),
+                        alloc["source_repayment_id"],
                     ),
+                )
+                cur.execute(
+                    "UPDATE loan_repayments SET status = 'reversed' WHERE id = %s",
+                    (alloc["repayment_id"],),
                 )
                 # Offset the unapplied debit we created when applying (insert credit to "unconsume")
                 amount_applied = apr + apa + aia + aiar + adi + api + afc
@@ -912,19 +983,129 @@ def reverse_repayment(
                             is_reversal=True,
                         )
 
+            # Always reverse the GL journals created for this receipt's own allocation buckets.
+            # Without this, statements can show the reversal (via updated allocation rows),
+            # but the GL (journal_entries) will not be netted for CUSTOMER-facing ledger totals.
+            try:
+                from accounting_service import AccountingService
+                svc_alloc = AccountingService()
+            except Exception:
+                svc_alloc = None
+
+            def _p(v):
+                return float(v or 0)
+
+            if svc_alloc is not None and alloc_row:
+                _rj = _repayment_journal_reference(loan_id, original_repayment_id)
+                # Principal
+                prin_arr = _p(alloc_row.get("alloc_principal_arrears"))
+                if prin_arr > 1e-6:
+                    p = Decimal(str(prin_arr))
+                    svc_alloc.post_event(
+                        event_type="PAYMENT_PRINCIPAL",
+                        reference=_rj,
+                        description=f"Reversal of principal (arrears) — {_rj}",
+                        event_id=f"REV-REPAY-{original_repayment_id}-PRIN-ARR",
+                        created_by="system",
+                        entry_date=eff_date,
+                        payload={"cash_operating": p, "principal_arrears": p},
+                        amount=p,
+                        is_reversal=True,
+                    )
+                prin_nyd = _p(alloc_row.get("alloc_principal_not_due"))
+                if prin_nyd > 1e-6:
+                    p = Decimal(str(prin_nyd))
+                    svc_alloc.post_event(
+                        event_type="PAYMENT_PRINCIPAL_NOT_YET_DUE",
+                        reference=_rj,
+                        description=f"Reversal of principal (not yet due) — {_rj}",
+                        event_id=f"REV-REPAY-{original_repayment_id}-PRIN-NYD",
+                        created_by="system",
+                        entry_date=eff_date,
+                        payload={"cash_operating": p, "loan_principal": p},
+                        amount=p,
+                        is_reversal=True,
+                    )
+                # Interest
+                int_arrears = _p(alloc_row.get("alloc_interest_arrears"))
+                if int_arrears > 1e-6:
+                    p = Decimal(str(int_arrears))
+                    svc_alloc.post_event(
+                        event_type="PAYMENT_REGULAR_INTEREST",
+                        reference=_rj,
+                        description=f"Reversal of interest (arrears) — {_rj}",
+                        event_id=f"REV-REPAY-{original_repayment_id}-INT-ARR",
+                        created_by="system",
+                        entry_date=eff_date,
+                        payload={"cash_operating": p, "regular_interest_arrears": p},
+                        amount=p,
+                        is_reversal=True,
+                    )
+                int_accrued = _p(alloc_row.get("alloc_interest_accrued"))
+                if int_accrued > 1e-6:
+                    p = Decimal(str(int_accrued))
+                    svc_alloc.post_event(
+                        event_type="PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+                        reference=_rj,
+                        description=f"Reversal of interest (accrued / not billed) — {_rj}",
+                        event_id=f"REV-REPAY-{original_repayment_id}-INT-ACC",
+                        created_by="system",
+                        entry_date=eff_date,
+                        payload={"cash_operating": p, "regular_interest_accrued": p},
+                        amount=p,
+                        is_reversal=True,
+                    )
+                # Penalty & Default
+                pen = _p(alloc_row.get("alloc_penalty_interest"))
+                if pen > 1e-6:
+                    p = Decimal(str(pen))
+                    svc_alloc.post_event(
+                        event_type="PAYMENT_PENALTY_INTEREST",
+                        reference=_rj,
+                        description=f"Reversal of penalty interest — {_rj}",
+                        event_id=f"REV-REPAY-{original_repayment_id}-PEN",
+                        created_by="system",
+                        entry_date=eff_date,
+                        payload={
+                            "cash_operating": p,
+                            "penalty_interest_asset": p,
+                            "penalty_interest_suspense": p,
+                            "penalty_interest_income": p,
+                        },
+                        amount=p,
+                        is_reversal=True,
+                    )
+                default_i = _p(alloc_row.get("alloc_default_interest"))
+                if default_i > 1e-6:
+                    p = Decimal(str(default_i))
+                    svc_alloc.post_event(
+                        event_type="PAYMENT_DEFAULT_INTEREST",
+                        reference=_rj,
+                        description=f"Reversal of default interest — {_rj}",
+                        event_id=f"REV-REPAY-{original_repayment_id}-DEF",
+                        created_by="system",
+                        entry_date=eff_date,
+                        payload={
+                            "cash_operating": p,
+                            "default_interest_asset": p,
+                            "default_interest_suspense": p,
+                            "default_interest_income": p,
+                        },
+                        amount=p,
+                        is_reversal=True,
+                    )
+
             sdate = system_date
             if sdate is None:
                 sdate = datetime.now()
             elif isinstance(sdate, str):
                 sdate = datetime.fromisoformat(sdate.replace("Z", "+00:00"))
 
-            # Prefix references with "r" so reversal is clearly linked to original (e.g. r16, rREC-001)
-            orig_ref = row.get("reference") or str(original_repayment_id)
-            orig_cust_ref = row.get("customer_reference") or str(original_repayment_id)
-            orig_co_ref = row.get("company_reference") or str(original_repayment_id)
-            rev_ref = ("r" + orig_ref) if orig_ref else None
-            rev_cust_ref = ("r" + orig_cust_ref) if orig_cust_ref else None
-            rev_co_ref = ("r" + orig_co_ref) if orig_co_ref else None
+            # Reversal rows: reference fields show original receipt id (policy REV n), not the reversing row id.
+            rev_label = f"REV {original_repayment_id}"
+            rev_ref = rev_label
+            rev_cust_ref = rev_label
+            rev_co_ref = rev_label
 
             cur.execute(
                 """
@@ -1018,7 +1199,180 @@ def reverse_repayment(
                 "UPDATE loan_repayments SET status = 'reversed' WHERE id = %s",
                 (original_repayment_id,),
             )
-            return new_id
+            saved_new_id = new_id
+            saved_loan_id = loan_id
+            saved_value_date = eff_date
+
+    if saved_new_id is None or saved_loan_id is None or saved_value_date is None:
+        raise RuntimeError(
+            f"reverse_repayment: commit completed but capture failed for repayment {original_repayment_id}."
+        )
+
+    eod_from = saved_value_date
+    posting_cal = _reversal_posting_calendar_date(system_date)
+    eod_to = max(eod_from, posting_cal)
+    try:
+        from system_business_date import get_effective_date
+        from eod import run_single_loan_eod_date_range
+
+        eod_to = max(eod_from, get_effective_date(), posting_cal)
+        cfg = load_system_config_from_db() or {}
+        eod_ok, eod_err = run_single_loan_eod_date_range(
+            saved_loan_id, eod_from, eod_to, sys_cfg=cfg
+        )
+    except Exception as exc:
+        eod_ok, eod_err = False, str(exc)
+
+    return ReverseRepaymentResult(
+        reversal_repayment_id=saved_new_id,
+        loan_id=saved_loan_id,
+        value_date=saved_value_date,
+        eod_from_date=eod_from,
+        eod_to_date=eod_to,
+        eod_rerun_success=eod_ok,
+        eod_rerun_error=None if eod_ok else eod_err,
+    )
+
+
+def post_receipt_allocation_gl_reversals(original_repayment_id: int) -> None:
+    """
+    Retroactively post GL reversal journals for a receipt's allocation buckets.
+    This is useful when a previous reversal created allocation rows/state but the
+    GL journals did not get posted for the receipt's own PAYMENT_* allocations.
+    """
+    alloc_row = _get_allocation_sum_for_repayment(original_repayment_id)
+    if not alloc_row:
+        return
+
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT loan_id, COALESCE(value_date, payment_date) AS eff_date
+                FROM loan_repayments
+                WHERE id = %s
+                """,
+                (original_repayment_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return
+
+            loan_id = int(row["loan_id"])
+            eff_date = row.get("eff_date")
+            if hasattr(eff_date, "date"):
+                eff_date = eff_date.date() if callable(getattr(eff_date, "date")) else eff_date
+
+    try:
+        from accounting_service import AccountingService
+        svc_alloc = AccountingService()
+    except Exception:
+        return
+
+    from decimal import Decimal
+
+    def _p(v):
+        return float(v or 0)
+
+    _rj = _repayment_journal_reference(loan_id, original_repayment_id)
+
+    # Principal
+    prin_arr = _p(alloc_row.get("alloc_principal_arrears"))
+    if prin_arr > 1e-6:
+        p = Decimal(str(prin_arr))
+        svc_alloc.post_event(
+            event_type="PAYMENT_PRINCIPAL",
+            reference=_rj,
+            description=f"Reversal of principal (arrears) — {_rj}",
+            event_id=f"REV-REPAY-{original_repayment_id}-PRIN-ARR",
+            created_by="system",
+            entry_date=eff_date,
+            payload={"cash_operating": p, "principal_arrears": p},
+            amount=p,
+            is_reversal=True,
+        )
+    prin_nyd = _p(alloc_row.get("alloc_principal_not_due"))
+    if prin_nyd > 1e-6:
+        p = Decimal(str(prin_nyd))
+        svc_alloc.post_event(
+            event_type="PAYMENT_PRINCIPAL_NOT_YET_DUE",
+            reference=_rj,
+            description=f"Reversal of principal (not yet due) — {_rj}",
+            event_id=f"REV-REPAY-{original_repayment_id}-PRIN-NYD",
+            created_by="system",
+            entry_date=eff_date,
+            payload={"cash_operating": p, "loan_principal": p},
+            amount=p,
+            is_reversal=True,
+        )
+    # Interest
+    int_arrears = _p(alloc_row.get("alloc_interest_arrears"))
+    if int_arrears > 1e-6:
+        p = Decimal(str(int_arrears))
+        svc_alloc.post_event(
+            event_type="PAYMENT_REGULAR_INTEREST",
+            reference=_rj,
+            description=f"Reversal of interest (arrears) — {_rj}",
+            event_id=f"REV-REPAY-{original_repayment_id}-INT-ARR",
+            created_by="system",
+            entry_date=eff_date,
+            payload={"cash_operating": p, "regular_interest_arrears": p},
+            amount=p,
+            is_reversal=True,
+        )
+    int_accrued = _p(alloc_row.get("alloc_interest_accrued"))
+    if int_accrued > 1e-6:
+        p = Decimal(str(int_accrued))
+        svc_alloc.post_event(
+            event_type="PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+            reference=_rj,
+            description=f"Reversal of interest (accrued / not billed) — {_rj}",
+            event_id=f"REV-REPAY-{original_repayment_id}-INT-ACC",
+            created_by="system",
+            entry_date=eff_date,
+            payload={"cash_operating": p, "regular_interest_accrued": p},
+            amount=p,
+            is_reversal=True,
+        )
+    # Penalty & Default
+    pen = _p(alloc_row.get("alloc_penalty_interest"))
+    if pen > 1e-6:
+        p = Decimal(str(pen))
+        svc_alloc.post_event(
+            event_type="PAYMENT_PENALTY_INTEREST",
+            reference=_rj,
+            description=f"Reversal of penalty interest — {_rj}",
+            event_id=f"REV-REPAY-{original_repayment_id}-PEN",
+            created_by="system",
+            entry_date=eff_date,
+            payload={
+                "cash_operating": p,
+                "penalty_interest_asset": p,
+                "penalty_interest_suspense": p,
+                "penalty_interest_income": p,
+            },
+            amount=p,
+            is_reversal=True,
+        )
+    default_i = _p(alloc_row.get("alloc_default_interest"))
+    if default_i > 1e-6:
+        p = Decimal(str(default_i))
+        svc_alloc.post_event(
+            event_type="PAYMENT_DEFAULT_INTEREST",
+            reference=_rj,
+            description=f"Reversal of default interest — {_rj}",
+            event_id=f"REV-REPAY-{original_repayment_id}-DEF",
+            created_by="system",
+            entry_date=eff_date,
+            payload={
+                "cash_operating": p,
+                "default_interest_asset": p,
+                "default_interest_suspense": p,
+                "default_interest_income": p,
+            },
+            amount=p,
+            is_reversal=True,
+        )
 
 
 def record_repayments_batch(rows: list[dict]) -> tuple[int, int, list[str]]:
@@ -1500,9 +1854,9 @@ def get_net_allocation_for_loan_date(loan_id: int, as_of_date: date, conn: Any =
                   AND lr.status IN ('posted', 'reversed')
                   AND (COALESCE(lr.value_date, lr.payment_date))::date = %s::date
                   AND NOT (
-                    COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+                    COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
                   )
                 """,
                 (loan_id, as_of_date),
@@ -1531,9 +1885,9 @@ def get_unallocated_for_loan_date(loan_id: int, as_of_date: date, conn: Any = No
                   AND lr.status IN ('posted', 'reversed')
                   AND (COALESCE(lr.value_date, lr.payment_date))::date = %s::date
                   AND NOT (
-                    COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+                    COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
                   )
                 """,
                 (loan_id, as_of_date),
@@ -1561,6 +1915,8 @@ def get_repayments_with_allocations(
             cur.execute(
                 f"""
                 SELECT lr.id, lr.amount, lr.payment_date, lr.value_date, lr.customer_reference,
+                       lr.reference,
+                       lr.original_repayment_id,
                        COALESCE(SUM(lra.alloc_interest_total), 0) AS alloc_interest_total,
                        COALESCE(SUM(lra.alloc_fees_total), 0) AS alloc_fees_total,
                        COALESCE(SUM(lra.alloc_principal_total), 0) AS alloc_principal_total,
@@ -1577,11 +1933,15 @@ def get_repayments_with_allocations(
                   AND COALESCE(lr.value_date, lr.payment_date) >= %s
                   AND COALESCE(lr.value_date, lr.payment_date) <= %s
                   AND NOT (
-                    COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+                    COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.reference, '') ILIKE '%%Reversal of unapplied funds%%'
+                    OR COALESCE(lr.customer_reference, '') ILIKE '%%Reversal of unapplied funds%%'
+                    OR COALESCE(lr.company_reference, '') ILIKE '%%Reversal of unapplied funds%%'
                   )
-                GROUP BY lr.id, lr.amount, lr.payment_date, lr.value_date, lr.customer_reference
+                GROUP BY lr.id, lr.amount, lr.payment_date, lr.value_date, lr.customer_reference,
+                         lr.reference, lr.original_repayment_id
                 ORDER BY COALESCE(lr.value_date, lr.payment_date), lr.id
                 """,
                 (loan_id, start_date, end_date),
@@ -2014,9 +2374,9 @@ def get_unapplied_entries(loan_id: int, through_date: date) -> list[tuple[date, 
                 WHERE lr.loan_id = %s
                   AND (COALESCE(lr.value_date, lr.payment_date))::date <= %s
                   AND NOT (
-                    COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%%'
-                    OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%%'
+                    COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
                   )
                 ORDER BY value_date, lr.id
                 """,

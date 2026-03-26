@@ -31,7 +31,7 @@ def main():
 
     url = get_database_url()
     if not url or "/" not in url:
-        print("Database URL not configured. Set LMS_DB_PASSWORD (and LMS_DB_USER if needed).", file=sys.stderr)
+        print("Database URL not configured. Set FARNDACRED_DB_PASSWORD/FARNDACRED_DB_USER (or LMS_* fallback).", file=sys.stderr)
         sys.exit(1)
 
     try:

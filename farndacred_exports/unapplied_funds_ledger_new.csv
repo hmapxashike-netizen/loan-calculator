@@ -1,0 +1,6 @@
+repayment_id,repayment_key,loan_id,value_date,entry_kind,liquidation_repayment_id,unapplied_delta,alloc_prin_arrears,alloc_int_arrears,alloc_penalty_int,alloc_default_int,alloc_fees_charges,unapplied_running_balance
+6,6,1,2025-06-30,liquidation,,-13537.8482424754,8430.6914986743,5107.1567438011,0,0,0,-13537.8482424754
+7,7,9,2025-06-30,liquidation,,-343.8596491223,0,343.8596491223,0,0,0,-343.8596491223
+16,REV-7,9,2025-06-30,reversal,,343.8596491223,0,-343.8596491223,0,0,0,0
+11,11,9,2025-07-07,credit,,1047.9064327481,0,0,0,0,0,1047.9064327481
+15,REV-11,9,2025-07-07,reversal,,-1047.9064327481,0,0,0,0,0,0

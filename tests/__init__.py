@@ -1,1 +1,1 @@
-# Tests for LMS
+# Tests for FarndaCred

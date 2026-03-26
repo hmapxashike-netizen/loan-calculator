@@ -58,7 +58,7 @@ function App() {
       const isConnectionError = /fetch|ECONNREFUSED|network|connection/i.test(msg)
       setError(
         isConnectionError
-          ? 'Cannot connect to the loan engine. Start it with: java LoanServer (in the LMS-Project folder)'
+          ? 'Cannot connect to the loan engine. Start it with: java LoanServer (in the FarndaCred project folder)'
           : msg
       )
     } finally {
@@ -68,7 +68,7 @@ function App() {
 
   return (
     <div style={{ padding: '24px', fontFamily: 'system-ui, sans-serif', maxWidth: 900, margin: '0 auto' }}>
-      <h1 style={{ color: '#1e3a8a', marginBottom: 4 }}>Loan Management System</h1>
+      <h1 style={{ color: '#1e3a8a', marginBottom: 4 }}>FarndaCred</h1>
       <p style={{ color: '#64748b', marginBottom: 24 }}>Standardised Term Loan</p>
 
       <div style={{

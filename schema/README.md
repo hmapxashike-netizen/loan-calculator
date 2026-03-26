@@ -1,4 +1,4 @@
-# LMS Database Schema (PostgreSQL 18)
+# FarndaCred Database Schema (PostgreSQL 18)
 
 ## Setup order
 

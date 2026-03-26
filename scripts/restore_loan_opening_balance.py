@@ -17,7 +17,7 @@ System business date: This script does NOT advance the system calendar / busines
 Only full portfolio EOD (run_eod_for_date) does that. run_single_loan_eod only refreshes
 loan_daily_state for the given loan and date.
 
-Usage (project root, same DB as app: LMS_DATABASE_URL / config):
+Usage (project root, same DB as app: FARNDACRED_DATABASE_URL / LMS_DATABASE_URL / config):
 
   # Preview
   python scripts/restore_loan_opening_balance.py --loan-id 1 --target-date 2025-06-01

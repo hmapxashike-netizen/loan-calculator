@@ -119,6 +119,7 @@ try:
         record_repayment,
         record_repayments_batch,
         reverse_repayment,
+        ReverseRepaymentResult,
         get_loan,
         get_loans_by_customer,
         get_amount_due_summary,
@@ -1231,15 +1232,15 @@ def eod_ui():
             "Use your scheduling/ops tooling to trigger EOD."
         )
 
-    # Available in both manual and automatic EOD modes — does not advance system date.
-    st.subheader("Reallocate receipts")
-    st.caption(
-        "Re-runs waterfall allocation for selected **posted** receipts and **writes results to the database**: "
-        "`loan_repayment_allocation` (updated in place) and `loan_daily_state` for each receipt’s **value date**, "
-        "plus unapplied-funds adjustments where applicable. "
-        "**Does not advance the system business date.**"
-    )
     if fix_eod_issues:
+        # Available in both manual and automatic EOD modes — does not advance system date.
+        st.subheader("Reallocate receipts")
+        st.caption(
+            "Re-runs waterfall allocation for selected **posted** receipts and **writes results to the database**: "
+            "`loan_repayment_allocation` (updated in place) and `loan_daily_state` for each receipt’s **value date**, "
+            "plus unapplied-funds adjustments where applicable. "
+            "**Does not advance the system business date.**"
+        )
         st.markdown(
             "**When to use what**\n"
             "- **Typical:** receipts with **value date = current system date** — fix same-day allocation without running full EOD.\n"
@@ -3372,11 +3373,11 @@ def customers_ui():
         st.error(f"Customer module is not available. Check database connection and install: psycopg2-binary. ({_customers_error})")
         return
 
+    # Match `st.header` visual scale used in Interest-in-Suspense; use logo-green font
     st.markdown(
-        "<div style='background-color: #16A34A; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.1rem;'>Customers</div>",
+        "<div style='color:#16A34A; font-weight:700; font-size:2rem; margin:0.25rem 0 0.75rem 0;'>Customers</div>",
         unsafe_allow_html=True,
     )
-    st.markdown("<br>", unsafe_allow_html=True)
 
     tab1, tab2, tab3, tab4 = st.tabs(["Add Individual", "Add Corporate", "View & manage", "Agents"])
 
@@ -4520,11 +4521,24 @@ def teller_ui():
                                 st.error("Enter a valid receipt ID or select a receipt from the list.")
                             else:
                                 try:
-                                    new_id = reverse_repayment(target_id)
-                                    st.success(
-                                        f"Receipt {target_id} reversed successfully. "
-                                        f"Reversal entry created with ID {new_id}."
-                                    )
+                                    rev_result: ReverseRepaymentResult = reverse_repayment(target_id)
+                                    if rev_result.eod_rerun_success:
+                                        st.success(
+                                            f"Receipt **{target_id}** reversed successfully. "
+                                            f"Reversal repayment id **{rev_result.reversal_repayment_id}**. "
+                                            f"Loan **{rev_result.loan_id}** daily state was recalculated from "
+                                            f"**{rev_result.eod_from_date.isoformat()}** through "
+                                            f"**{rev_result.eod_to_date.isoformat()}**."
+                                        )
+                                    else:
+                                        st.warning(
+                                            f"Receipt **{target_id}** was reversed and reversal id "
+                                            f"**{rev_result.reversal_repayment_id}** was saved, but **re-running EOD "
+                                            f"for the loan failed**. "
+                                            f"Expected refresh window: **{rev_result.eod_from_date.isoformat()}** → "
+                                            f"**{rev_result.eod_to_date.isoformat()}**. "
+                                            f"**Error:** {rev_result.eod_rerun_error or 'unknown'}"
+                                        )
                                 except Exception as e:
                                     st.error(f"Could not reverse receipt {target_id}: {e}")
                                     st.exception(e)
@@ -5066,7 +5080,10 @@ def statements_ui():
         st.subheader("Customer loan statement")
         st.caption(
             "Search by customer or Loan ID. Select loan and dates. "
-            "**Arrears** = principal in arrears + interest in arrears + default + penalty + fees (PDF/CSV/Print)."
+            "**Arrears** = principal in arrears + interest in arrears + default + penalty + fees (PDF/CSV/Print). "
+            "**Balance** = loan total outstanding (facility buckets only); on each schedule due date it is set to the "
+            "stored closing position for that date, so it may differ from a manual running total of Debits minus Credits on "
+            "that row. **Unapplied funds** is cash held pending allocation and is separate from Balance."
         )
         search = st.text_input(
             "Search by customer name or Loan ID",
@@ -5246,6 +5263,9 @@ def statements_ui():
                             )
                             st.markdown(stmt_html, unsafe_allow_html=True)
 
+                            for note in meta.get("notifications") or []:
+                                st.warning(note)
+
                             st.markdown(
                                 "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.9rem;'>"
                                 f"For the period from {start_fmt} to {end_fmt}<br>"
@@ -5417,7 +5437,11 @@ def statements_ui():
                         running_net += (dr - cr)
                         
                         b_val, b_type = format_bal(running_net)
-                        desc = tx['memo'] if tx['memo'] else tx['description']
+                        event_id = str(tx.get("event_id") or "")
+                        is_reversal = event_id.startswith("REV-")
+                        # If this is a reversal journal, show the explicit description
+                        # (we set those on reversal postings). Otherwise, keep template memo.
+                        desc = tx['description'] if (is_reversal or "Reversal of" in str(tx.get("description") or "")) else (tx['memo'] if tx.get('memo') else tx.get('description'))
                         
                         rows.append({
                             "Date": tx['entry_date'].strftime("%Y-%m-%d") if tx['entry_date'] else "",
@@ -6870,36 +6894,34 @@ def document_management_ui():
         
 
 def main():
-    _get_global_loan_settings()  # ensure defaults exist
-
-    st.sidebar.markdown(
-        "<div style='font-size: 1rem; font-weight: 700; color: #1E3A8A; margin-bottom: 0.5rem;'>"
-        "Lincoln Capital (Pvt) Ltd</div>"
-        "<div style='font-size: 0.8rem; color: #64748B;'>Loan Management System</div>",
-        unsafe_allow_html=True,
-    )
-    st.sidebar.divider()
     st.sidebar.header("Navigation")
-   
-    nav = st.sidebar.radio(
-        "Section",
-        [
-            "Customers",
-            "Loan management",
-            "Interest in Suspense",
-            "Teller",
-            "Reamortisation",
-            "Statements",
-            "Accounting",
-            "Journals",
-            "Notifications",
-            "Document Management",
-            "End of day",
-            "System configurations",
-        ],
-    )
+    nav = st.sidebar.radio("Section", get_loan_app_sections())
     st.sidebar.divider()
+    render_loan_app_section(nav)
 
+
+LOAN_APP_SECTIONS = [
+    "Customers",
+    "Loan management",
+    "Interest in Suspense",
+    "Teller",
+    "Reamortisation",
+    "Statements",
+    "Accounting",
+    "Journals",
+    "Notifications",
+    "Document Management",
+    "End of day",
+    "System configurations",
+]
+
+
+def get_loan_app_sections() -> list[str]:
+    return list(LOAN_APP_SECTIONS)
+
+
+def render_loan_app_section(nav: str) -> None:
+    _get_global_loan_settings()  # ensure defaults exist
     if nav == "Customers":
         customers_ui()
     elif nav == "Teller":
@@ -6910,6 +6932,7 @@ def main():
         statements_ui()
     elif nav == "Interest in Suspense":
         from interest_suspense_ui import render_suspense_ui
+
         render_suspense_ui()
     elif nav == "Loan management":
         tab_capture, tab_schedule, tab_calculators = st.tabs(

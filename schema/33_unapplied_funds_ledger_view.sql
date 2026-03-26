@@ -35,9 +35,9 @@ WITH alloc_receipts AS (
     FROM loan_repayments lr
     LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
     WHERE NOT (
-        COALESCE(lr.reference, '') ILIKE 'Unapplied funds allocation%'
-        OR COALESCE(lr.customer_reference, '') ILIKE 'Unapplied funds allocation%'
-        OR COALESCE(lr.company_reference, '') ILIKE 'Unapplied funds allocation%'
+        COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
+        OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
+        OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
     )
     GROUP BY lr.id, lr.loan_id, lr.value_date, lr.payment_date, lr.amount, lr.status, lr.original_repayment_id
 ),
@@ -69,11 +69,15 @@ credits_and_reversals AS (
 ),
 liquidations AS (
     -- Liquidations come only from unapplied_funds_allocation (always negative unapplied delta).
+    -- unallocation_parent_reversed undoes a prior liquidation when the parent receipt is reversed.
+    -- Omit these from the view when a reversal repayment row exists for source_repayment_id:
+    -- the reversal receipt already appears in credits_and_reversals with mirrored unallocated,
+    -- and unioning both double-counts +unapplied_delta (often dated on the liquidation's value_date).
     SELECT
-        lra.source_repayment_id AS repayment_id,
+        lr.id AS repayment_id,
         CASE
-            WHEN lra.event_type = 'unapplied_funds_allocation' THEN lra.source_repayment_id::text
-            ELSE 'REV-' || lra.source_repayment_id::text
+            WHEN lra.event_type = 'unapplied_funds_allocation' THEN lr.id::text
+            ELSE 'REV-' || lr.original_repayment_id::text
         END AS repayment_key,
         lr.loan_id AS loan_id,
         (COALESCE(lr.value_date, lr.payment_date))::date AS value_date,
@@ -81,7 +85,7 @@ liquidations AS (
             WHEN lra.event_type = 'unapplied_funds_allocation' THEN 'liquidation'
             ELSE 'reversal'
         END AS entry_kind,
-        MIN(lra.repayment_id) AS liquidation_repayment_id,
+        NULL::integer AS liquidation_repayment_id,
         -SUM(
             COALESCE(lra.alloc_principal_total, 0)
             + COALESCE(lra.alloc_interest_total, 0)
@@ -97,7 +101,8 @@ liquidations AS (
     WHERE lra.event_type IN ('unapplied_funds_allocation', 'unallocation_parent_reversed')
       AND lra.source_repayment_id IS NOT NULL
     GROUP BY
-        lra.source_repayment_id,
+        lr.id,
+        lr.original_repayment_id,
         lr.loan_id,
         (COALESCE(lr.value_date, lr.payment_date))::date,
         lra.event_type

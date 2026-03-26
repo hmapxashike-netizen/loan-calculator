@@ -3,13 +3,16 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from typing import List, Dict, Any, Optional
 
+def _env_with_legacy(new_key: str, legacy_key: str, default: str) -> str:
+    return os.environ.get(new_key) or os.environ.get(legacy_key, default)
+
 def get_db_connection():
     return psycopg2.connect(
-        host=os.environ.get("LMS_DB_HOST", "localhost"),
-        port=os.environ.get("LMS_DB_PORT", "5432"),
-        dbname=os.environ.get("LMS_DB_NAME", "lms_db"),
-        user=os.environ.get("LMS_DB_USER", "postgres"),
-        password=os.environ.get("LMS_DB_PASSWORD", "postgres"),
+        host=_env_with_legacy("FARNDACRED_DB_HOST", "LMS_DB_HOST", "localhost"),
+        port=_env_with_legacy("FARNDACRED_DB_PORT", "LMS_DB_PORT", "5432"),
+        dbname=_env_with_legacy("FARNDACRED_DB_NAME", "LMS_DB_NAME", "lms_db"),
+        user=_env_with_legacy("FARNDACRED_DB_USER", "LMS_DB_USER", "postgres"),
+        password=_env_with_legacy("FARNDACRED_DB_PASSWORD", "LMS_DB_PASSWORD", "postgres"),
     )
 
 # --- Document Classes ---
