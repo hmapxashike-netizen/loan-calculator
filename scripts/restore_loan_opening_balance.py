@@ -139,6 +139,25 @@ def main() -> int:
         if eod_end < target_date:
             print("--run-eod-through must be on or after --target-date", file=sys.stderr)
             return 2
+        try:
+            from system_business_date import get_effective_date
+
+            cap = get_effective_date()
+            if eod_end > cap:
+                print(
+                    f"Note: capping --run-eod-through from {eod_end} to {cap} "
+                    "(cannot replay beyond system business date).",
+                    flush=True,
+                )
+                eod_end = cap
+        except Exception:
+            pass
+        if eod_end < target_date:
+            print(
+                "No single-loan EOD replay (entire window is after system date).",
+                flush=True,
+            )
+            eod_end = None
 
     conn = None
     try:

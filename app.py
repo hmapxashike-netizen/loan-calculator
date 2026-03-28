@@ -140,6 +140,7 @@ try:
         get_product_config_from_db,
         save_product_config_to_db,
         save_loan_approval_draft,
+        resubmit_loan_approval_draft,
         list_loan_approval_drafts,
         get_loan_approval_draft,
         approve_loan_approval_draft,
@@ -2345,6 +2346,9 @@ def capture_loan_ui():
 
     if "capture_loan_step" not in st.session_state:
         st.session_state["capture_loan_step"] = 0
+    flash_msg = st.session_state.pop("capture_flash_message", None)
+    if flash_msg:
+        st.success(str(flash_msg))
     step = st.session_state["capture_loan_step"]
     if step > 1:
         step = 1
@@ -2352,6 +2356,52 @@ def capture_loan_ui():
     step_labels = ["Key loan details", "Build schedule"]
     progress = " · ".join([f"**{i + 1}. {step_labels[i]}**" if i == step else f"{i + 1}. {step_labels[i]}" for i in range(2)])
     st.caption(f"Step {step + 1} of 2 — {progress}")
+    with st.popover("See loans for rework"):
+        srch = st.text_input(
+            "Search rework drafts",
+            placeholder="Draft ID / Customer ID / Product / Loan type",
+            key="cap_rework_search",
+        )
+        rework_rows = list_loan_approval_drafts(
+            status="REWORK",
+            search=srch.strip() or None,
+            limit=200,
+        )
+        if not rework_rows:
+            st.caption("No drafts currently in rework.")
+        else:
+            rw_df = pd.DataFrame(rework_rows)
+            rw_cols = [c for c in ["id", "customer_id", "loan_type", "product_code", "assigned_approver_id", "submitted_at"] if c in rw_df.columns]
+            st.dataframe(rw_df[rw_cols], width="stretch", hide_index=True, height=160)
+            rw_options = [int(r["id"]) for r in rework_rows]
+            pick_rw = st.selectbox("Select rework draft", rw_options, key="cap_rework_pick")
+            if st.button("Load selected draft", key="cap_rework_load_btn", width="stretch"):
+                draft = get_loan_approval_draft(int(pick_rw))
+                if not draft:
+                    st.error(f"Draft #{pick_rw} not found.")
+                else:
+                    draft_loan_type = str(draft.get("loan_type") or "")
+                    type_map = {
+                        "consumer_loan": "Consumer Loan",
+                        "term_loan": "Term Loan",
+                        "bullet_loan": "Bullet Loan",
+                        "customised_repayments": "Customised Repayments",
+                    }
+                    display_type = type_map.get(draft_loan_type, draft_loan_type)
+                    det = draft.get("details_json") or {}
+                    sched = draft.get("schedule_json") or []
+                    st.session_state["capture_customer_id"] = int(draft.get("customer_id"))
+                    st.session_state["capture_loan_type"] = display_type
+                    st.session_state["capture_product_code"] = draft.get("product_code")
+                    st.session_state["capture_loan_details"] = det
+                    st.session_state["capture_loan_schedule_df"] = pd.DataFrame(sched)
+                    st.session_state["capture_approval_assigned_to"] = draft.get("assigned_approver_id")
+                    st.session_state["capture_agent_id"] = det.get("agent_id")
+                    st.session_state["capture_relationship_manager_id"] = det.get("relationship_manager_id")
+                    st.session_state["capture_rework_source_draft_id"] = int(draft.get("id"))
+                    st.session_state["capture_loan_step"] = 1
+                    st.session_state["capture_flash_message"] = f"Loaded rework draft #{draft.get('id')} for editing."
+                    st.rerun()
 
     # -------- Window 1: Key loan details --------
     if step == 0:
@@ -3339,17 +3389,29 @@ def capture_loan_ui():
                             "agent_id": st.session_state.get("capture_agent_id"),
                             "relationship_manager_id": st.session_state.get("capture_relationship_manager_id"),
                             "metadata": base_meta,
-                            "status": "pending_approval",
                         }
-                        draft_id = save_loan_approval_draft(
-                            int(cid),
-                            str(ltype),
-                            details_to_queue,
-                            df_schedule,
-                            product_code=pcode,
-                            assigned_approver_id=str(assigned_approver_id) if assigned_approver_id is not None else None,
-                            created_by="capture_ui",
-                        )
+                        source_draft_id = st.session_state.get("capture_rework_source_draft_id")
+                        if source_draft_id is not None:
+                            draft_id = resubmit_loan_approval_draft(
+                                int(source_draft_id),
+                                int(cid),
+                                str(ltype),
+                                details_to_queue,
+                                df_schedule,
+                                product_code=pcode,
+                                assigned_approver_id=str(assigned_approver_id) if assigned_approver_id is not None else None,
+                                created_by="capture_ui",
+                            )
+                        else:
+                            draft_id = save_loan_approval_draft(
+                                int(cid),
+                                str(ltype),
+                                details_to_queue,
+                                df_schedule,
+                                product_code=pcode,
+                                assigned_approver_id=str(assigned_approver_id) if assigned_approver_id is not None else None,
+                                created_by="capture_ui",
+                            )
                         doc_count = 0
                         staged_loan_docs = st.session_state.get("loan_docs_staged") or []
                         if _documents_available and staged_loan_docs:
@@ -3372,7 +3434,16 @@ def capture_loan_ui():
                                     doc_count += 1
                                 except Exception as de:
                                     st.error(f"Failed to attach {f.name}: {de}")
-                        st.success(f"Draft sent for approval. Draft ID: {draft_id}")
+                        if source_draft_id is not None:
+                            st.session_state["capture_flash_message"] = (
+                                f"Draft #{draft_id} re-submitted for approval. "
+                                f"Attached documents: {doc_count}."
+                            )
+                        else:
+                            st.session_state["capture_flash_message"] = (
+                                f"Draft sent for approval. Draft ID: {draft_id}. "
+                                f"Attached documents: {doc_count}."
+                            )
                         for k in list(st.session_state.keys()):
                             if k.startswith("capture_"):
                                 st.session_state.pop(k, None)
@@ -3596,135 +3667,212 @@ def capture_loan_ui():
 def approve_loans_ui():
     """Approval inbox for loan drafts submitted from capture Stage 2."""
     st.subheader("Approve loans")
-    search_col1, search_col2, search_col3 = st.columns(3)
-    with search_col1:
-        search_txt = st.text_input("Search", placeholder="Draft ID / Customer ID / Product / Loan type", key="approve_loan_search")
-    with search_col2:
-        show_status = st.selectbox("Status", ["PENDING", "REWORK", "APPROVED", "DISMISSED"], index=0, key="approve_loan_status")
-    with search_col3:
-        assigned_only = st.checkbox("Assigned to me only", value=False, key="approve_assigned_only")
+    approve_flash = st.session_state.pop("approve_loans_flash_message", None)
+    if approve_flash:
+        st.success(str(approve_flash))
+
+    # Small, compact search/filter row.
+    f1, f2, f3, f4 = st.columns([2, 1, 1, 1])
+    with f1:
+        search_txt = st.text_input(
+            "Search draft",
+            placeholder="Draft ID / Customer ID / Product / Loan type",
+            key="approve_loan_search",
+        )
+    with f2:
+        show_status = st.selectbox(
+            "Status",
+            ["PENDING", "REWORK", "APPROVED", "DISMISSED"],
+            index=0,
+            key="approve_loan_status",
+        )
+    with f3:
+        assigned_only = st.checkbox("Assigned to me", value=False, key="approve_assigned_only")
+    with f4:
+        st.write("")
+        st.write("")
+        if st.button("Clear selection", key="approve_clear_selection", width="stretch"):
+            st.session_state.pop("approve_selected_draft_id", None)
+            st.rerun()
 
     assigned_filter = None
-    if assigned_only and _users_for_rm_available:
-        users = list_users_for_selection() or []
+    if assigned_only:
         current_uid = st.session_state.get("user_id")
         if current_uid is not None:
-            try:
-                assigned_filter = int(current_uid)
-            except Exception:
-                assigned_filter = None
+            assigned_filter = str(current_uid)
 
     drafts = list_loan_approval_drafts(
         status=show_status,
         search=search_txt.strip() or None,
         assigned_approver_id=assigned_filter,
-        limit=300,
+        limit=500,
     )
     if not drafts:
         st.info("No loan drafts found for the selected filters.")
         return
 
-    df = pd.DataFrame(drafts)
-    show_cols = [c for c in ["id", "customer_id", "loan_type", "product_code", "assigned_approver_id", "status", "submitted_at", "loan_id"] if c in df.columns]
-    st.dataframe(df[show_cols], width="stretch", hide_index=True, height=230)
+    draft_options = [int(r["id"]) for r in drafts]
+    selected_id = st.session_state.get("approve_selected_draft_id")
+    if selected_id is not None and int(selected_id) not in draft_options:
+        selected_id = None
+        st.session_state.pop("approve_selected_draft_id", None)
 
-    sel_col1, sel_col2 = st.columns(2)
-    with sel_col1:
-        draft_options = [int(r["id"]) for r in drafts]
-        selected_draft_id = st.selectbox("Select draft", draft_options, key="approve_selected_draft")
-    with sel_col2:
-        manual_draft_id = st.number_input("Or load draft ID", min_value=1, step=1, value=int(selected_draft_id), key="approve_manual_draft_id")
+    # When selected, show inspection panel FIRST (top), then keep inbox table below.
+    if selected_id is not None:
+        draft = get_loan_approval_draft(int(selected_id))
+        if draft:
+            details = draft.get("details_json") or {}
+            schedule_rows = draft.get("schedule_json") or []
+            df_schedule = pd.DataFrame(schedule_rows) if schedule_rows else pd.DataFrame()
+            customer_name = (
+                get_display_name(int(draft["customer_id"]))
+                if _customers_available
+                else f"Customer #{draft['customer_id']}"
+            )
 
-    load_id = int(manual_draft_id) if manual_draft_id else int(selected_draft_id)
-    draft = get_loan_approval_draft(load_id)
-    if not draft:
-        st.warning(f"Draft #{load_id} not found.")
-        return
+            st.markdown("### Draft inspection")
+            p1, p2, p3, p4 = st.columns(4)
+            with p1:
+                st.caption("Identity")
+                st.write(f"Draft: **{draft.get('id')}**")
+                st.write(f"Customer: **{customer_name}**")
+                st.write(f"Loan type: **{draft.get('loan_type')}**")
+                st.write(f"Product: **{draft.get('product_code') or '—'}**")
+            with p2:
+                st.caption("Amounts")
+                st.write(f"Principal: **{float(details.get('principal') or 0):,.2f}**")
+                st.write(f"Disbursed: **{float(details.get('disbursed_amount') or 0):,.2f}**")
+                st.write(f"Installment: **{float(details.get('installment') or 0):,.2f}**")
+                st.write(f"Total payment: **{float(details.get('total_payment') or 0):,.2f}**")
+            with p3:
+                st.caption("Pricing")
+                st.write(f"Annual rate: **{float(details.get('annual_rate') or 0) * 100:.2f}%**")
+                st.write(f"Monthly rate: **{float(details.get('monthly_rate') or 0) * 100:.2f}%**")
+                st.write(f"Penalty: **{float(details.get('penalty_rate_pct') or 0):.2f}%**")
+                st.write(f"Fees: **{float(details.get('drawdown_fee') or 0) * 100:.2f}% / {float(details.get('arrangement_fee') or 0) * 100:.2f}%**")
+            with p4:
+                st.caption("Dates & status")
+                st.write(f"Tenor: **{int(details.get('term') or 0)} months**")
+                st.write(f"First repay: **{details.get('first_repayment_date') or '—'}**")
+                st.write(f"Disbursed on: **{details.get('disbursement_date') or '—'}**")
+                st.write(f"Status: **{draft.get('status')}**")
 
-    details = draft.get("details_json") or {}
-    schedule_rows = draft.get("schedule_json") or []
-    df_schedule = pd.DataFrame(schedule_rows) if schedule_rows else pd.DataFrame()
-    customer_name = get_display_name(int(draft["customer_id"])) if _customers_available else f"Customer #{draft['customer_id']}"
-
-    st.markdown("**Draft details**")
-    d1, d2, d3 = st.columns(3)
-    with d1:
-        st.write(f"Draft ID: {draft.get('id')}")
-        st.write(f"Customer: {customer_name} (ID {draft.get('customer_id')})")
-        st.write(f"Loan type: {draft.get('loan_type')}")
-    with d2:
-        st.write(f"Product: {draft.get('product_code') or '—'}")
-        st.write(f"Principal: {float(details.get('principal') or 0):,.2f}")
-        st.write(f"Disbursed: {float(details.get('disbursed_amount') or 0):,.2f}")
-    with d3:
-        st.write(f"Status: {draft.get('status')}")
-        st.write(f"Assigned approver: {draft.get('assigned_approver_id') or '—'}")
-        st.write(f"Submitted: {draft.get('submitted_at')}")
-
-    with st.expander("View documents", expanded=False):
-        if _documents_available:
-            docs = list_documents(entity_type="loan_approval_draft", entity_id=int(load_id))
-            if not docs:
-                st.info("No documents attached to this draft.")
-            else:
-                doc_df = pd.DataFrame(docs)
-                show_doc_cols = [c for c in ["id", "category_name", "file_name", "file_size", "uploaded_by", "uploaded_at", "notes"] if c in doc_df.columns]
-                st.dataframe(doc_df[show_doc_cols], width="stretch", hide_index=True)
-        else:
-            st.info("Document module is unavailable.")
-
-    with st.expander("Schedule", expanded=False):
-        if df_schedule.empty:
-            st.info("No schedule found for this draft.")
-        else:
-            st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True)
-
-    note = st.text_input("Reviewer note (optional)", key="approve_reviewer_note")
-    a1, a2, a3 = st.columns(3)
-    with a1:
-        if st.button("Approve and create loan", type="primary", key="approve_create_loan_btn"):
-            try:
-                loan_id = approve_loan_approval_draft(int(load_id), approved_by="approver_ui")
-                # Copy draft documents to final loan entity.
-                doc_count = 0
+            with st.expander("View documents", expanded=False):
                 if _documents_available:
-                    docs = list_documents(entity_type="loan_approval_draft", entity_id=int(load_id))
-                    for row in docs:
-                        full = get_document(int(row["id"]))
-                        if not full:
-                            continue
-                        upload_document(
-                            "loan",
-                            int(loan_id),
-                            int(full["category_id"]),
-                            str(full["file_name"]),
-                            str(full["file_type"]),
-                            int(full["file_size"]),
-                            full["file_content"],
-                            uploaded_by="System User",
-                            notes=str(full.get("notes") or ""),
+                    docs = list_documents(entity_type="loan_approval_draft", entity_id=int(selected_id))
+                    if not docs:
+                        st.info("No documents attached to this draft.")
+                    else:
+                        doc_df = pd.DataFrame(docs)
+                        show_doc_cols = [
+                            c for c in ["category_name", "file_name", "file_size", "uploaded_by", "uploaded_at", "notes"]
+                            if c in doc_df.columns
+                        ]
+                        st.dataframe(doc_df[show_doc_cols], width="stretch", hide_index=True, height=180)
+                else:
+                    st.info("Document module is unavailable.")
+
+            with st.expander("View schedule", expanded=False):
+                if df_schedule.empty:
+                    st.info("No schedule found for this draft.")
+                else:
+                    st.dataframe(format_schedule_display(df_schedule), width="stretch", hide_index=True, height=220)
+
+            note = st.text_input("Reviewer note (optional)", key="approve_reviewer_note")
+            a1, a2, a3 = st.columns(3)
+            with a1:
+                if st.button("Approve and create loan", type="primary", key="approve_create_loan_btn"):
+                    try:
+                        loan_id = approve_loan_approval_draft(int(selected_id), approved_by="approver_ui")
+                        # Copy draft documents to final loan entity.
+                        doc_count = 0
+                        if _documents_available:
+                            docs = list_documents(entity_type="loan_approval_draft", entity_id=int(selected_id))
+                            for row in docs:
+                                full = get_document(int(row["id"]))
+                                if not full:
+                                    continue
+                                upload_document(
+                                    "loan",
+                                    int(loan_id),
+                                    int(full["category_id"]),
+                                    str(full["file_name"]),
+                                    str(full["file_type"]),
+                                    int(full["file_size"]),
+                                    full["file_content"],
+                                    uploaded_by="System User",
+                                    notes=str(full.get("notes") or ""),
+                                )
+                                doc_count += 1
+                        st.session_state["approve_loans_flash_message"] = (
+                            f"Loan approved successfully. Loan #{loan_id} created. "
+                            f"{doc_count} document(s) copied."
                         )
-                        doc_count += 1
-                st.success(f"Draft approved. Loan #{loan_id} created. {doc_count} document(s) copied.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Could not approve draft: {e}")
-    with a2:
-        if st.button("Send back for rework", key="approve_send_back_btn"):
-            try:
-                send_back_loan_approval_draft(int(load_id), note=note or "", actor="approver_ui")
-                st.success("Draft sent back for rework.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Could not send back draft: {e}")
-    with a3:
-        if st.button("Dismiss draft", key="approve_dismiss_btn"):
-            try:
-                dismiss_loan_approval_draft(int(load_id), note=note or "", actor="approver_ui")
-                st.success("Draft dismissed.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Could not dismiss draft: {e}")
+                        st.session_state.pop("approve_selected_draft_id", None)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not approve draft: {e}")
+            with a2:
+                if st.button("Send back for rework", key="approve_send_back_btn"):
+                    try:
+                        send_back_loan_approval_draft(int(selected_id), note=note or "", actor="approver_ui")
+                        st.session_state["approve_loans_flash_message"] = (
+                            f"Draft #{selected_id} sent back for rework."
+                        )
+                        st.session_state.pop("approve_selected_draft_id", None)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not send back draft: {e}")
+            with a3:
+                if st.button("Dismiss draft", key="approve_dismiss_btn"):
+                    try:
+                        dismiss_loan_approval_draft(int(selected_id), note=note or "", actor="approver_ui")
+                        st.session_state["approve_loans_flash_message"] = (
+                            f"Draft #{selected_id} dismissed."
+                        )
+                        st.session_state.pop("approve_selected_draft_id", None)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not dismiss draft: {e}")
+
+            st.divider()
+
+    # Inbox table always visible; select a row via compact "Open draft" controls.
+    st.markdown("### Draft inbox")
+    df = pd.DataFrame(drafts)
+    show_cols = [
+        c
+        for c in [
+            "id",
+            "customer_id",
+            "loan_type",
+            "product_code",
+            "assigned_approver_id",
+            "status",
+            "submitted_at",
+        ]
+        if c in df.columns
+    ]
+    st.dataframe(df[show_cols], width="stretch", hide_index=True, height=280)
+
+    o1, o2, o3 = st.columns([2, 1, 1])
+    with o1:
+        open_label_map = {}
+        open_labels = []
+        for r in drafts:
+            rid = int(r["id"])
+            lbl = f"Draft {rid} · Cust {r.get('customer_id')} · {r.get('loan_type')} · {r.get('status')}"
+            open_labels.append(lbl)
+            open_label_map[lbl] = rid
+        draft_pick = st.selectbox("Open draft", open_labels, key="approve_open_pick")
+    with o2:
+        manual_id = st.number_input("Draft ID", min_value=1, step=1, value=int(open_label_map.get(draft_pick, draft_options[0])), key="approve_open_manual_id")
+    with o3:
+        st.write("")
+        st.write("")
+        if st.button("Inspect draft", key="approve_open_btn", width="stretch"):
+            st.session_state["approve_selected_draft_id"] = int(manual_id)
+            st.rerun()
 
 
 def customers_ui():
@@ -4789,10 +4937,11 @@ def teller_ui():
                     if loan_id:
                         # Amount due preview
                         try:
-                            summary = get_amount_due_summary(loan_id)
-                            amount_due = summary["amount_due"]
-                            scheduled_total = summary["scheduled_total"]
-                            repaid_total = summary["repaid_total"]
+                            from loan_management import get_teller_amount_due_today
+                            summary = get_teller_amount_due_today(loan_id)
+                            amount_due = summary["amount_due_today"]
+                            scheduled_total = None
+                            repaid_total = None
                         except Exception:
                             amount_due = None
                             scheduled_total = None
@@ -4800,9 +4949,9 @@ def teller_ui():
 
                         if amount_due is not None:
                             help_text = (
-                                f"Scheduled payments up to today: {scheduled_total:,.2f}\n"
-                                f"Total repayments up to today: {repaid_total:,.2f}\n"
-                                f"Amount due today (scheduled - repaid): {amount_due:,.2f}"
+                                f"Base arrears as at {summary.get('base_as_of_date')}: {float(summary.get('base_total_delinquency_arrears') or 0):,.2f}\n"
+                                f"Less today's allocations to arrears buckets: {float(summary.get('today_allocations_to_delinquency') or 0):,.2f}\n"
+                                f"Method: {summary.get('method')}"
                             )
                             st.metric(
                                 label="Amount Due Today",
@@ -4815,7 +4964,7 @@ def teller_ui():
                         with st.form("teller_single_form", clear_on_submit=True):
                             f_col1, f_col2 = st.columns(2)
                             with f_col1:
-                                amount = st.number_input("Amount", min_value=0.01, value=100.0, step=100.0, format="%.2f", key="teller_amount")
+                                amount = st.number_input("Amount", min_value=0.00, value=0.00, step=100.0, format="%.2f", key="teller_amount")
                                 customer_ref = st.text_input("Customer reference (appears on loan statement)", placeholder="e.g. Receipt #123", key="teller_cust_ref")
                             with f_col2:
                                 company_ref = st.text_input("Company reference (appears in general ledger)", placeholder="e.g. GL ref", key="teller_company_ref")
@@ -5721,12 +5870,26 @@ def statements_ui():
                 with fd2:
                     end_date = st.date_input("End date (optional)", value=_get_system_date(), key="stmt_end")
                 st.caption("Start date is fixed to disbursement. Adjust end date as needed.")
-                show_pa_billing = st.checkbox(
-                    "Show principal arrears billing lines",
-                    value=True,
-                    key="stmt_show_pa_billing",
-                    help="Adds non-cash informational rows: 'Principal arrears billing (amount)'.",
-                )
+                tcol1, tcol2, tcol3 = st.columns(3)
+                with tcol1:
+                    show_pa_billing = st.checkbox(
+                        "Show principal arrears billing lines",
+                        value=True,
+                        key="stmt_show_pa_billing",
+                        help="Adds non-cash informational rows: 'Principal arrears billing (amount)'.",
+                    )
+                with tcol2:
+                    show_arrears_col = st.checkbox(
+                        "Show arrears column",
+                        value=True,
+                        key="stmt_show_arrears_col",
+                    )
+                with tcol3:
+                    show_unapplied_col = st.checkbox(
+                        "Show unapplied funds column",
+                        value=True,
+                        key="stmt_show_unapplied_col",
+                    )
 
                 if st.button("Generate statement", type="primary", key="stmt_gen"):
                     try:
@@ -5755,19 +5918,28 @@ def statements_ui():
                                 if c in df.columns:
                                     df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
+                            visible_df = df.copy()
+                            if not show_arrears_col and "Arrears" in visible_df.columns:
+                                visible_df = visible_df.drop(columns=["Arrears"])
+                            if not show_unapplied_col and "Unapplied funds" in visible_df.columns:
+                                visible_df = visible_df.drop(columns=["Unapplied funds"])
+
                             # Full-width statement: HTML table (no Streamlit dataframe width limits)
                             display_headers = {**_alloc_display}
                             closing_row = None
-                            if len(df) > 0:
-                                last_narr = str(df.iloc[-1].get("Narration") or "")
+                            if len(visible_df) > 0:
+                                last_narr = str(visible_df.iloc[-1].get("Narration") or "")
                                 if "Total outstanding" in last_narr:
-                                    closing_row = df.iloc[-1]
-                                    stmt_df = df.iloc[:-1]
+                                    closing_row = visible_df.iloc[-1]
+                                    stmt_df = visible_df.iloc[:-1]
                                 else:
-                                    stmt_df = df
+                                    stmt_df = visible_df
                             else:
-                                stmt_df = df
-                            center_cols = ["Debits", "Credits", "Balance", "Arrears", "Unapplied funds"]
+                                stmt_df = visible_df
+                            center_cols = [
+                                c for c in ["Debits", "Credits", "Balance", "Arrears", "Unapplied funds"]
+                                if c in stmt_df.columns
+                            ]
                             table_html = _statement_table_html(stmt_df, display_headers, center_columns=center_cols)
                             closing_html = ""
                             if closing_row is not None:
@@ -5781,7 +5953,10 @@ def statements_ui():
                                 except (TypeError, ValueError):
                                     bal_fmt = str(bal or "0.00")
                                     unapp_fmt = str(unapp or "0.00")
-                                closing_html = f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}  &nbsp;|&nbsp;  <strong>Unapplied funds:</strong> {unapp_fmt}</div>"
+                                if show_unapplied_col:
+                                    closing_html = f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}  &nbsp;|&nbsp;  <strong>Unapplied funds:</strong> {unapp_fmt}</div>"
+                                else:
+                                    closing_html = f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}</div>"
                             stmt_html = (
                                 "<style>"
                                 "main .block-container { max-width: 100% !important; padding-left: 1.5rem; padding-right: 1.5rem; } "
@@ -5832,7 +6007,7 @@ def statements_ui():
                             ]
                             buf = BytesIO()
                             buf.write(("\n".join(csv_header_lines) + "\n").encode("utf-8"))
-                            df.to_csv(
+                            visible_df.to_csv(
                                 buf,
                                 index=False,
                                 date_format="%Y-%m-%d",
@@ -5849,7 +6024,7 @@ def statements_ui():
                                     key="stmt_download",
                                 )
                             with col_pdf:
-                                pdf_bytes = _make_statement_pdf(df, customer_name, cust_id, loan_id, start_fmt, end_fmt, statement_title)
+                                pdf_bytes = _make_statement_pdf(visible_df, customer_name, cust_id, loan_id, start_fmt, end_fmt, statement_title)
                                 if pdf_bytes:
                                     st.download_button(
                                         "Download as PDF",

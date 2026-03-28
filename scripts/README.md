@@ -78,3 +78,35 @@ python scripts/run_eod_date_range.py 2025-10-08 2025-12-01   # correct accruals 
 python scripts/bootstrap_admin.py
 python scripts/check_admin_password.py
 ```
+
+## EOD command quick list
+
+Use these when you want CLI behavior that matches the app EOD actions.
+
+- **Whole book (button-equivalent EOD for each day in range):**
+  ```bash
+  python scripts/run_eod_date_range.py 2025-07-10 2025-07-11 --eod-only
+  ```
+  - This is the same idea as clicking **Run EOD** for each calendar day in the range.
+  - `--eod-only` runs EOD/accrual processing only (no manual receipt reallocation loop).
+  - Add `--quiet` for less output.
+
+- **Whole book with receipt reallocation loop (script mode):**
+  ```bash
+  python scripts/run_eod_date_range.py 2025-07-10 2025-07-11
+  ```
+  - Omitting `--eod-only` makes the script run EOD and then reallocate receipts per day.
+
+- **One loan only (replay daily state for one loan over a range):**
+  ```bash
+  python scripts/run_single_loan_eod_range.py 9 2025-06-17 2025-07-08
+  ```
+  - Useful after a specific fix/reversal when you only need one loan recomputed.
+
+- **Date input formats accepted by these scripts:**
+  - `YYYY-MM-DD`
+  - `DD.MM.YYYY`
+  - `DD/MM/YYYY`
+
+- **DB config reminder:**
+  - Ensure env vars/DB URL match the app runtime (`FARNDACRED_DATABASE_URL`, `LMS_DATABASE_URL`, or `FARNDACRED_DB_*` / `LMS_DB_*` resolved by `config.py`).

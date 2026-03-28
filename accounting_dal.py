@@ -488,6 +488,26 @@ class AccountingRepository:
                     )
                 return new_id
 
+            def _replace_lines_for_entry(entry_id, journal_lines):
+                cur.execute(
+                    "DELETE FROM journal_items WHERE entry_id = %s",
+                    (entry_id,),
+                )
+                for line in journal_lines:
+                    cur.execute(
+                        """
+                        INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (
+                            entry_id,
+                            line["account_id"],
+                            line.get("debit", 0.0),
+                            line.get("credit", 0.0),
+                            line.get("memo"),
+                        ),
+                    )
+
             def _active_entry_for_event(eid, etag):
                 if eid is None or etag is None:
                     return None
@@ -588,16 +608,6 @@ class AccountingRepository:
             if not period_closed:
                 # OPEN period: correction by replacement (soft-supersede old active row).
                 existing_entry_id = existing["id"] if existing else None
-                entry_id = _insert_header_and_lines(
-                    hdr_entry_date=entry_date,
-                    hdr_reference=reference,
-                    hdr_description=description,
-                    hdr_event_id=event_id,
-                    hdr_event_tag=event_tag,
-                    hdr_entry_type="EVENT",
-                    hdr_created_by=created_by,
-                    journal_lines=lines,
-                )
                 if existing_entry_id is not None:
                     try:
                         cur.execute(
@@ -605,13 +615,69 @@ class AccountingRepository:
                             UPDATE journal_entries
                             SET is_active = FALSE,
                                 superseded_at = NOW(),
-                                superseded_by_id = %s
+                                superseded_by_id = NULL
                             WHERE id = %s
                             """,
-                            (entry_id, existing_entry_id),
+                            (existing_entry_id,),
                         )
                     except psycopg2.errors.UndefinedColumn:
                         pass
+                # Use a savepoint so we can gracefully handle legacy unique-index setups.
+                cur.execute("SAVEPOINT je_open_replace_sp")
+                try:
+                    entry_id = _insert_header_and_lines(
+                        hdr_entry_date=entry_date,
+                        hdr_reference=reference,
+                        hdr_description=description,
+                        hdr_event_id=event_id,
+                        hdr_event_tag=event_tag,
+                        hdr_entry_type="EVENT",
+                        hdr_created_by=created_by,
+                        journal_lines=lines,
+                    )
+                    cur.execute("RELEASE SAVEPOINT je_open_replace_sp")
+                    if existing_entry_id is not None:
+                        try:
+                            cur.execute(
+                                """
+                                UPDATE journal_entries
+                                SET superseded_by_id = %s
+                                WHERE id = %s
+                                """,
+                                (entry_id, existing_entry_id),
+                            )
+                        except psycopg2.errors.UndefinedColumn:
+                            pass
+                except psycopg2.errors.UniqueViolation:
+                    # Legacy DBs may still enforce uniqueness without is_active filter.
+                    # Fallback: update existing row in place to keep operation idempotent.
+                    cur.execute("ROLLBACK TO SAVEPOINT je_open_replace_sp")
+                    if existing_entry_id is None:
+                        raise
+                    cur.execute(
+                        """
+                        UPDATE journal_entries
+                        SET entry_date = %s,
+                            reference = %s,
+                            description = %s,
+                            entry_type = %s,
+                            created_by = %s,
+                            is_active = TRUE,
+                            superseded_at = NULL,
+                            superseded_by_id = NULL
+                        WHERE id = %s
+                        """,
+                        (
+                            entry_date,
+                            reference,
+                            description,
+                            "EVENT",
+                            created_by,
+                            existing_entry_id,
+                        ),
+                    )
+                    _replace_lines_for_entry(existing_entry_id, lines)
+                    cur.execute("RELEASE SAVEPOINT je_open_replace_sp")
             else:
                 # CLOSED period: keep original active and post delta adjustment in earliest open period.
                 old_lines = _load_lines_by_entry(existing["id"]) if existing else []

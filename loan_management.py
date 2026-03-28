@@ -797,6 +797,24 @@ def _date_conv(v: Any) -> date | None:
     return None
 
 
+def _json_safe(v: Any) -> Any:
+    """Convert values to JSON-serializable representations."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, (datetime, date)):
+        return v.isoformat()
+    if isinstance(v, pd.Timestamp):
+        return v.isoformat()
+    if isinstance(v, dict):
+        return {str(k): _json_safe(val) for k, val in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x) for x in v]
+    # Fallback keeps function safe for unknown objects.
+    return str(v)
+
+
 def build_loan_approval_journal_payload(details: dict[str, Any]) -> dict[str, Decimal]:
     """
     Amounts for LOAN_APPROVAL (Dr loan principal, Cr cash, Cr deferred fee liability).
@@ -1067,13 +1085,64 @@ def save_loan_approval_draft(
                     int(customer_id),
                     str(loan_type),
                     product_code,
-                    Json(details or {}),
-                    Json(schedule_df.to_dict(orient="records")),
+                    Json(_json_safe(details or {})),
+                    Json(_json_safe(schedule_df.to_dict(orient="records"))),
                     str(assigned_approver_id) if assigned_approver_id is not None else None,
                     created_by,
                 ),
             )
             return int(cur.fetchone()[0])
+
+
+def resubmit_loan_approval_draft(
+    draft_id: int,
+    customer_id: int,
+    loan_type: str,
+    details: dict[str, Any],
+    schedule_df: pd.DataFrame,
+    *,
+    product_code: str | None = None,
+    assigned_approver_id: str | None = None,
+    created_by: str | None = None,
+) -> int:
+    """Update an existing draft and place it back in PENDING for approval."""
+    with _connection() as conn:
+        _ensure_loan_approval_drafts_table(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE loan_approval_drafts
+                SET customer_id = %s,
+                    loan_type = %s,
+                    product_code = %s,
+                    details_json = %s,
+                    schedule_json = %s,
+                    assigned_approver_id = %s,
+                    status = 'PENDING',
+                    created_by = %s,
+                    rework_note = NULL,
+                    dismissed_note = NULL,
+                    dismissed_at = NULL,
+                    submitted_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING id
+                """,
+                (
+                    int(customer_id),
+                    str(loan_type),
+                    product_code,
+                    Json(_json_safe(details or {})),
+                    Json(_json_safe(schedule_df.to_dict(orient="records"))),
+                    str(assigned_approver_id) if assigned_approver_id is not None else None,
+                    created_by,
+                    int(draft_id),
+                ),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"Draft #{draft_id} was not found for resubmission.")
+            return int(row[0])
 
 
 def list_loan_approval_drafts(
@@ -1150,7 +1219,9 @@ def approve_loan_approval_draft(
     if str(draft.get("status") or "").upper() != "PENDING":
         raise ValueError(f"Draft #{draft_id} is not pending (status={draft.get('status')}).")
 
-    details = draft.get("details_json") or {}
+    details = dict(draft.get("details_json") or {})
+    # Approval creates a live loan record; ensure EOD will pick it up.
+    details["status"] = "active"
     schedule_rows = draft.get("schedule_json") or []
     schedule_df = pd.DataFrame(schedule_rows)
     loan_id = save_loan(
@@ -1432,6 +1503,7 @@ def reverse_repayment(
                        lra.alloc_interest_accrued, lra.alloc_interest_arrears,
                        lra.alloc_default_interest, lra.alloc_penalty_interest, lra.alloc_fees_charges,
                        lra.unallocated,
+                       lra.source_repayment_id,
                        lr.value_date AS alloc_value_date
                 FROM loan_repayment_allocation lra
                 JOIN loan_repayments lr ON lr.id = lra.repayment_id
@@ -1472,6 +1544,19 @@ def reverse_repayment(
                     UPDATE loan_daily_state SET total_exposure = principal_not_due + principal_arrears
                         + interest_accrued_balance + interest_arrears_balance
                         + default_interest_balance + penalty_interest_balance + fees_charges_balance
+                    WHERE loan_id = %s AND as_of_date = %s
+                    """,
+                    (loan_id, alloc_date),
+                )
+                cur.execute(
+                    """
+                    UPDATE loan_daily_state
+                    SET total_delinquency_arrears =
+                        COALESCE(principal_arrears, 0)
+                      + COALESCE(interest_arrears_balance, 0)
+                      + COALESCE(default_interest_balance, 0)
+                      + COALESCE(penalty_interest_balance, 0)
+                      + COALESCE(fees_charges_balance, 0)
                     WHERE loan_id = %s AND as_of_date = %s
                     """,
                     (loan_id, alloc_date),
@@ -1523,7 +1608,7 @@ def reverse_repayment(
                         float(as_10dp(-(apr + apa))), float(as_10dp(-(aia + aiar + adi + api))), float(as_10dp(-afc)),
                         float(as_10dp(rev_alloc_total)),
                         float(as_10dp(rev_unallocated)),
-                        alloc["source_repayment_id"],
+                        alloc.get("source_repayment_id") or original_repayment_id,
                     ),
                 )
                 cur.execute(
@@ -1861,7 +1946,8 @@ def reverse_repayment(
         from system_business_date import get_effective_date
         from eod import run_single_loan_eod_date_range
 
-        # Never replay beyond current system business date.
+        # Replay daily state through the system date (accruals will be automatically
+        # zeroed out by EOD for the system business date unless canonical EOD runs).
         sys_d = get_effective_date()
         desired_to = max(eod_from, posting_cal)
         eod_to = desired_to if desired_to <= sys_d else sys_d
@@ -2674,7 +2760,14 @@ def apply_unapplied_funds_to_arrears_eod(
     Creates a system repayment and allocation with event_type='unapplied_funds_allocation'.
     Returns amount applied (0 if none).
     """
-    unapplied = get_unapplied_balance(loan_id, as_of_date)
+    unapplied_as_of = get_unapplied_balance(loan_id, as_of_date)
+    # To prevent double-liquidation during EOD replays, cap to the overall unapplied balance
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(SUM(amount), 0) FROM unapplied_funds WHERE loan_id = %s", (loan_id,))
+            overall_unapplied = float(cur.fetchone()[0] or 0)
+    unapplied = round(max(0.0, min(unapplied_as_of, overall_unapplied)), 2)
+
     if unapplied <= 1e-6:
         return 0.0
 
@@ -2717,22 +2810,22 @@ def apply_unapplied_funds_to_arrears_eod(
                     SELECT
                         COALESCE(uf.repayment_id, uf.source_repayment_id) AS source_repayment_id,
                         MIN(uf.value_date) AS first_value_date,
-                        COALESCE(SUM(uf.amount), 0) AS available_amount
+                        COALESCE(SUM(uf.amount), 0) AS overall_amount,
+                        COALESCE(SUM(CASE WHEN uf.value_date <= %s THEN uf.amount ELSE 0 END), 0) AS as_of_amount
                     FROM unapplied_funds uf
                     WHERE uf.loan_id = %s
-                      AND uf.value_date <= %s
                       AND COALESCE(uf.repayment_id, uf.source_repayment_id) IS NOT NULL
                     GROUP BY COALESCE(uf.repayment_id, uf.source_repayment_id)
                 )
                 SELECT
                     sb.source_repayment_id AS repayment_id,
-                    sb.available_amount AS amount,
+                    LEAST(sb.overall_amount, sb.as_of_amount) AS amount,
                     sb.first_value_date
                 FROM source_balances sb
-                WHERE sb.available_amount > 0
+                WHERE sb.overall_amount > 0 AND sb.as_of_amount > 0
                 ORDER BY sb.first_value_date, sb.source_repayment_id
                 """,
-                (loan_id, as_of_date),
+                (as_of_date, loan_id),
             )
             credit_rows = cur.fetchall()
 
@@ -3243,6 +3336,136 @@ def get_amount_due_summary(loan_id: int, as_of: date | None = None) -> dict:
     }
 
 
+def get_total_delinquency_arrears_summary(loan_id: int, as_of: date | None = None) -> dict:
+    """
+    Teller-style "amount due today" = total delinquency arrears as-of the system business date.
+
+    Uses the persisted `loan_daily_state.total_delinquency_arrears` when available.
+    If the exact daily-state row doesn't exist yet (e.g. system date was advanced but EOD not run),
+    it will backfill the single-loan daily state for that date (includes allocations on that date)
+    so we never show a misleading 0 just because the row is missing.
+    """
+    if as_of is None:
+        from system_business_date import get_effective_date
+        as_of = get_effective_date()
+
+    # Prefer exact-date state; if missing, compute single-loan state for that date.
+    ds = get_loan_daily_state_balances(loan_id, as_of)
+    if not ds:
+        try:
+            from eod import run_single_loan_eod
+            run_single_loan_eod(loan_id, as_of)
+        except Exception:
+            pass
+        ds = get_loan_daily_state_balances(loan_id, as_of)
+
+    if ds and ds.get("total_delinquency_arrears") is not None:
+        try:
+            amt = float(ds.get("total_delinquency_arrears") or 0)
+        except (TypeError, ValueError):
+            amt = 0.0
+    else:
+        # Fallback for legacy rows/DBs: compute from buckets.
+        amt = (
+            float((ds or {}).get("principal_arrears") or 0)
+            + float((ds or {}).get("interest_arrears_balance") or 0)
+            + float((ds or {}).get("default_interest_balance") or 0)
+            + float((ds or {}).get("penalty_interest_balance") or 0)
+            + float((ds or {}).get("fees_charges_balance") or 0)
+        )
+
+    return {"total_delinquency_arrears": max(amt, 0.0), "as_of_date": as_of}
+
+
+def get_teller_amount_due_today(loan_id: int, as_of: date | None = None) -> dict:
+    """
+    Fast teller preview that avoids running EOD on every receipt.
+
+    Policy:
+    - Use persisted EOD delinquency (`loan_daily_state.total_delinquency_arrears`) as the base.
+      If the exact as_of row exists, use it directly.
+      Otherwise use the latest <= (as_of - 1) as the base (typically yesterday close).
+    - Then factor in *today's* posted allocations that reduce/increase delinquency buckets:
+      principal_arrears, interest_arrears, default, penalty, fees.
+
+    This gives an intraday "amount due today" that reflects receipts/reversals already posted
+    for the day, while keeping persistence to the normal EOD run.
+    """
+    if as_of is None:
+        from system_business_date import get_effective_date
+
+        as_of = get_effective_date()
+
+    # 1) If today's state already exists, it's authoritative for teller preview.
+    ds_today = get_loan_daily_state_balances(loan_id, as_of)
+    if ds_today and ds_today.get("total_delinquency_arrears") is not None:
+        try:
+            amt_today = float(ds_today.get("total_delinquency_arrears") or 0)
+        except (TypeError, ValueError):
+            amt_today = 0.0
+        return {
+            "amount_due_today": max(amt_today, 0.0),
+            "as_of_date": as_of,
+            "base_as_of_date": as_of,
+            "base_total_delinquency_arrears": max(amt_today, 0.0),
+            "today_allocations_to_delinquency": 0.0,
+            "method": "daily_state_exact",
+        }
+
+    base_date = as_of - timedelta(days=1)
+    base_ds = get_loan_daily_state_balances(loan_id, base_date)
+    base_amt = 0.0
+    if base_ds:
+        try:
+            base_amt = float(
+                base_ds.get("total_delinquency_arrears")
+                if base_ds.get("total_delinquency_arrears") is not None
+                else (
+                    float(base_ds.get("principal_arrears") or 0)
+                    + float(base_ds.get("interest_arrears_balance") or 0)
+                    + float(base_ds.get("default_interest_balance") or 0)
+                    + float(base_ds.get("penalty_interest_balance") or 0)
+                    + float(base_ds.get("fees_charges_balance") or 0)
+                )
+            )
+        except (TypeError, ValueError):
+            base_amt = 0.0
+
+    # 2) Today's allocation deltas (posted + reversed, including internal movements).
+    today_alloc = 0.0
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(SUM(
+                        COALESCE(lra.alloc_principal_arrears, 0)
+                      + COALESCE(lra.alloc_interest_arrears, 0)
+                      + COALESCE(lra.alloc_default_interest, 0)
+                      + COALESCE(lra.alloc_penalty_interest, 0)
+                      + COALESCE(lra.alloc_fees_charges, 0)
+                    ), 0) AS alloc_to_delinquency
+                FROM loan_repayment_allocation lra
+                JOIN loan_repayments lr ON lr.id = lra.repayment_id
+                WHERE lr.loan_id = %s
+                  AND (COALESCE(lr.value_date, lr.payment_date))::date = %s::date
+                  AND lr.status IN ('posted', 'reversed')
+                """,
+                (loan_id, as_of),
+            )
+            r = cur.fetchone()
+            today_alloc = float(r[0] or 0) if r else 0.0
+
+    amount_due = max(base_amt - today_alloc, 0.0)
+    return {
+        "amount_due_today": amount_due,
+        "as_of_date": as_of,
+        "base_as_of_date": base_date,
+        "base_total_delinquency_arrears": max(base_amt, 0.0),
+        "today_allocations_to_delinquency": today_alloc,
+        "method": "base_minus_today_allocations",
+    }
+
 def save_loan_daily_state(
     loan_id: int,
     as_of_date: date,
@@ -3295,6 +3518,16 @@ def save_loan_daily_state(
     arrears_total = principal_arrears + interest_arrears_balance + default_interest_balance + penalty_interest_balance
     if arrears_total <= 0:
         days_overdue = 0
+
+    total_delinquency_arrears = (
+        principal_arrears
+        + interest_arrears_balance
+        + default_interest_balance
+        + penalty_interest_balance
+        + fees_charges_balance
+    )
+    # Quantize for stable storage precision (NUMERIC(22,10)).
+    total_delinquency_arrears = float(as_10dp(total_delinquency_arrears))
     total_exposure = (
         principal_not_due
         + principal_arrears
@@ -3323,6 +3556,7 @@ def save_loan_daily_state(
                         penalty_interest_balance,
                         fees_charges_balance,
                         days_overdue,
+                        total_delinquency_arrears,
                         total_exposure,
                         regular_interest_period_to_date,
                         penalty_interest_period_to_date,
@@ -3333,7 +3567,7 @@ def save_loan_daily_state(
                     VALUES (
                         %s, %s,
                         %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s,
                         %s, %s
                     )
@@ -3350,6 +3584,7 @@ def save_loan_daily_state(
                         penalty_interest_balance = EXCLUDED.penalty_interest_balance,
                         fees_charges_balance     = EXCLUDED.fees_charges_balance,
                         days_overdue             = EXCLUDED.days_overdue,
+                        total_delinquency_arrears = EXCLUDED.total_delinquency_arrears,
                         total_exposure           = EXCLUDED.total_exposure,
                         regular_interest_period_to_date = EXCLUDED.regular_interest_period_to_date,
                         penalty_interest_period_to_date  = EXCLUDED.penalty_interest_period_to_date,
@@ -3371,6 +3606,7 @@ def save_loan_daily_state(
                         penalty_interest_balance,
                         fees_charges_balance,
                         days_overdue,
+                        total_delinquency_arrears,
                         total_exposure,
                         regular_interest_period_to_date,
                         penalty_interest_period_to_date,
@@ -3395,6 +3631,7 @@ def save_loan_daily_state(
                         penalty_interest_balance,
                         fees_charges_balance,
                         days_overdue,
+                        total_delinquency_arrears,
                         total_exposure,
                         regular_interest_period_to_date,
                         penalty_interest_period_to_date,
@@ -3404,7 +3641,7 @@ def save_loan_daily_state(
                     VALUES (
                         %s, %s,
                         %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s,
                         %s
                     )
@@ -3421,6 +3658,7 @@ def save_loan_daily_state(
                         penalty_interest_balance = EXCLUDED.penalty_interest_balance,
                         fees_charges_balance     = EXCLUDED.fees_charges_balance,
                         days_overdue             = EXCLUDED.days_overdue,
+                        total_delinquency_arrears = EXCLUDED.total_delinquency_arrears,
                         total_exposure           = EXCLUDED.total_exposure,
                         regular_interest_period_to_date = EXCLUDED.regular_interest_period_to_date,
                         penalty_interest_period_to_date  = EXCLUDED.penalty_interest_period_to_date,
@@ -3441,6 +3679,7 @@ def save_loan_daily_state(
                         penalty_interest_balance,
                         fees_charges_balance,
                         days_overdue,
+                        total_delinquency_arrears,
                         total_exposure,
                         regular_interest_period_to_date,
                         penalty_interest_period_to_date,
@@ -3464,6 +3703,7 @@ def save_loan_daily_state(
                         penalty_interest_balance,
                         fees_charges_balance,
                         days_overdue,
+                        total_delinquency_arrears,
                         total_exposure,
                         regular_interest_period_to_date,
                         penalty_interest_period_to_date,
@@ -3472,7 +3712,7 @@ def save_loan_daily_state(
                     VALUES (
                         %s, %s,
                         %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s
                     )
                     ON CONFLICT (loan_id, as_of_date) DO UPDATE
@@ -3488,6 +3728,7 @@ def save_loan_daily_state(
                         penalty_interest_balance = EXCLUDED.penalty_interest_balance,
                         fees_charges_balance     = EXCLUDED.fees_charges_balance,
                         days_overdue             = EXCLUDED.days_overdue,
+                        total_delinquency_arrears = EXCLUDED.total_delinquency_arrears,
                         total_exposure           = EXCLUDED.total_exposure,
                         regular_interest_period_to_date = EXCLUDED.regular_interest_period_to_date,
                         penalty_interest_period_to_date  = EXCLUDED.penalty_interest_period_to_date,
@@ -3507,6 +3748,7 @@ def save_loan_daily_state(
                         penalty_interest_balance,
                         fees_charges_balance,
                         days_overdue,
+                        total_delinquency_arrears,
                         total_exposure,
                         regular_interest_period_to_date,
                         penalty_interest_period_to_date,
@@ -4119,6 +4361,7 @@ def reallocate_repayment(
                     penalty_interest_balance = %s,
                     fees_charges_balance = %s,
                     days_overdue = %s,
+                    total_delinquency_arrears = %s,
                     total_exposure = %s,
                     regular_interest_period_to_date = %s,
                     penalty_interest_period_to_date = %s,
@@ -4132,7 +4375,10 @@ def reallocate_repayment(
                     new_interest_accrued, new_interest_arrears,
                     def_daily, new_default_interest,
                     pen_daily, new_penalty_interest,
-                    new_fees_charges, days_overdue, total_exposure,
+                    new_fees_charges,
+                    days_overdue,
+                    float(as_10dp(new_principal_arrears + new_interest_arrears + new_default_interest + new_penalty_interest + new_fees_charges)),
+                    total_exposure,
                     reg_period, pen_period, def_period,
                     net_alloc, unalloc,
                     loan_id, eff_date_val,
@@ -4464,6 +4710,7 @@ def allocate_repayment_waterfall(
                     penalty_interest_balance = %s,
                     fees_charges_balance = %s,
                     days_overdue = %s,
+                    total_delinquency_arrears = %s,
                     total_exposure = %s,
                     regular_interest_period_to_date = %s,
                     penalty_interest_period_to_date = %s,
@@ -4484,6 +4731,7 @@ def allocate_repayment_waterfall(
                     new_penalty_interest,
                     new_fees_charges,
                     days_overdue,
+                    float(as_10dp(new_principal_arrears + new_interest_arrears + new_default_interest + new_penalty_interest + new_fees_charges)),
                     total_exposure,
                     reg_period,
                     pen_period,

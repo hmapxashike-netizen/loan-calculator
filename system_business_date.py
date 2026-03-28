@@ -164,7 +164,73 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
 
     eod_result = None
     try:
-        eod_result = run_eod_for_date(as_of)
+        # Guardrail: if the system date was advanced forward by more than +1 day
+        # (e.g. a manual update), prevent running EOD in a way that could leave
+        # entire dates with blank `loan_daily_state`.
+        #
+        # We use EOD audit history to determine the last date that would have
+        # advanced the system business date, then check whether any skipped
+        # days have zero `loan_daily_state` rows.
+        try:
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT as_of_date
+                        FROM eod_runs
+                        WHERE finished_at IS NOT NULL
+                          AND (
+                                run_status = 'SUCCESS'
+                             OR (run_status = 'DEGRADED' AND advance_on_degraded = TRUE)
+                          )
+                        ORDER BY as_of_date DESC, started_at DESC
+                        LIMIT 1
+                        """
+                    )
+                    row = cur.fetchone()
+
+                # If eod_runs doesn't exist yet (fresh DB), allow EOD to proceed.
+                last_advanced = row["as_of_date"] if row else None
+
+            if last_advanced is not None:
+                expected_next = last_advanced + timedelta(days=1)
+                if as_of > expected_next:
+                    # Check whether any skipped date has zero daily state rows at all.
+                    missing_days: list[date] = []
+                    missing_start = expected_next
+                    missing_end = as_of - timedelta(days=1)
+                    if missing_start <= missing_end:
+                        with _get_conn() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute(
+                                    """
+                                    SELECT d::date
+                                    FROM generate_series(%s::date, %s::date, interval '1 day') AS gs(d)
+                                    LEFT JOIN loan_daily_state lds
+                                           ON lds.as_of_date = d::date
+                                    WHERE lds.loan_id IS NULL
+                                    ORDER BY d::date
+                                    """,
+                                    (missing_start, missing_end),
+                                )
+                                missing_days = [r["d"] for r in cur.fetchall()]  # type: ignore[misc]
+
+                        if missing_days:
+                            result["error"] = (
+                                "EOD would skip over unprocessed date(s) and could leave blank "
+                                "`loan_daily_state` rows. "
+                                f"Last advancing EOD was {last_advanced.isoformat()}; "
+                                f"current system date is {as_of.isoformat()} (skipped). "
+                                f"Missing daily-state dates: {', '.join(d.isoformat() for d in missing_days)}. "
+                                "Run EOD sequentially (no gaps) or backfill those dates first."
+                            )
+                            return result
+        except Exception:
+            # If audit schema or daily-state query fails, do not block EOD;
+            # fallback to current behavior.
+            pass
+
+        eod_result = run_eod_for_date(as_of, allow_system_date_eod=True)
     except ConcurrentEODError as e:
         result["error"] = str(e)
         result["concurrent_eod"] = True
@@ -185,6 +251,52 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
         if getattr(eod_result, "run_status", "SUCCESS") == "FAILED":
             result["error"] = getattr(eod_result, "error_message", None) or "EOD failed."
             return result
+        # Hard guardrail: never advance business date if today's EOD date is
+        # left blank for any eligible active loan (active + has at least one schedule row).
+        try:
+            with _get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)::int AS n
+                        FROM loans l
+                        WHERE l.status = 'active'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM loan_schedules ls
+                              WHERE ls.loan_id = l.id
+                          )
+                        """
+                    )
+                    eligible_active = int((cur.fetchone() or {}).get("n") or 0)
+
+                    cur.execute(
+                        """
+                        SELECT COUNT(DISTINCT lds.loan_id)::int AS n
+                        FROM loan_daily_state lds
+                        JOIN loans l ON l.id = lds.loan_id
+                        WHERE lds.as_of_date = %s
+                          AND l.status = 'active'
+                          AND EXISTS (
+                              SELECT 1
+                              FROM loan_schedules ls
+                              WHERE ls.loan_id = l.id
+                          )
+                        """,
+                        (as_of,),
+                    )
+                    with_state = int((cur.fetchone() or {}).get("n") or 0)
+            if eligible_active > with_state:
+                result["error"] = (
+                    "EOD completed but date advance is blocked: "
+                    f"blank `loan_daily_state` detected for {as_of.isoformat()} "
+                    f"({with_state}/{eligible_active} eligible active loan(s) populated). "
+                    "Backfill/fix daily state first, then retry."
+                )
+                return result
+        except Exception:
+            # Non-blocking on metadata check failure; keep existing EOD behavior.
+            pass
         if not skip_tick and not getattr(eod_result, "should_advance_date", True):
             result["error"] = (
                 f"EOD completed as {getattr(eod_result, 'run_status', 'DEGRADED')}; "

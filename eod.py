@@ -67,6 +67,29 @@ from loan_management import (
 ARREARS_ZERO_TOLERANCE = 1e-6
 
 
+def _persist_accrual_blocked_for_as_of(
+    as_of_date: date,
+    *,
+    allow_system_date_eod: bool,
+) -> bool:
+    """
+    True when loan_daily_state must not be written for as_of_date.
+
+    Same rule as run_eod_for_date: replay/backfill must not persist accruals on the
+    current system business date (or later). Only the canonical date-advancing EOD
+    passes allow_system_date_eod=True.
+    """
+    if allow_system_date_eod:
+        return False
+    try:
+        from system_business_date import get_effective_date
+
+        system_date = get_effective_date()
+    except Exception:
+        system_date = None
+    return bool(system_date is not None and as_of_date >= system_date)
+
+
 def _effective_config_for_loan(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Merge product config over system config for this loan so balance/quotation/default penalty % come from product."""
     effective_cfg = dict(sys_cfg)
@@ -543,6 +566,7 @@ def _run_loan_engine_for_date(
     sys_cfg: Dict[str, Any],
     *,
     loan_ids_filter: List[int] | None = None,
+    allow_system_date_eod: bool = False,
 ) -> int:
     """
     Core loan engine step: recompute loan buckets and interest into loan_daily_state.
@@ -551,8 +575,14 @@ def _run_loan_engine_for_date(
     This is used by run_single_loan_eod to avoid the O(N) cost of reprocessing
     every active loan when only one receipt needs reallocation.
 
+    allow_system_date_eod must match run_eod_for_date: single-loan and replay paths
+    default False so they cannot persist accruals on the system business date.
+
     Returns the number of loans that were actually processed (i.e. with schedules).
     """
+    block_accruals = _persist_accrual_blocked_for_as_of(
+        as_of_date, allow_system_date_eod=allow_system_date_eod
+    )
     processed = 0
     yesterday = as_of_date - timedelta(days=1)
 
@@ -620,8 +650,13 @@ def _run_loan_engine_for_date(
         }
 
         # Run one more day to get engine state at end of today
-        if as_of_date > yesterday:
+        if as_of_date > yesterday and not block_accruals:
             engine_loan.process_day(as_of_date)
+        elif block_accruals:
+            # Force daily accrual metrics to zero since we blocked processing for today
+            engine_loan.last_regular_interest_daily = Decimal("0")
+            engine_loan.last_default_interest_daily = Decimal("0")
+            engine_loan.last_penalty_interest_daily = Decimal("0")
 
         alloc = alloc_map.get(loan_id_int, dict(_EMPTY_ALLOC))
         yesterday_saved = yesterday_map.get(loan_id_int) if yesterday >= disb_date else None
@@ -703,11 +738,11 @@ def _run_loan_engine_for_date(
                 print(f"Failed to auto-flag loan {loan_id_int} for suspense: {e}")
 
         # Grace period: only accrue default/penalty when *saved* days_overdue > grace_period_days.
-        # When no arrears or within grace, persist 0 for default/penalty daily and balances.
+        # When no arrears or within grace (or if accruals are blocked for the day), persist 0.
         grace_days = config.grace_period_days
         within_grace_or_current = no_arrears or (days_overdue_save <= grace_days)
 
-        if within_grace_or_current:
+        if within_grace_or_current or block_accruals:
             default_interest_daily_save = 0.0
             penalty_interest_daily_save = 0.0
             default_interest_balance_save = 0.0
@@ -1192,6 +1227,7 @@ def run_eod_for_date(
     as_of_date: date,
     *,
     skip_reallocate_after_reversals: bool = False,
+    allow_system_date_eod: bool = False,
 ) -> EODResult:
     """
     Orchestrate EOD for a given calendar date.
@@ -1202,7 +1238,27 @@ def run_eod_for_date(
 
     When skip_reallocate_after_reversals=True (e.g. when called from reallocate_repayment),
     the reallocate step is skipped to avoid infinite recursion.
+
+    Policy guard:
+    - Replay/backfill must not accrue on system date (or future dates).
+    - System-date accrual is only allowed in the canonical EOD flow that advances date.
     """
+    try:
+        from system_business_date import get_effective_date
+        system_date = get_effective_date()
+    except Exception:
+        system_date = None
+    if (
+        not allow_system_date_eod
+        and system_date is not None
+        and as_of_date >= system_date
+    ):
+        raise ValueError(
+            f"EOD replay/backfill blocked for {as_of_date.isoformat()}: "
+            f"system date is {system_date.isoformat()}. "
+            "Accrual on system date is only allowed via date-advancing EOD."
+        )
+
     with eod_exclusive_session_lock():
         try:
             clear_stale_eod_audit_runs()
@@ -1321,7 +1377,15 @@ def run_eod_for_date(
                 run_status = "DEGRADED"
     
         try:
-            _stage("loan_engine", run_loan_engine, lambda: _run_loan_engine_for_date(as_of_date, sys_cfg))
+            _stage(
+                "loan_engine",
+                run_loan_engine,
+                lambda: _run_loan_engine_for_date(
+                    as_of_date,
+                    sys_cfg,
+                    allow_system_date_eod=allow_system_date_eod,
+                ),
+            )
             _stage(
                 "reallocate_after_reversals",
                 run_loan_engine and reallocate_after_reversals,
@@ -1387,6 +1451,8 @@ def run_single_loan_eod(
     loan_id: int,
     as_of_date: date,
     sys_cfg: Dict[str, Any] | None = None,
+    *,
+    allow_system_date_eod: bool = False,
 ) -> None:
     """
     Run the EOD engine computation for a single loan only.
@@ -1397,10 +1463,25 @@ def run_single_loan_eod(
 
     sys_cfg is passed in when the caller already holds a loaded config so we
     avoid a redundant DB round-trip to load_system_config_from_db.
+
+    By default does not persist for as_of_date on/after the system business date
+    (same as run_eod_for_date replay guard). Pass allow_system_date_eod=True only
+    for internal use aligned with canonical EOD.
     """
     if sys_cfg is None:
         sys_cfg = load_system_config_from_db() or {}
-    _run_loan_engine_for_date(as_of_date, sys_cfg, loan_ids_filter=[loan_id])
+    _run_loan_engine_for_date(
+        as_of_date,
+        sys_cfg,
+        loan_ids_filter=[loan_id],
+        allow_system_date_eod=allow_system_date_eod,
+    )
+
+    # Guard: ensure we don't leave arrears unpaid if there are unapplied funds
+    eod_settings = sys_cfg.get("eod_settings", {}) if isinstance(sys_cfg.get("eod_settings"), dict) else {}
+    tasks_cfg = eod_settings.get("tasks", {}) if isinstance(eod_settings.get("tasks"), dict) else {}
+    if tasks_cfg.get("apply_unapplied_to_arrears", True):
+        apply_unapplied_funds_to_arrears_eod(loan_id, as_of_date, sys_cfg)
 
 
 def run_single_loan_eod_date_range(
@@ -1409,11 +1490,15 @@ def run_single_loan_eod_date_range(
     end_date: date,
     *,
     sys_cfg: Dict[str, Any] | None = None,
+    allow_system_date_eod: bool = False,
 ) -> tuple[bool, str | None]:
     """
     Run the loan EOD engine for one loan for each calendar day in [start_date, end_date]
     (inclusive). Used after a receipt reversal so `loan_daily_state` is replayed from the
     receipt value date through the current business / posting horizon.
+
+    Days on or after the system business date are skipped unless allow_system_date_eod=True
+    (canonical full EOD only), so replay scripts cannot persist intraday/system-date accruals.
 
     Returns (success, error_message). On first failure, stops and returns False with detail.
     """
@@ -1424,7 +1509,20 @@ def run_single_loan_eod_date_range(
     current = start_date
     while current <= end_date:
         try:
-            _run_loan_engine_for_date(current, sys_cfg, loan_ids_filter=[loan_id])
+            _run_loan_engine_for_date(
+                current,
+                sys_cfg,
+                loan_ids_filter=[loan_id],
+                allow_system_date_eod=allow_system_date_eod,
+            )
+
+            # Guard: ensure we don't leave arrears unpaid if there are unapplied funds
+            # (especially after a backdated reversal brings arrears back)
+            eod_settings = sys_cfg.get("eod_settings", {}) if isinstance(sys_cfg.get("eod_settings"), dict) else {}
+            tasks_cfg = eod_settings.get("tasks", {}) if isinstance(eod_settings.get("tasks"), dict) else {}
+            if tasks_cfg.get("apply_unapplied_to_arrears", True):
+                apply_unapplied_funds_to_arrears_eod(loan_id, current, sys_cfg)
+
         except Exception as e:
             return False, f"EOD failed for loan_id={loan_id} on {current.isoformat()}: {e}"
         current += timedelta(days=1)

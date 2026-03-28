@@ -8,6 +8,9 @@ Run from project root (set DB env vars as for the app):
 
   python scripts/run_single_loan_eod_range.py 9 2025-06-17 2025-07-08
 
+Days on or after the system business date are skipped (no persisted accrual); only
+canonical full EOD may write loan_daily_state for the system date.
+
 Optional:
 
   python scripts/run_single_loan_eod_range.py 9 17.06.2025 08.07.2025

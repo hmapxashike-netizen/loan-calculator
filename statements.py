@@ -182,6 +182,14 @@ def _total_delinquency_arrears(ds: dict | None) -> float:
     """
     if not ds:
         return 0.0
+    # Prefer the persisted daily-state derived column when present.
+    # This keeps statement "snap to EOD" aligned with the portfolio engine,
+    # while preserving intra-day manipulations elsewhere in the statement pipeline.
+    if ds.get("total_delinquency_arrears") is not None:
+        try:
+            return float(ds.get("total_delinquency_arrears") or 0)
+        except (TypeError, ValueError):
+            pass
     return (
         float(ds.get("principal_arrears") or 0)
         + float(ds.get("interest_arrears_balance") or 0)
@@ -203,6 +211,10 @@ def _repayment_statement_narration(
     Reversals reference the original receipt id (REV n), not the reversing row's PK.
     """
     ref = (teller_ref or "").strip() or "Receipt"
+    try:
+        amt_txt = f"{abs(float(amount)):,.2f}"
+    except (TypeError, ValueError):
+        amt_txt = "0.00"
     if amount < 0:
         if original_repayment_id is not None:
             try:
@@ -210,10 +222,11 @@ def _repayment_statement_narration(
             except (TypeError, ValueError):
                 oid = 0
             if oid > 0:
-                return f"REV {oid}"
+                return f"REV {oid} (Receipt {amt_txt})"
         base = f"Repayment id {repayment_id}: {ref}" if repayment_id else ref
-        return f"Reversal of {base}"
-    return f"Repayment id {repayment_id}: {ref}" if repayment_id else ref
+        return f"Reversal of {base} (Receipt {amt_txt})"
+    base = f"Repayment id {repayment_id}: {ref}" if repayment_id else ref
+    return f"{base} (Receipt {amt_txt})"
 
 
 def _is_statement_reversal_narration(narration: str) -> bool:
@@ -534,6 +547,39 @@ def _generate_periodic_statement(
                 return ds_by_date[d0]
         return get_loan_daily_state_balances(loan_id, d)
 
+    def _has_completed_eod_for_date(d: date) -> bool:
+        """
+        True if there is a completed EOD run recorded for date d.
+
+        Why we need this:
+        `loan_daily_state` rows can exist for a date even when EOD has not run for that date
+        (e.g. created/updated by intraday receipt allocation). In that case, period-to-date
+        columns (regular/default/penalty *_period_to_date) are often copied from prior day
+        and are NOT trustworthy for statement "current period" accrual lines.
+        """
+        try:
+            from loan_management import _connection
+            from psycopg2.extras import RealDictCursor
+
+            with _connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT 1
+                        FROM eod_runs
+                        WHERE as_of_date = %s
+                          AND finished_at IS NOT NULL
+                          AND run_status IN ('SUCCESS', 'DEGRADED')
+                        ORDER BY started_at DESC
+                        LIMIT 1
+                        """,
+                        (d,),
+                    )
+                    return bool(cur.fetchone())
+        except Exception:
+            # If audit table isn't present, fall back to trusting daily_state (legacy behavior).
+            return True
+
     def _total_outstanding(ds: dict) -> float:
         return (
             float(ds.get("principal_not_due") or 0)
@@ -707,29 +753,9 @@ def _generate_periodic_statement(
                     ),
                 ]
                 for pname, pamt, bucket in paid_components:
-                    # Reversal receipts carry negative allocation amounts.
-                    # We still want to emit the inverse movement for these buckets.
-                    if abs(pamt) <= 1e-9:
-                        continue
-                    prow = _blank_row_periodic()
-                    prow["Due Date"] = vd
-                    prow["Narration"] = f"{pname} ({teller_ref})"
-                    if bucket == "Penalty":
-                        prow["Penalty"] = _f3(pamt)
-                    elif bucket == "Default":
-                        prow["Default"] = _f3(pamt)
-                    else:
-                        prow["Fees"] = _f3(pamt)
-                    bal_paid = _state_at(vd)
-                    if bal_paid:
-                        prow["Total Outstanding Balance"] = _f3(_total_outstanding(bal_paid))
-                        prow["Arrears"] = _f3(_total_delinquency_arrears(bal_paid))
-                    prow["Unapplied funds"] = _unapplied_at(
-                        vd,
-                        repayment_id=rid_for_paid,
-                        include_same_day_liquidations=False,
-                    )
-                    rows.append(prow)
+                    # Hide bucket split "... paid" rows in customer-facing statements.
+                    # The cash movement is already represented by "Repayment id ..." rows.
+                    _ = (pname, pamt, bucket, teller_ref)
                 # Consume remaining_paid_* only from positive allocations; reversals
                 # do not reduce the positive cap used for sequential min() display.
                 remaining_paid_penalty = max(
@@ -836,33 +862,8 @@ def _generate_periodic_statement(
                 ("Fees & Charges paid", alloc_fees, "Fees"),
             ]
             for pname, pamt, bucket in paid_components_any:
-                if abs(pamt) <= 1e-9:
-                    continue
-                prow = _blank_row_periodic()
-                prow["Due Date"] = vd
-                prow["Narration"] = f"{pname} ({teller_ref})"
-                if bucket == "Penalty":
-                    prow["Penalty"] = _f3(pamt)
-                elif bucket == "Default":
-                    prow["Default"] = _f3(pamt)
-                else:
-                    prow["Fees"] = _f3(pamt)
-                bal_paid = _state_at(vd)
-                if bal_paid:
-                    prow["Total Outstanding Balance"] = _f3(_total_outstanding(bal_paid))
-                    prow["Arrears"] = _f3(_total_delinquency_arrears(bal_paid))
-                prow["Unapplied funds"] = _unapplied_at(
-                    vd,
-                    repayment_id=rid_for_paid,
-                    include_same_day_liquidations=False,
-                )
-                # Customer-facing uses Debits/Credits on component rows; paying a bucket
-                # reduces delinquency (credit impact), reversing that payment increases it.
-                if pamt >= 0:
-                    prow["_arrears_credit_impact"] = _f3(pamt)
-                else:
-                    prow["_arrears_debit_impact"] = _f3(abs(pamt))
-                rows.append(prow)
+                # Hide bucket split "... paid" rows in customer-facing statements.
+                _ = (pname, pamt, bucket, teller_ref)
 
     # Unapplied ledger movements as explicit periodic rows.
     for u in unapplied_lines:
@@ -920,7 +921,8 @@ def _generate_periodic_statement(
     #   (b) no due dates have fallen yet (statement is entirely in the first period).
     last_due_in_range = due_entries[-1][0] if due_entries else None
     period_boundary = last_due_in_range or disbursement
-    end_bal_exact = ds_by_date.get(end)
+    # Only treat end-day daily_state as "exact" for current-period accrual lines if EOD ran for that date.
+    end_bal_exact = ds_by_date.get(end) if _has_completed_eod_for_date(end) else None
     last_persisted_ds_date = max(ds_by_date.keys()) if ds_by_date else end
     if period_boundary is not None and end > period_boundary:
         # Use period_to_date columns only when we have an exact daily-state row
@@ -931,52 +933,62 @@ def _generate_periodic_statement(
         # last persisted date. Any "period to date" lines should be labelled
         # with that last persisted daily-state date (not the requested `end`).
         as_of_for_state = end if end_bal_exact else last_persisted_ds_date
-        if end_bal_exact:
-            cur_regular = float(end_bal_exact.get("regular_interest_period_to_date") or 0)
-            cur_penalty = float(end_bal_exact.get("penalty_interest_period_to_date") or 0)
-            cur_default = float(end_bal_exact.get("default_interest_period_to_date") or 0)
-        else:
+        # Policy guard:
+        # Do NOT show accruals for system date (or later). Accrual for system date
+        # becomes valid only after date rollover/proper EOD push.
+        accrual_cutoff = today - timedelta(days=1)
+        accrual_as_of = as_of_for_state if as_of_for_state <= accrual_cutoff else accrual_cutoff
+        if accrual_as_of <= period_boundary:
             cur_regular = cur_penalty = cur_default = 0.0
-            for ds in daily_states:
-                ad = _date_conv(ds.get("as_of_date"))
-                if not ad or ad > end:
-                    continue
-                if last_due_in_range and ad <= last_due_in_range:
-                    continue
-                if not last_due_in_range and disbursement and ad <= disbursement:
-                    continue
-                cur_regular += float(ds.get("regular_interest_daily") or 0)
-                cur_penalty += float(ds.get("penalty_interest_daily") or 0)
-                cur_default += float(ds.get("default_interest_daily") or 0)
-        # Fees: no period_to_date column — use balance delta since last period boundary (daily state).
-        st_as_of = _state_at(as_of_for_state)
-        cur_fees = 0.0
-        if st_as_of:
-            fe_now = float(st_as_of.get("fees_charges_balance") or 0)
-            if last_due_in_range:
-                st_ld = _state_at(last_due_in_range)
-                fe_ld = float(st_ld.get("fees_charges_balance") or 0) if st_ld else 0.0
-            elif disbursement:
-                st0 = _state_at(disbursement)
-                fe_ld = float(st0.get("fees_charges_balance") or 0) if st0 else 0.0
+            cur_fees = 0.0
+            current_period_total = 0.0
+        else:
+            if end_bal_exact and as_of_for_state <= accrual_cutoff:
+                cur_regular = float(end_bal_exact.get("regular_interest_period_to_date") or 0)
+                cur_penalty = float(end_bal_exact.get("penalty_interest_period_to_date") or 0)
+                cur_default = float(end_bal_exact.get("default_interest_period_to_date") or 0)
             else:
-                fe_ld = 0.0
-            cur_fees = max(0.0, fe_now - fe_ld)
-        current_period_total = cur_regular + cur_penalty + cur_default + cur_fees
+                cur_regular = cur_penalty = cur_default = 0.0
+                for ds in daily_states:
+                    ad = _date_conv(ds.get("as_of_date"))
+                    if not ad or ad > accrual_as_of:
+                        continue
+                    if last_due_in_range and ad <= last_due_in_range:
+                        continue
+                    if not last_due_in_range and disbursement and ad <= disbursement:
+                        continue
+                    cur_regular += float(ds.get("regular_interest_daily") or 0)
+                    cur_penalty += float(ds.get("penalty_interest_daily") or 0)
+                    cur_default += float(ds.get("default_interest_daily") or 0)
+            # Fees: no period_to_date column — use balance delta since last period boundary (daily state).
+            st_as_of = _state_at(accrual_as_of)
+            cur_fees = 0.0
+            if st_as_of:
+                fe_now = float(st_as_of.get("fees_charges_balance") or 0)
+                if last_due_in_range:
+                    st_ld = _state_at(last_due_in_range)
+                    fe_ld = float(st_ld.get("fees_charges_balance") or 0) if st_ld else 0.0
+                elif disbursement:
+                    st0 = _state_at(disbursement)
+                    fe_ld = float(st0.get("fees_charges_balance") or 0) if st0 else 0.0
+                else:
+                    fe_ld = 0.0
+                cur_fees = max(0.0, fe_now - fe_ld)
+            current_period_total = cur_regular + cur_penalty + cur_default + cur_fees
         if abs(current_period_total) > 0.005:
             row = _blank_row_periodic()
-            row["Due Date"] = as_of_for_state
+            row["Due Date"] = accrual_as_of
             _narr_sfx = "since last due date" if last_due_in_range else "since disbursement"
             row["Narration"] = f"Current period interest ({_narr_sfx})"
             row["Interest"] = _f3(cur_regular)
             row["Penalty"] = _f3(cur_penalty)
             row["Default"] = _f3(cur_default)
             row["Fees"] = _f3(cur_fees) if cur_fees else 0.0
-            end_bal = _state_at(as_of_for_state)
+            end_bal = _state_at(accrual_as_of)
             if end_bal:
                 row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
                 row["Arrears"] = _f3(_total_delinquency_arrears(end_bal))
-            row["Unapplied funds"] = _f3(_unapplied_at(as_of_for_state))
+            row["Unapplied funds"] = _f3(_unapplied_at(accrual_as_of))
             rows.append(row)
 
     row = _blank_row_periodic()
@@ -1201,15 +1213,18 @@ def generate_customer_facing_statement(
                             n = "Fees & Charges paid" if n == "Fees & Charges" else n.replace(
                                 "Fees & Charges", "Fees & Charges paid", 1
                             )
-                    # Charges: positive -> Debit; negative (reversal of accrual) -> Credit.
-                    # Bucket payment lines: positive alloc -> Credit; negative -> Debit.
+                    # Customer-facing simplification:
+                    # hide bucket-allocation split rows (e.g. "... paid").
+                    # Cash movement is already shown by "Repayment id ..." rows.
                     if is_bucket_payment_line:
-                        component_debits = _f3(abs(rv)) if rv < 0 else 0.0
-                        component_credits = _f3(rv) if rv > 0 else 0.0
-                    else:
-                        component_debits = _f3(rv) if rv > 0 else 0.0
-                        component_credits = _f3(abs(rv)) if rv < 0 else 0.0
-                    out.append({
+                        continue
+                    # Charges: positive -> Debit; negative (reversal of accrual) -> Credit.
+                    # Bucket payment lines are informational allocation breakdown.
+                    # Cash movement is already represented by "Repayment id ..." rows.
+                    # Guard: never let these rows contribute additional statement credits/debits.
+                    component_debits = _f3(rv) if rv > 0 else 0.0
+                    component_credits = _f3(abs(rv)) if rv < 0 else 0.0
+                    comp_row = {
                         "Due Date": r.get("Due Date"),
                         "Narration": n,
                         "Debits": component_debits,
@@ -1217,11 +1232,62 @@ def generate_customer_facing_statement(
                         "Balance": 0.0,
                         "Arrears": arrears,
                         "Unapplied funds": unapplied,
-                    })
+                    }
+                    rid_comp = r.get("_repayment_id")
+                    if rid_comp is not None:
+                        try:
+                            comp_row["_repayment_id"] = int(rid_comp)
+                        except (TypeError, ValueError):
+                            pass
+                    out.append(comp_row)
 
     # Same-day presentation: accruals/charges first, external cash receipts last; closing line last.
     out = _reorder_customer_facing_rows_receipts_last(out)
     _apply_customer_facing_arrears_before_first_receipt(loan_id, out)
+
+    # Guardrail: for any repayment_id, total statement Credits attributed to that repayment
+    # must never exceed the repayment credit itself (alloc_total shown on "Repayment id ...").
+    # If future rendering changes reintroduce extra credit rows for the same repayment,
+    # trim non-repayment rows first.
+    repayment_credit_cap: dict[int, Decimal] = {}
+    repayment_credit_used: dict[int, Decimal] = {}
+    for row in out:
+        rid = row.get("_repayment_id")
+        if rid is None:
+            continue
+        try:
+            rid_i = int(rid)
+        except (TypeError, ValueError):
+            continue
+        narr = str(row.get("Narration") or "")
+        c = _to_dec(row.get("Credits") or 0)
+        if narr.startswith("Repayment id ") and c > Decimal("0"):
+            repayment_credit_cap[rid_i] = c
+
+    for row in out:
+        rid = row.get("_repayment_id")
+        if rid is None:
+            continue
+        try:
+            rid_i = int(rid)
+        except (TypeError, ValueError):
+            continue
+        cap = repayment_credit_cap.get(rid_i)
+        if cap is None:
+            continue
+        c = _to_dec(row.get("Credits") or 0)
+        if c <= Decimal("0"):
+            continue
+        used = repayment_credit_used.get(rid_i, Decimal("0"))
+        remaining = cap - used
+        if remaining <= Decimal("0"):
+            row["Credits"] = 0.0
+            continue
+        if c > remaining:
+            row["Credits"] = _f3(remaining)
+            repayment_credit_used[rid_i] = cap
+        else:
+            repayment_credit_used[rid_i] = used + c
 
     # Compute running arrears in display order so movements align with transactions.
     # Opening point is delinquency as at day-start (closing of prior date).
