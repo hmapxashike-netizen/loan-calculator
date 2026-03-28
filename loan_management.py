@@ -2226,7 +2226,8 @@ def get_loan_daily_state_balances(loan_id: int, as_of_date: date) -> dict[str, f
                        COALESCE(default_interest_daily, 0)            AS default_interest_daily,
                        COALESCE(regular_interest_period_to_date, 0)   AS regular_interest_period_to_date,
                        COALESCE(penalty_interest_period_to_date, 0)   AS penalty_interest_period_to_date,
-                       COALESCE(default_interest_period_to_date, 0)   AS default_interest_period_to_date
+                       COALESCE(default_interest_period_to_date, 0)   AS default_interest_period_to_date,
+                       COALESCE(unallocated, 0)                       AS unallocated
                 FROM loan_daily_state
                 WHERE loan_id = %s AND as_of_date <= %s
                 ORDER BY as_of_date DESC LIMIT 1
@@ -2251,6 +2252,7 @@ def get_loan_daily_state_balances(loan_id: int, as_of_date: date) -> dict[str, f
                 "regular_interest_period_to_date": float(row["regular_interest_period_to_date"] or 0),
                 "penalty_interest_period_to_date": float(row["penalty_interest_period_to_date"] or 0),
                 "default_interest_period_to_date": float(row["default_interest_period_to_date"] or 0),
+                "unallocated": float(row["unallocated"] or 0),
             }
 
 
@@ -3177,23 +3179,25 @@ def get_unapplied_ledger_entries_for_statement(
             cur.execute(
                 """
                 SELECT
-                    repayment_id,
-                    repayment_key,
-                    loan_id,
-                    value_date,
-                    entry_kind,
-                    liquidation_repayment_id,
-                    unapplied_delta,
-                    alloc_prin_arrears,
-                    alloc_int_arrears,
-                    alloc_penalty_int,
-                    alloc_default_int,
-                    alloc_fees_charges,
-                    unapplied_running_balance
-                FROM unapplied_funds_ledger
-                WHERE loan_id = %s
-                  AND value_date <= %s
-                ORDER BY value_date, repayment_id, entry_kind
+                    ufl.repayment_id,
+                    ufl.repayment_key,
+                    ufl.loan_id,
+                    ufl.value_date,
+                    ufl.entry_kind,
+                    ufl.liquidation_repayment_id,
+                    ufl.unapplied_delta,
+                    ufl.alloc_prin_arrears,
+                    ufl.alloc_int_arrears,
+                    ufl.alloc_penalty_int,
+                    ufl.alloc_default_int,
+                    ufl.alloc_fees_charges,
+                    ufl.unapplied_running_balance,
+                    ufl.parent_repayment_id,
+                    ufl.reversal_of_id
+                FROM unapplied_funds_ledger ufl
+                WHERE ufl.loan_id = %s
+                  AND ufl.value_date <= %s
+                ORDER BY ufl.value_date, ufl.repayment_id, ufl.entry_kind
                 """,
                 (loan_id, end_date),
             )

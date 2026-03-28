@@ -16,7 +16,6 @@ from loan_management import (
     get_repayments_with_allocations,
     get_loan_daily_state_balances,
     get_repayment_opening_delinquency_total,
-    get_unapplied_balance,
     get_unapplied_ledger_entries_for_statement,
     get_schedule_lines,
 )
@@ -231,7 +230,7 @@ def _repayment_statement_narration(
 
 def _is_statement_reversal_narration(narration: str) -> bool:
     n = str(narration or "")
-    if "Reversal of unapplied" in n:
+    if "Reversal of unapplied" in n or n.startswith("REV-LIQ-") or n.startswith("REV-RCPT-"):
         return False
     return n.startswith("REV ") or n.startswith("Reversal of")
 
@@ -254,7 +253,7 @@ def _is_external_cash_receipt_row(row: dict[str, Any]) -> bool:
         return False
     if debits != Decimal("0"):
         return False
-    if narr.startswith("Liquidation of unapplied"):
+    if narr.startswith("Liquidation of unapplied") or narr.startswith("LIQ-"):
         return False
     if narr.startswith("Total outstanding balance"):
         return False
@@ -332,6 +331,192 @@ def _reorder_customer_facing_rows_receipts_last(rows: list[dict[str, Any]]) -> l
     return reordered
 
 
+def _sort_unapplied_ledger_for_statement(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        lines,
+        key=lambda u: (
+            _date_conv(u.get("value_date")) or date(9999, 12, 31),
+            int(u.get("repayment_id") or 0),
+            str(u.get("entry_kind") or ""),
+        ),
+    )
+
+
+def _ledger_unapplied_balance_before_day(lines_sorted: list[dict[str, Any]], day: date) -> Decimal:
+    """Unapplied balance after all ledger entries strictly before ``day`` (view cumulative)."""
+    latest = Decimal("0")
+    for u in lines_sorted:
+        vd = _date_conv(u.get("value_date"))
+        if not vd or vd >= day:
+            continue
+        latest = _to_dec(u.get("unapplied_running_balance") or 0)
+    return _to_dec(_f3(latest))
+
+
+def _ledger_unapplied_balance_through_date(lines_sorted: list[dict[str, Any]], through: date) -> Decimal:
+    """Unapplied balance after all ledger entries with value_date <= ``through``."""
+    latest = Decimal("0")
+    for u in lines_sorted:
+        vd = _date_conv(u.get("value_date"))
+        if not vd or vd > through:
+            continue
+        latest = _to_dec(u.get("unapplied_running_balance") or 0)
+    return _to_dec(_f3(latest))
+
+
+def _match_ledger_row_for_unapplied_narration(
+    narr: str,
+    vd: date,
+    lines_sorted: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    import re
+
+    rk_m = re.search(r"receipt no\s+(\S+)", narr, re.I)
+    if not rk_m:
+        rk_m = re.search(r"(?:OP|LIQ|RCPT)-(\d+)", narr)
+    rk = (rk_m.group(1).rstrip(")") if rk_m else "").strip()
+    if not rk:
+        return None
+    want_amt_m = re.search(r"\(Receipt ([0-9.]+)\)", narr)
+    want_amt = float(want_amt_m.group(1)) if want_amt_m else None
+
+    want_kind: str | None = None
+    if narr.startswith("Liquidation of unapplied") or narr.startswith("LIQ-"):
+        want_kind = "liquidation"
+    elif "Unapplied funds credit" in narr or narr.startswith("OP-"):
+        want_kind = "credit"
+    elif "Reversal of unapplied" in narr or narr.startswith("REV-LIQ-") or narr.startswith("REV-RCPT-"):
+        want_kind = "reversal"
+    else:
+        return None
+
+    candidates: list[dict[str, Any]] = []
+    for u in lines_sorted:
+        if _date_conv(u.get("value_date")) != vd:
+            continue
+        if str(u.get("repayment_key") or "").strip() != rk:
+            continue
+        candidates.append(u)
+
+    filtered = [u for u in candidates if str(u.get("entry_kind") or "").lower() == want_kind]
+    pool = filtered if filtered else candidates
+    if not pool:
+        return None
+    if want_amt is not None:
+        for u in pool:
+            du = float(u.get("unapplied_delta") or 0)
+            if abs(abs(du) - want_amt) < 0.02:
+                return u
+    return pool[0]
+
+
+def _apply_customer_facing_unapplied_from_ledger(loan_id: int, meta: dict[str, Any], out: list[dict[str, Any]]) -> None:
+    """
+    Set the customer-facing Unapplied funds column from unapplied_funds_ledger only.
+
+    - Opening for each calendar day = cumulative balance before that day (sum of deltas / view running).
+    - Explicit unapplied movement rows use the matched ledger line's unapplied_running_balance.
+    - Receipt lines that have a separate same-day 'credit' ledger line keep the running balance
+      unchanged on the receipt (surplus is shown on the unapplied line); otherwise the receipt
+      row picks up the post-receipt ledger running balance for that repayment.
+    - Closing line uses cumulative balance through meta end_date (not loan_daily_state), so it
+      stays aligned with the ledger even when daily_state.unallocated is missing or stale.
+    """
+    import re
+
+    start = _date_conv(meta.get("start_date"))
+    end = _date_conv(meta.get("end_date"))
+    if not start or not end:
+        return
+
+    raw = get_unapplied_ledger_entries_for_statement(loan_id, start, end)
+    lines_sorted = _sort_unapplied_ledger_for_statement(raw)
+
+    has_separate_credit_line: set[tuple[date, int]] = set()
+    for u in lines_sorted:
+        vd = _date_conv(u.get("value_date"))
+        if not vd or str(u.get("entry_kind") or "").lower() != "credit":
+            continue
+        rid = u.get("repayment_id")
+        if rid is None:
+            continue
+        try:
+            has_separate_credit_line.add((vd, int(rid)))
+        except (TypeError, ValueError):
+            pass
+
+    rep_re = re.compile(r"^Repayment id\s+(\d+)", re.I)
+    running = Decimal("0")
+    current_day: date | None = None
+
+    for row in out:
+        narr = str(row.get("Narration") or "")
+        d = _date_conv(row.get("Due Date"))
+        if d is None:
+            continue
+
+        if current_day != d:
+            current_day = d
+            running = _ledger_unapplied_balance_before_day(lines_sorted, d)
+
+        if narr.startswith("Total outstanding balance as at"):
+            closing_d = _date_conv(meta.get("end_date")) or d
+            running = _ledger_unapplied_balance_through_date(lines_sorted, closing_d)
+            row["Unapplied funds"] = _f3(running)
+            continue
+
+        if (
+            "Unapplied funds credit" in narr
+            or narr.startswith("Liquidation of unapplied")
+            or "Reversal of unapplied" in narr
+            or narr.startswith("OP-")
+            or narr.startswith("LIQ-")
+            or narr.startswith("REV-LIQ-")
+            or narr.startswith("REV-RCPT-")
+        ):
+            matched = _match_ledger_row_for_unapplied_narration(narr, d, lines_sorted)
+            if matched:
+                running = _to_dec(_f3(float(matched.get("unapplied_running_balance") or 0)))
+            else:
+                delta = Decimal("0")
+                m = re.search(r"\(Receipt ([0-9.]+)\)", narr)
+                if m:
+                    amt = _to_dec(m.group(1))
+                    if narr.startswith("Liquidation of unapplied") or narr.startswith("LIQ-"):
+                        delta = -amt
+                    elif "Reversal of unapplied liquidation" in narr or narr.startswith("REV-LIQ-"):
+                        delta = amt
+                    elif "Unapplied funds credit" in narr or narr.startswith("OP-"):
+                        delta = amt
+                    elif "Reversal of unapplied funds credit" in narr or narr.startswith("REV-RCPT-"):
+                        delta = -amt
+                running = running + delta
+            row["Unapplied funds"] = _f3(running)
+            continue
+
+        mrep = rep_re.match(narr)
+        if mrep:
+            rid = int(mrep.group(1))
+            if (d, rid) not in has_separate_credit_line:
+                best: Decimal | None = None
+                for u in lines_sorted:
+                    if _date_conv(u.get("value_date")) != d:
+                        continue
+                    if int(u.get("repayment_id") or 0) != rid:
+                        continue
+                    b = _to_dec(_f3(float(u.get("unapplied_running_balance") or 0)))
+                    best = b if best is None else max(best, b)
+                if best is not None:
+                    running = best
+            row["Unapplied funds"] = _f3(running)
+            continue
+
+        row["Unapplied funds"] = _f3(running)
+
+    for row in out:
+        row.pop("_unapplied_delta", None)
+
+
 def _apply_customer_facing_arrears_before_first_receipt(loan_id: int, out: list[dict[str, Any]]) -> None:
     """
     On dates that mix charge lines and external cash receipts, every line that appears
@@ -385,7 +570,7 @@ def _apply_customer_facing_arrears_before_first_receipt(loan_id: int, out: list[
             narr = str(r.get("Narration") or "")
             if narr.startswith("Total outstanding balance as at"):
                 continue
-            if narr.startswith("Liquidation of unapplied") or narr.startswith("Reversal of unapplied"):
+            if narr.startswith("Liquidation of unapplied") or narr.startswith("Reversal of unapplied") or narr.startswith("LIQ-") or narr.startswith("REV-LIQ-") or narr.startswith("REV-RCPT-") or narr.startswith("OP-"):
                 # Keep unapplied ledger movement rows (incl reversals) at their computed
                 # post-movement arrears. These are internal allocation movements, not cash receipts.
                 continue
@@ -865,7 +1050,7 @@ def _generate_periodic_statement(
                 # Hide bucket split "... paid" rows in customer-facing statements.
                 _ = (pname, pamt, bucket, teller_ref)
 
-    # Unapplied ledger movements as explicit periodic rows.
+        # Unapplied ledger movements as explicit periodic rows.
     for u in unapplied_lines:
         vd = _date_conv(u.get("value_date"))
         if not vd or vd < start or vd > end:
@@ -878,16 +1063,27 @@ def _generate_periodic_statement(
         row = _blank_row_periodic()
         row["Due Date"] = vd
         rk = u.get("repayment_key") or ""
+        rep_id = u.get("repayment_id")
+        parent_id = u.get("parent_repayment_id")
+        reversal_of_id = u.get("reversal_of_id")
         
         if kind == "liquidation":
-            row["Narration"] = f"Liquidation of unapplied receipt no {rk}"
+            if parent_id:
+                row["Narration"] = f"LIQ-{rep_id} from OP-{parent_id}"
+            else:
+                row["Narration"] = f"LIQ-{rep_id}"
         elif kind == "credit":
-            row["Narration"] = f"Unapplied funds credit from receipt no {rk}"
+            row["Narration"] = f"OP-{rep_id}"
         elif kind == "reversal":
             if delta > 0:
-                row["Narration"] = f"Reversal of unapplied liquidation from receipt no {rk}"
+                # Reversal of liquidation
+                if parent_id:
+                    row["Narration"] = f"REV-LIQ-{reversal_of_id} (Orig: OP-{parent_id})"
+                else:
+                    row["Narration"] = f"REV-LIQ-{reversal_of_id}"
             else:
-                row["Narration"] = f"Reversal of unapplied funds credit from receipt no {rk}"
+                # Reversal of credit (receipt)
+                row["Narration"] = f"REV-RCPT-{reversal_of_id} (Voiding OP-{reversal_of_id})"
         else:
             continue
 
@@ -904,7 +1100,19 @@ def _generate_periodic_statement(
         if bal:
             row["Total Outstanding Balance"] = _f3(_total_outstanding(bal))
             row["Arrears"] = _f3(_total_delinquency_arrears(bal))
+            
+        # The unapplied funds running balance on the ledger reflects ONLY that specific transaction.
+        # However, for customer-facing display in the statement column, if there are multiple
+        # unapplied transactions on the same day or between due dates, we want the running total
+        # relative to the date's real closing balance.
+        # We start with the daily end-of-day balance...
+        unapplied_display = _unapplied_at(vd)
+        # But we must apply the specific transaction delta for rows that occur sequentially, so
+        # the statement will waterfall backwards or forwards through the intraday transactions.
+        # (This is handled accurately in the customer_facing_statement post-processing waterfall).
+        # We will set a marker to help the post-processing engine sequence it properly.
         row["Unapplied funds"] = _f3(float(u.get("unapplied_running_balance") or 0))
+        row["_unapplied_delta"] = delta
         row["_arrears_credit_impact"] = _f3(
             float(u.get("alloc_prin_arrears") or 0)
             + float(u.get("alloc_int_arrears") or 0)
@@ -924,6 +1132,11 @@ def _generate_periodic_statement(
     # Only treat end-day daily_state as "exact" for current-period accrual lines if EOD ran for that date.
     end_bal_exact = ds_by_date.get(end) if _has_completed_eod_for_date(end) else None
     last_persisted_ds_date = max(ds_by_date.keys()) if ds_by_date else end
+    
+    # Precompute unapplied balances strictly from ledger for specific statement generation points
+    end_unapplied_ledger = float(_unapplied_at(end))
+    accrual_cutoff_unapplied_ledger = float(_unapplied_at(today - timedelta(days=1)))
+    
     if period_boundary is not None and end > period_boundary:
         # Use period_to_date columns only when we have an exact daily-state row
         # for statement end date. If end-day EOD has not run yet, the fallback
@@ -988,7 +1201,7 @@ def _generate_periodic_statement(
             if end_bal:
                 row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
                 row["Arrears"] = _f3(_total_delinquency_arrears(end_bal))
-            row["Unapplied funds"] = _f3(_unapplied_at(accrual_as_of))
+            row["Unapplied funds"] = _f3(accrual_cutoff_unapplied_ledger)
             rows.append(row)
 
     row = _blank_row_periodic()
@@ -1001,7 +1214,7 @@ def _generate_periodic_statement(
     if end_bal:
         row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
         row["Arrears"] = _f3(_total_delinquency_arrears(end_bal))
-    row["Unapplied funds"] = _f3(_unapplied_at(closing_as_of))
+    row["Unapplied funds"] = _f3(end_unapplied_ledger)
     rows.append(row)
 
     def _sort_key(r: dict) -> tuple:
@@ -1010,11 +1223,11 @@ def _generate_periodic_statement(
         
         if narr.startswith("Total outstanding"):
             order = 99
-        elif "Unapplied funds credit" in narr:
+        elif "Unapplied funds credit" in narr or narr.startswith("OP-"):
             order = 5
-        elif narr.startswith("Liquidation of unapplied"):
+        elif narr.startswith("Liquidation of unapplied") or narr.startswith("LIQ-"):
             order = 6
-        elif "Reversal of unapplied" in narr:
+        elif "Reversal of unapplied" in narr or narr.startswith("REV-LIQ-") or narr.startswith("REV-RCPT-"):
             order = 7
         else:
             order = 1
@@ -1078,10 +1291,17 @@ def generate_customer_facing_statement(
                 "Arrears": arrears,
                 "Unapplied funds": unapplied,
             })
-        elif narration.startswith("Liquidation of unapplied"):
+        elif narration.startswith("Liquidation of unapplied") or narration.startswith("LIQ-"):
             credits_alloc = _to_dec(r.get("Portion of Credit Allocated to Interest") or 0) + \
                             _to_dec(r.get("Credit Allocated to Fees") or 0) + \
                             _to_dec(r.get("Credit Allocated to Capital") or 0)
+            
+            delta_val = r.get("_unapplied_delta", 0.0)
+            import re
+            m = re.search(r"\(Receipt ([0-9.]+)\)", narration)
+            if m and float(delta_val) == 0.0:
+                delta_val = float(m.group(1))
+
             out.append({
                 "Due Date": r.get("Due Date"),
                 "Narration": narration,
@@ -1093,14 +1313,22 @@ def generate_customer_facing_statement(
                 "_arrears_credit_impact": _f3(
                     r.get("_arrears_credit_impact") if r.get("_arrears_credit_impact") is not None else credits_alloc
                 ),
+                "_unapplied_delta": delta_val,
             })
-        elif narration.startswith("Reversal of unapplied liquidation"):
+        elif narration.startswith("Reversal of unapplied liquidation") or narration.startswith("REV-LIQ-"):
             # Undo of a liquidation: show it as a Debit of the same magnitude,
             # so the statement reads like "Liquidation" (credit) then "REV" (debit).
             credits_alloc = _to_dec(r.get("Portion of Credit Allocated to Interest") or 0) + \
                             _to_dec(r.get("Credit Allocated to Fees") or 0) + \
                             _to_dec(r.get("Credit Allocated to Capital") or 0)
             debits_alloc = abs(credits_alloc)
+            
+            delta_val = r.get("_unapplied_delta", 0.0)
+            import re
+            m = re.search(r"\(Receipt ([0-9.]+)\)", narration)
+            if m and float(delta_val) == 0.0:
+                delta_val = -float(m.group(1))
+                
             out.append({
                 "Due Date": r.get("Due Date"),
                 "Narration": narration,
@@ -1109,8 +1337,26 @@ def generate_customer_facing_statement(
                 "Balance": 0.0,
                 "Arrears": arrears,
                 "Unapplied funds": unapplied,
+                "_unapplied_delta": delta_val,
             })
-        elif narration.startswith("Unapplied funds credit") or narration.startswith("Reversal of unapplied"):
+        elif narration.startswith("Unapplied funds credit") or narration.startswith("Reversal of unapplied") or narration.startswith("OP-") or narration.startswith("REV-RCPT-"):
+            # Mark the unapplied delta explicitly so the waterfall can adjust the running balance
+            # backwards or forwards through intraday receipts. We pull this from the narration.
+            delta_val = r.get("_unapplied_delta", 0.0)
+            
+            # Extract receipt amount explicitly from the unapplied_lines if possible
+            # Here we parse it out from the narration "(Receipt XX)"
+            import re
+            m = re.search(r"\(Receipt ([0-9.]+)\)", narration)
+            if m and float(delta_val) == 0.0:
+                val = float(m.group(1))
+                if "Unapplied funds credit" in narration or "Liquidation of unapplied" in narration or narration.startswith("OP-") or narration.startswith("LIQ-"):
+                    delta_val = val
+                else:
+                    delta_val = -val
+            
+            # Use delta_val to show the credit properly
+            # if it's an unapplied funds credit, make sure delta_val represents the credit
             out.append({
                 "Due Date": r.get("Due Date"),
                 "Narration": narration,
@@ -1119,6 +1365,7 @@ def generate_customer_facing_statement(
                 "Balance": 0.0,
                 "Arrears": arrears,
                 "Unapplied funds": unapplied,
+                "_unapplied_delta": delta_val,
             })
         elif narration.startswith("Principal arrears billing"):
             out.append({
@@ -1326,6 +1573,43 @@ def generate_customer_facing_statement(
         dd = _date_conv(d0)
         if dd is not None:
             due_dates.add(dd)
+            
+    # Also treat the final closing statement date as a due date for snapping purposes
+    stmt_end_d = _date_conv(meta.get("end_date"))
+    if stmt_end_d:
+        due_dates.add(stmt_end_d)
+
+    def _unapplied_from_ds(ds: dict | None) -> float:
+        if not ds:
+            return 0.0
+        return float(ds.get("unallocated") or ds.get("unapplied_funds") or 0.0)
+
+    # Compute running unapplied funds in display order using ONLY the ledger delta.
+    opening_unapplied_d = Decimal("0")
+    try:
+        start_d = meta.get("start_date")
+        start_d = _date_conv(start_d) if start_d is not None else None
+        if start_d is not None:
+            # Query ledger strictly before start_date
+            raw_all = get_unapplied_ledger_entries_for_statement(loan_id, date(1970,1,1), start_d - timedelta(days=1))
+            if raw_all:
+                opening_unapplied_d = _to_dec(_f3(float(raw_all[-1].get("unapplied_running_balance") or 0)))
+    except Exception:
+        pass
+
+    running_unapplied_d = opening_unapplied_d
+    for i, _ar_row in enumerate(out):
+        narr = str(_ar_row.get("Narration") or "")
+        
+        u_delta = _to_dec(_ar_row.get("_unapplied_delta", 0))
+        if u_delta != 0:
+            running_unapplied_d += u_delta
+            
+        _ar_row["Unapplied funds"] = _f3(running_unapplied_d)
+            
+        # Clean up markers
+        if "_unapplied_delta" in _ar_row:
+            del _ar_row["_unapplied_delta"]
 
     running_arrears_d = opening_arrears_d
     for i, _ar_row in enumerate(out):
@@ -1413,6 +1697,8 @@ def generate_customer_facing_statement(
                     _rb_row["Balance"] = _f3(running_bal)
             except Exception:
                 pass
+            
+            # (Unapplied funds snapping logic removed to rely strictly on unapplied_funds_ledger deltas)
 
     # (Drift notification logic removed.)
 
