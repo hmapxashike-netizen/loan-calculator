@@ -1,0 +1,248 @@
+{
+  "version": 1,
+  "mappings": [
+    {
+      "trigger_source": "SAVE_RECEIPT",
+      "allocation_key": "alloc_principal_arrears",
+      "event_type": "PAYMENT_PRINCIPAL",
+      "amount_source": "alloc_principal_arrears",
+      "amount_sign": 1,
+      "priority": 10,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_RECEIPT",
+      "allocation_key": "alloc_principal_not_due",
+      "event_type": "PAYMENT_PRINCIPAL_NOT_YET_DUE",
+      "amount_source": "alloc_principal_not_due",
+      "amount_sign": 1,
+      "priority": 11,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_RECEIPT",
+      "allocation_key": "alloc_interest_arrears",
+      "event_type": "PAYMENT_REGULAR_INTEREST",
+      "amount_source": "alloc_interest_arrears",
+      "amount_sign": 1,
+      "priority": 12,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_RECEIPT",
+      "allocation_key": "alloc_interest_accrued",
+      "event_type": "PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+      "amount_source": "alloc_interest_accrued",
+      "amount_sign": 1,
+      "priority": 13,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_RECEIPT",
+      "allocation_key": "alloc_penalty_interest",
+      "event_type": "PAYMENT_PENALTY_INTEREST",
+      "amount_source": "alloc_penalty_interest",
+      "amount_sign": 1,
+      "priority": 14,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_RECEIPT",
+      "allocation_key": "alloc_default_interest",
+      "event_type": "PAYMENT_DEFAULT_INTEREST",
+      "amount_source": "alloc_default_interest",
+      "amount_sign": 1,
+      "priority": 15,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_RECEIPT",
+      "allocation_key": "alloc_regular_interest",
+      "event_type": "PAYMENT_REGULAR_INTEREST_SUSPENSE",
+      "amount_source": "alloc_regular_interest",
+      "amount_sign": 1,
+      "priority": 16,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_RECEIPT",
+      "allocation_key": "alloc_regular_interest",
+      "event_type": "PAYMENT_REGULAR_INTEREST_ACCRUED",
+      "amount_source": "alloc_regular_interest",
+      "amount_sign": 1,
+      "priority": 17,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_RECEIPT",
+      "allocation_key": "alloc_fees_charges",
+      "event_type": "PASS_THROUGH_COST_RECOVERY",
+      "amount_source": "alloc_fees_charges",
+      "amount_sign": 1,
+      "priority": 18,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_REVERSAL",
+      "allocation_key": "alloc_principal_arrears",
+      "event_type": "PAYMENT_PRINCIPAL",
+      "amount_source": "alloc_principal_arrears",
+      "amount_sign": -1,
+      "priority": 100,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_REVERSAL",
+      "allocation_key": "alloc_principal_not_due",
+      "event_type": "PAYMENT_PRINCIPAL_NOT_YET_DUE",
+      "amount_source": "alloc_principal_not_due",
+      "amount_sign": -1,
+      "priority": 101,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_REVERSAL",
+      "allocation_key": "alloc_interest_arrears",
+      "event_type": "PAYMENT_REGULAR_INTEREST",
+      "amount_source": "alloc_interest_arrears",
+      "amount_sign": -1,
+      "priority": 102,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_REVERSAL",
+      "allocation_key": "alloc_interest_accrued",
+      "event_type": "PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+      "amount_source": "alloc_interest_accrued",
+      "amount_sign": -1,
+      "priority": 103,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_REVERSAL",
+      "allocation_key": "alloc_penalty_interest",
+      "event_type": "PAYMENT_PENALTY_INTEREST",
+      "amount_source": "alloc_penalty_interest",
+      "amount_sign": -1,
+      "priority": 104,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_REVERSAL",
+      "allocation_key": "alloc_default_interest",
+      "event_type": "PAYMENT_DEFAULT_INTEREST",
+      "amount_source": "alloc_default_interest",
+      "amount_sign": -1,
+      "priority": 105,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_REVERSAL",
+      "allocation_key": "alloc_regular_interest",
+      "event_type": "PAYMENT_REGULAR_INTEREST_SUSPENSE",
+      "amount_source": "alloc_regular_interest",
+      "amount_sign": -1,
+      "priority": 106,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_REVERSAL",
+      "allocation_key": "alloc_regular_interest",
+      "event_type": "PAYMENT_REGULAR_INTEREST_ACCRUED",
+      "amount_source": "alloc_regular_interest",
+      "amount_sign": -1,
+      "priority": 107,
+      "is_active": true
+    },
+    {
+      "trigger_source": "SAVE_REVERSAL",
+      "allocation_key": "alloc_fees_charges",
+      "event_type": "PASS_THROUGH_COST_RECOVERY",
+      "amount_source": "alloc_fees_charges",
+      "amount_sign": -1,
+      "priority": 108,
+      "is_active": true
+    },
+    {
+      "trigger_source": "APPLY_UNAPPLIED",
+      "allocation_key": "alloc_principal_arrears",
+      "event_type": "PAYMENT_PRINCIPAL",
+      "amount_source": "alloc_principal_arrears",
+      "amount_sign": 1,
+      "priority": 200,
+      "is_active": true
+    },
+    {
+      "trigger_source": "APPLY_UNAPPLIED",
+      "allocation_key": "alloc_principal_not_due",
+      "event_type": "PAYMENT_PRINCIPAL_NOT_YET_DUE",
+      "amount_source": "alloc_principal_not_due",
+      "amount_sign": 1,
+      "priority": 201,
+      "is_active": true
+    },
+    {
+      "trigger_source": "APPLY_UNAPPLIED",
+      "allocation_key": "alloc_interest_arrears",
+      "event_type": "PAYMENT_REGULAR_INTEREST",
+      "amount_source": "alloc_interest_arrears",
+      "amount_sign": 1,
+      "priority": 202,
+      "is_active": true
+    },
+    {
+      "trigger_source": "APPLY_UNAPPLIED",
+      "allocation_key": "alloc_interest_accrued",
+      "event_type": "PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+      "amount_source": "alloc_interest_accrued",
+      "amount_sign": 1,
+      "priority": 203,
+      "is_active": true
+    },
+    {
+      "trigger_source": "APPLY_UNAPPLIED",
+      "allocation_key": "alloc_penalty_interest",
+      "event_type": "PAYMENT_PENALTY_INTEREST",
+      "amount_source": "alloc_penalty_interest",
+      "amount_sign": 1,
+      "priority": 204,
+      "is_active": true
+    },
+    {
+      "trigger_source": "APPLY_UNAPPLIED",
+      "allocation_key": "alloc_default_interest",
+      "event_type": "PAYMENT_DEFAULT_INTEREST",
+      "amount_source": "alloc_default_interest",
+      "amount_sign": 1,
+      "priority": 205,
+      "is_active": true
+    },
+    {
+      "trigger_source": "APPLY_UNAPPLIED",
+      "allocation_key": "alloc_regular_interest",
+      "event_type": "PAYMENT_REGULAR_INTEREST_SUSPENSE",
+      "amount_source": "alloc_regular_interest",
+      "amount_sign": 1,
+      "priority": 206,
+      "is_active": true
+    },
+    {
+      "trigger_source": "APPLY_UNAPPLIED",
+      "allocation_key": "alloc_regular_interest",
+      "event_type": "PAYMENT_REGULAR_INTEREST_ACCRUED",
+      "amount_source": "alloc_regular_interest",
+      "amount_sign": 1,
+      "priority": 207,
+      "is_active": true
+    },
+    {
+      "trigger_source": "APPLY_UNAPPLIED",
+      "allocation_key": "alloc_fees_charges",
+      "event_type": "PASS_THROUGH_COST_RECOVERY",
+      "amount_source": "alloc_fees_charges",
+      "amount_sign": 1,
+      "priority": 208,
+      "is_active": true
+    }
+  ]
+}

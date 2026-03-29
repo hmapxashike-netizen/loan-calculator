@@ -228,7 +228,11 @@ def build_export_queries(start_date: str, end_date: str) -> list:
             lds.days_overdue,
             lds.regular_interest_daily,
             lds.default_interest_daily,
-            lds.penalty_interest_daily
+            lds.penalty_interest_daily,
+            lds.regular_interest_in_suspense_balance,
+            lds.penalty_interest_in_suspense_balance,
+            lds.default_interest_in_suspense_balance,
+            lds.total_interest_in_suspense_balance
         FROM loans l
         LEFT JOIN individuals i ON i.customer_id = l.customer_id
         LEFT JOIN corporates c ON c.customer_id = l.customer_id
@@ -554,7 +558,8 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                     COALESCE(SUM(lra.alloc_penalty_interest), 0) AS alloc_penalty_int,
                     COALESCE(SUM(lra.alloc_default_interest), 0) AS alloc_default_int,
                     COALESCE(SUM(lra.alloc_fees_charges), 0) AS alloc_fees_charges,
-                    (lr.amount - COALESCE(SUM(lra.alloc_principal_total + lra.alloc_interest_total + lra.alloc_fees_total), 0)) AS unapplied_amount
+                    (lr.amount - COALESCE(SUM(lra.alloc_principal_total + lra.alloc_interest_total + lra.alloc_fees_total), 0)) AS unapplied_amount,
+                    lr.amount AS receipt_amount
                 FROM loan_repayments lr
                 LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
                 WHERE (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
@@ -570,6 +575,7 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
             liquidation_credits AS (
                 SELECT
                     lr.loan_id,
+                    lr.id AS orig_liq_id,
                     lra.source_repayment_id AS repayment_id,
                     (COALESCE(lr.value_date, lr.payment_date))::date AS value_date,
                     CASE
@@ -603,6 +609,7 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                   )
                 GROUP BY
                     lr.loan_id,
+                    lr.id,
                     lra.source_repayment_id,
                     (COALESCE(lr.value_date, lr.payment_date))::date,
                     lra.event_type
@@ -645,8 +652,11 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                 a.repayment_key,
                 CASE
                     WHEN a.unapplied_amount < 0
-                        THEN ('Reversal from receipt no ' || a.repayment_key || ' : ' || a.customer_reference)
-                    ELSE ('Repayment no ' || a.repayment_key || ' : ' || a.customer_reference)
+                        THEN ('REV-RCPT-' || a.repayment_key || ' (Voiding OP-' || a.repayment_key || ')')
+                    ELSE (
+                        'OP-' || a.repayment_key || ' From Repayment id ' || a.repayment_key
+                        || ' (Receipt ' || trim(to_char(a.receipt_amount, 'FM9999999999999990.99')) || ')'
+                    )
                 END AS narration,
                 (a.alloc_prin_total + a.alloc_int_total + a.alloc_fees_total) AS credits,
                 a.unapplied_amount AS unapplied_from_receipt,
@@ -669,8 +679,8 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                 l.repayment_key,
                 CASE
                     WHEN l.entry_kind = 'reversal'
-                        THEN ('Reversal of unapplied liquidation of receipt no ' || l.repayment_key)
-                    ELSE ('Liquidation of unapplied receipt no ' || l.repayment_key)
+                        THEN 'REV-LIQ-' || l.orig_liq_id || COALESCE(' (Orig: OP-' || l.repayment_key || ')', '')
+                    ELSE 'LIQ-' || l.orig_liq_id || COALESCE(' from OP-' || l.repayment_key, '')
                 END AS narration,
                 (l.alloc_prin_total + l.alloc_int_total + l.alloc_fees_total) AS credits,
                 -(l.alloc_prin_total + l.alloc_int_total + l.alloc_fees_total) AS unapplied_from_receipt,

@@ -1,4 +1,8 @@
 id,loan_id,schedule_line_id,period_number,amount,payment_date,reference,status,created_at,updated_at,customer_reference,company_reference,value_date,system_date,original_repayment_id,customer_name,repayment_key,receipt_type
+25,1,,,140,2025-09-26,test receipt 3,posted,2026-03-28T09:23:05.922754+02:00,2026-03-28T09:23:05.922754+02:00,test receipt 3,test receipt 3,2025-09-26,2025-09-26T09:23:05.816020+02:00,,test,25,cash_receipt
+33,1,,,-150,2025-09-24,REV 24,reversed,2026-03-28T15:28:08.612480+02:00,2026-03-28T15:28:08.612480+02:00,REV 24,REV 24,2025-09-24,2026-03-28T15:28:09.040128+02:00,24,test,REV-24,reversal
+24,1,,,150,2025-09-24,test receipt 2,reversed,2026-03-28T09:22:22.479865+02:00,2026-03-28T09:22:22.479865+02:00,test receipt 2,test receipt 2,2025-09-24,2025-09-24T09:22:22.152019+02:00,,test,24,cash_receipt
+23,1,,,100,2025-09-23,test receipt 1,posted,2026-03-28T09:21:39.720936+02:00,2026-03-28T09:21:39.720936+02:00,test receipt 1,test receipt 1,2025-09-23,2025-09-23T09:21:39.608371+02:00,,test,23,cash_receipt
 22,1,,,-101,2025-09-11,REV 19,reversed,2026-03-28T07:26:58.493160+02:00,2026-03-28T07:26:58.493160+02:00,REV 19,REV 19,2025-09-11,2026-03-28T07:26:58.571565+02:00,19,test,REV-19,reversal
 21,1,,,-10,2025-09-11,REV 18,reversed,2026-03-28T07:26:43.075852+02:00,2026-03-28T07:26:43.075852+02:00,REV 18,REV 18,2025-09-11,2026-03-28T07:26:43.150967+02:00,18,test,REV-18,reversal
 20,1,,,-100,2025-09-11,REV 17,reversed,2026-03-28T07:26:25.820205+02:00,2026-03-28T07:26:25.820205+02:00,REV 17,REV 17,2025-09-11,2026-03-28T07:26:25.900953+02:00,17,test,REV-17,reversal

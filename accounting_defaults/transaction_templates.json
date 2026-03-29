@@ -1,0 +1,782 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "event_type": "LOAN_APPROVAL",
+      "system_tag": "loan_principal",
+      "direction": "DEBIT",
+      "description": "Creation of Loan - Principal",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "LOAN_APPROVAL",
+      "system_tag": "cash_operating",
+      "direction": "CREDIT",
+      "description": "Creation of Loan - Disbursed Amount",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "LOAN_APPROVAL",
+      "system_tag": "deferred_fee_liability",
+      "direction": "CREDIT",
+      "description": "Creation of Loan - Fees",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "FEE_AMORTISATION_DRAWDOWN",
+      "system_tag": "deferred_fee_liability",
+      "direction": "DEBIT",
+      "description": "Amortisation of drawdown fees",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "FEE_AMORTISATION_DRAWDOWN",
+      "system_tag": "deferred_fee_income",
+      "direction": "CREDIT",
+      "description": "Amortisation of drawdown fees",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "FEE_AMORTISATION_ARRANGEMENT",
+      "system_tag": "deferred_fee_liability",
+      "direction": "DEBIT",
+      "description": "Amortisation of arrangement fees",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "FEE_AMORTISATION_ARRANGEMENT",
+      "system_tag": "deferred_fee_income",
+      "direction": "CREDIT",
+      "description": "Amortisation of arrangement fees",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "FEE_AMORTISATION_ADMIN",
+      "system_tag": "deferred_fee_liability",
+      "direction": "DEBIT",
+      "description": "Amortisation of administration fees",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "FEE_AMORTISATION_ADMIN",
+      "system_tag": "deferred_fee_income",
+      "direction": "CREDIT",
+      "description": "Amortisation of administration fees",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "BILLING_PRINCIPAL_ARREARS",
+      "system_tag": "principal_arrears",
+      "direction": "DEBIT",
+      "description": "Billing of principal arrears",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "BILLING_PRINCIPAL_ARREARS",
+      "system_tag": "loan_principal",
+      "direction": "CREDIT",
+      "description": "Billing of principal arrears",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "PAYMENT_PRINCIPAL",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Payment of principal",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_PRINCIPAL",
+      "system_tag": "principal_arrears",
+      "direction": "CREDIT",
+      "description": "Payment of principal",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_PRINCIPAL_NOT_YET_DUE",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Direct payment of principal not yet due",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_PRINCIPAL_NOT_YET_DUE",
+      "system_tag": "loan_principal",
+      "direction": "CREDIT",
+      "description": "Direct payment of principal not yet due",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_PRINCIPAL_ARREARS",
+      "system_tag": "unapplied_funds",
+      "direction": "DEBIT",
+      "description": "Unapplied liquidation: principal arrears",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_PRINCIPAL_ARREARS",
+      "system_tag": "principal_arrears",
+      "direction": "CREDIT",
+      "description": "Unapplied liquidation: principal arrears",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_PRINCIPAL_NOT_YET_DUE",
+      "system_tag": "unapplied_funds",
+      "direction": "DEBIT",
+      "description": "Unapplied liquidation: principal not yet due",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_PRINCIPAL_NOT_YET_DUE",
+      "system_tag": "loan_principal",
+      "direction": "CREDIT",
+      "description": "Unapplied liquidation: principal not yet due",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "ACCRUAL_REGULAR_INTEREST",
+      "system_tag": "regular_interest_accrued",
+      "direction": "DEBIT",
+      "description": "Accrual of REGULAR interest",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "ACCRUAL_REGULAR_INTEREST",
+      "system_tag": "regular_interest_income_holding",
+      "direction": "CREDIT",
+      "description": "Accrual of REGULAR interest",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "ACCRUAL_PENALTY_INTEREST",
+      "system_tag": "penalty_interest_asset",
+      "direction": "DEBIT",
+      "description": "Daily penalty interest accrual (11)",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "ACCRUAL_PENALTY_INTEREST",
+      "system_tag": "penalty_interest_suspense",
+      "direction": "CREDIT",
+      "description": "Daily penalty interest accrual (11)",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "ACCRUAL_DEFAULT_INTEREST",
+      "system_tag": "default_interest_asset",
+      "direction": "DEBIT",
+      "description": "Daily default interest accrual (14)",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "ACCRUAL_DEFAULT_INTEREST",
+      "system_tag": "default_interest_suspense",
+      "direction": "CREDIT",
+      "description": "Daily default interest accrual (14)",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "CLEAR_DAILY_ACCRUAL",
+      "system_tag": "regular_interest_income_holding",
+      "direction": "DEBIT",
+      "description": "Clear the Daily Accrual Accounts",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "CLEAR_DAILY_ACCRUAL",
+      "system_tag": "regular_interest_accrued",
+      "direction": "CREDIT",
+      "description": "Clear the Daily Accrual Accounts",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "BILLING_REGULAR_INTEREST",
+      "system_tag": "regular_interest_arrears",
+      "direction": "DEBIT",
+      "description": "Billing of REGULAR interest arrears",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "BILLING_REGULAR_INTEREST",
+      "system_tag": "regular_interest_income",
+      "direction": "CREDIT",
+      "description": "Billing of REGULAR interest arrears",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "PAYMENT_REGULAR_INTEREST",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Payment of REGULAR interest",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_REGULAR_INTEREST",
+      "system_tag": "regular_interest_arrears",
+      "direction": "CREDIT",
+      "description": "Payment of REGULAR interest",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Direct payment of regular interest not yet due",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+      "system_tag": "regular_interest_accrued",
+      "direction": "CREDIT",
+      "description": "Direct payment of regular interest not yet due",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_REGULAR_INTEREST",
+      "system_tag": "unapplied_funds",
+      "direction": "DEBIT",
+      "description": "Unapplied liquidation: regular interest arrears",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_REGULAR_INTEREST",
+      "system_tag": "regular_interest_arrears",
+      "direction": "CREDIT",
+      "description": "Unapplied liquidation: regular interest arrears",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_REGULAR_INTEREST_NOT_YET_DUE",
+      "system_tag": "unapplied_funds",
+      "direction": "DEBIT",
+      "description": "Unapplied liquidation: regular interest accrued",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_REGULAR_INTEREST_NOT_YET_DUE",
+      "system_tag": "regular_interest_accrued",
+      "direction": "CREDIT",
+      "description": "Unapplied liquidation: regular interest accrued",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_PENALTY_INTEREST",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Payment of penalty interest (12)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_PENALTY_INTEREST",
+      "system_tag": "penalty_interest_asset",
+      "direction": "CREDIT",
+      "description": "Payment of penalty interest (12)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_PENALTY_INTEREST",
+      "system_tag": "penalty_interest_suspense",
+      "direction": "DEBIT",
+      "description": "Recognise penalty income (12a)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_PENALTY_INTEREST",
+      "system_tag": "penalty_interest_income",
+      "direction": "CREDIT",
+      "description": "Recognise penalty income (12a)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_PENALTY_INTEREST",
+      "system_tag": "unapplied_funds",
+      "direction": "DEBIT",
+      "description": "Unapplied liquidation: penalty interest (12)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_PENALTY_INTEREST",
+      "system_tag": "penalty_interest_asset",
+      "direction": "CREDIT",
+      "description": "Unapplied liquidation: penalty interest (12)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_PENALTY_INTEREST",
+      "system_tag": "penalty_interest_suspense",
+      "direction": "DEBIT",
+      "description": "Unapplied liquidation: recognise penalty income (12a)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_PENALTY_INTEREST",
+      "system_tag": "penalty_interest_income",
+      "direction": "CREDIT",
+      "description": "Unapplied liquidation: recognise penalty income (12a)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "REVERSAL_PENALTY_INTEREST",
+      "system_tag": "penalty_interest_income",
+      "direction": "DEBIT",
+      "description": "Reversal of penalty interest",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "REVERSAL_PENALTY_INTEREST",
+      "system_tag": "penalty_interest_asset",
+      "direction": "CREDIT",
+      "description": "Reversal of penalty interest",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_DEFAULT_INTEREST",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Payment of default interest (15)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_DEFAULT_INTEREST",
+      "system_tag": "default_interest_asset",
+      "direction": "CREDIT",
+      "description": "Payment of default interest (15)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_DEFAULT_INTEREST",
+      "system_tag": "default_interest_suspense",
+      "direction": "DEBIT",
+      "description": "Recognise default income (15a)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_DEFAULT_INTEREST",
+      "system_tag": "default_interest_income",
+      "direction": "CREDIT",
+      "description": "Recognise default income (15a)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_DEFAULT_INTEREST",
+      "system_tag": "unapplied_funds",
+      "direction": "DEBIT",
+      "description": "Unapplied liquidation: default interest (15)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_DEFAULT_INTEREST",
+      "system_tag": "default_interest_asset",
+      "direction": "CREDIT",
+      "description": "Unapplied liquidation: default interest (15)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_DEFAULT_INTEREST",
+      "system_tag": "default_interest_suspense",
+      "direction": "DEBIT",
+      "description": "Unapplied liquidation: recognise default income (15a)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_DEFAULT_INTEREST",
+      "system_tag": "default_interest_income",
+      "direction": "CREDIT",
+      "description": "Unapplied liquidation: recognise default income (15a)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "REVERSAL_DEFAULT_INTEREST",
+      "system_tag": "default_interest_income",
+      "direction": "DEBIT",
+      "description": "Reversal of default interest",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "REVERSAL_DEFAULT_INTEREST",
+      "system_tag": "default_interest_asset",
+      "direction": "CREDIT",
+      "description": "Reversal of default interest",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "ACCRUAL_REGULAR_INTEREST_SUSPENSE",
+      "system_tag": "regular_interest_accrued",
+      "direction": "DEBIT",
+      "description": "Daily accrual of regular interest into suspense",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "ACCRUAL_REGULAR_INTEREST_SUSPENSE",
+      "system_tag": "regular_interest_suspense",
+      "direction": "CREDIT",
+      "description": "Daily accrual of regular interest into suspense",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "PAYMENT_REGULAR_INTEREST_SUSPENSE",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Payment of regular interest in suspense",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_REGULAR_INTEREST_SUSPENSE",
+      "system_tag": "regular_interest_suspense",
+      "direction": "CREDIT",
+      "description": "Payment of regular interest in suspense",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_REGULAR_INTEREST_ACCRUED",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Payment of regular interest accrued (unbilled)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PAYMENT_REGULAR_INTEREST_ACCRUED",
+      "system_tag": "regular_interest_accrued",
+      "direction": "CREDIT",
+      "description": "Payment of regular interest accrued (unbilled)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "RECOGNISE_REGULAR_INTEREST_INCOME",
+      "system_tag": "regular_interest_income_holding",
+      "direction": "DEBIT",
+      "description": "Recognise regular interest income",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "RECOGNISE_REGULAR_INTEREST_INCOME",
+      "system_tag": "regular_interest_income",
+      "direction": "CREDIT",
+      "description": "Recognise regular interest income",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "REVERSAL_REGULAR_INTEREST_ACCRUAL",
+      "system_tag": "regular_interest_income_holding",
+      "direction": "DEBIT",
+      "description": "Reversal of regular interest accrual",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "REVERSAL_REGULAR_INTEREST_ACCRUAL",
+      "system_tag": "regular_interest_accrued",
+      "direction": "CREDIT",
+      "description": "Reversal of regular interest accrual",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PROVISION_RAISE",
+      "system_tag": "impairment_loss_expense",
+      "direction": "DEBIT",
+      "description": "Raising a provision (increasing risk)",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "PROVISION_RAISE",
+      "system_tag": "allowance_credit_losses",
+      "direction": "CREDIT",
+      "description": "Raising a provision (increasing risk)",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "PROVISION_REVERSAL",
+      "system_tag": "allowance_credit_losses",
+      "direction": "DEBIT",
+      "description": "Reversing a provision (quality improves)",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "PROVISION_REVERSAL",
+      "system_tag": "impairment_loss_expense",
+      "direction": "CREDIT",
+      "description": "Reversing a provision (quality improves)",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "PRINCIPAL_WRITEOFF",
+      "system_tag": "allowance_credit_losses",
+      "direction": "DEBIT",
+      "description": "Principal write-off (final loss)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PRINCIPAL_WRITEOFF",
+      "system_tag": "loan_principal",
+      "direction": "CREDIT",
+      "description": "Principal write-off (final loss)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "INTEREST_WRITEOFF",
+      "system_tag": "bad_debts_expense",
+      "direction": "DEBIT",
+      "description": "Interest write-off (no suspense balance)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "INTEREST_WRITEOFF",
+      "system_tag": "regular_interest_arrears",
+      "direction": "CREDIT",
+      "description": "Interest write-off (no suspense balance)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "WRITEOFF_RECOVERY",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Receipt from a fully written-off loan",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "WRITEOFF_RECOVERY",
+      "system_tag": "bad_debts_recovered",
+      "direction": "CREDIT",
+      "description": "Receipt from a fully written-off loan",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "LOAN_RESTRUCTURE_CAPITALISE",
+      "system_tag": "loan_principal",
+      "direction": "DEBIT",
+      "description": "Capitalisation of interest and arrears (restructure)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "LOAN_RESTRUCTURE_CAPITALISE",
+      "system_tag": "principal_arrears",
+      "direction": "CREDIT",
+      "description": "Capitalisation of principal arrears (restructure)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "LOAN_RESTRUCTURE_CAPITALISE",
+      "system_tag": "regular_interest_arrears",
+      "direction": "CREDIT",
+      "description": "Capitalisation of regular interest arrears (restructure)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "LOAN_RESTRUCTURE_CAPITALISE",
+      "system_tag": "penalty_interest_asset",
+      "direction": "CREDIT",
+      "description": "Capitalisation of penalty interest (restructure)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "LOAN_RESTRUCTURE_CAPITALISE",
+      "system_tag": "default_interest_asset",
+      "direction": "CREDIT",
+      "description": "Capitalisation of default interest (restructure)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "LOAN_RESTRUCTURE_CAPITALISE",
+      "system_tag": "fees_charges_arrears",
+      "direction": "CREDIT",
+      "description": "Capitalisation of fees and charges arrears (restructure)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "RESTRUCTURE_FEE_CHARGE",
+      "system_tag": "loan_principal",
+      "direction": "DEBIT",
+      "description": "Restructure fee (charged to customer)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "RESTRUCTURE_FEE_CHARGE",
+      "system_tag": "deferred_fee_liability",
+      "direction": "CREDIT",
+      "description": "Restructure fee (deferred)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "RESTRUCTURE_FEE_AMORTISATION",
+      "system_tag": "deferred_fee_liability",
+      "direction": "DEBIT",
+      "description": "Restructure fee amortisation (monthly)",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "RESTRUCTURE_FEE_AMORTISATION",
+      "system_tag": "deferred_fee_income",
+      "direction": "CREDIT",
+      "description": "Restructure fee amortisation (monthly)",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "PASS_THROUGH_COST_DISBURSEMENT",
+      "system_tag": "deferred_fee_commission_asset",
+      "direction": "DEBIT",
+      "description": "Payment of third-party cost (pass-through)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PASS_THROUGH_COST_DISBURSEMENT",
+      "system_tag": "cash_operating",
+      "direction": "CREDIT",
+      "description": "Payment of third-party cost (pass-through)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PASS_THROUGH_COST_RECOVERY",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Receipt of pass-through costs (recovery)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "PASS_THROUGH_COST_RECOVERY",
+      "system_tag": "deferred_fee_commission_asset",
+      "direction": "CREDIT",
+      "description": "Receipt of pass-through costs (recovery)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_PASS_THROUGH_COST_RECOVERY",
+      "system_tag": "unapplied_funds",
+      "direction": "DEBIT",
+      "description": "Unapplied liquidation: fees/charges (recovery)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_LIQUIDATION_PASS_THROUGH_COST_RECOVERY",
+      "system_tag": "deferred_fee_commission_asset",
+      "direction": "CREDIT",
+      "description": "Unapplied liquidation: fees/charges (recovery)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_FUNDS_OVERPAYMENT",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Unapplied funds — customer overpayment (receipt)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "UNAPPLIED_FUNDS_OVERPAYMENT",
+      "system_tag": "unapplied_funds",
+      "direction": "CREDIT",
+      "description": "Unapplied funds — customer overpayment (receipt)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "FEES_CHARGES_WRITEOFF",
+      "system_tag": "allowance_credit_losses",
+      "direction": "DEBIT",
+      "description": "Fees and charges arrears write-off (final loss)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "FEES_CHARGES_WRITEOFF",
+      "system_tag": "fees_charges_arrears",
+      "direction": "CREDIT",
+      "description": "Fees and charges arrears write-off (final loss)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "AGENT_COMMISSION_PAYMENT",
+      "system_tag": "fees_commission_expense",
+      "direction": "DEBIT",
+      "description": "Payment of agent commission",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "AGENT_COMMISSION_PAYMENT",
+      "system_tag": "cash_operating",
+      "direction": "CREDIT",
+      "description": "Payment of agent commission",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "COMMISSION_AMORTISATION",
+      "system_tag": "fees_commission_expense",
+      "direction": "DEBIT",
+      "description": "Monthly amortisation of commission",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "COMMISSION_AMORTISATION",
+      "system_tag": "deferred_fee_commission_asset",
+      "direction": "CREDIT",
+      "description": "Monthly amortisation of commission",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "BORROWING_DRAWDOWN",
+      "system_tag": "cash_operating",
+      "direction": "DEBIT",
+      "description": "Drawdown on a borrowing from a Financier",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "BORROWING_DRAWDOWN",
+      "system_tag": "deferred_fee_asset_borrowings",
+      "direction": "DEBIT",
+      "description": "Drawdown on a borrowing from a Financier - fees paid",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "BORROWING_DRAWDOWN",
+      "system_tag": "borrowings_loan_principal",
+      "direction": "CREDIT",
+      "description": "Drawdown on a borrowing from a Financier - principal owed",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "INTEREST_EXPENSE_ACCRUAL",
+      "system_tag": "interest_expense",
+      "direction": "DEBIT",
+      "description": "Monthly Accrual of interest expense",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "INTEREST_EXPENSE_ACCRUAL",
+      "system_tag": "interest_payable",
+      "direction": "CREDIT",
+      "description": "Monthly Accrual of interest expense",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "BORROWING_FEES_AMORTISATION",
+      "system_tag": "amortization_borrowing_fees",
+      "direction": "DEBIT",
+      "description": "Amortization of Loan Fees",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "BORROWING_FEES_AMORTISATION",
+      "system_tag": "deferred_fee_asset_borrowings",
+      "direction": "CREDIT",
+      "description": "Amortization of Loan Fees",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "BORROWING_REPAYMENT",
+      "system_tag": "borrowings_loan_principal",
+      "direction": "DEBIT",
+      "description": "Payment of borrowings",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "BORROWING_REPAYMENT",
+      "system_tag": "interest_payable",
+      "direction": "DEBIT",
+      "description": "Payment of borrowings - interest component",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "BORROWING_REPAYMENT",
+      "system_tag": "cash_operating",
+      "direction": "CREDIT",
+      "description": "Payment of borrowings - cash outflow",
+      "trigger_type": "EVENT"
+    }
+  ]
+}

@@ -237,7 +237,11 @@ def _batch_fetch_yesterday_states(
                 COALESCE(default_interest_daily, 0)           AS default_interest_daily,
                 COALESCE(regular_interest_period_to_date, 0)  AS regular_interest_period_to_date,
                 COALESCE(penalty_interest_period_to_date, 0)  AS penalty_interest_period_to_date,
-                COALESCE(default_interest_period_to_date, 0)  AS default_interest_period_to_date
+                COALESCE(default_interest_period_to_date, 0)  AS default_interest_period_to_date,
+                COALESCE(regular_interest_in_suspense_balance, 0)   AS regular_interest_in_suspense_balance,
+                COALESCE(penalty_interest_in_suspense_balance, 0)   AS penalty_interest_in_suspense_balance,
+                COALESCE(default_interest_in_suspense_balance, 0)   AS default_interest_in_suspense_balance,
+                COALESCE(total_interest_in_suspense_balance, 0)     AS total_interest_in_suspense_balance
             FROM loan_daily_state
             WHERE loan_id = ANY(%s) AND as_of_date <= %s
             ORDER BY loan_id, as_of_date DESC
@@ -261,6 +265,18 @@ def _batch_fetch_yesterday_states(
                 "regular_interest_period_to_date":  float(row["regular_interest_period_to_date"] or 0),
                 "penalty_interest_period_to_date":  float(row["penalty_interest_period_to_date"] or 0),
                 "default_interest_period_to_date":  float(row["default_interest_period_to_date"] or 0),
+                "regular_interest_in_suspense_balance": float(
+                    row["regular_interest_in_suspense_balance"] or 0
+                ),
+                "penalty_interest_in_suspense_balance": float(
+                    row["penalty_interest_in_suspense_balance"] or 0
+                ),
+                "default_interest_in_suspense_balance": float(
+                    row["default_interest_in_suspense_balance"] or 0
+                ),
+                "total_interest_in_suspense_balance": float(
+                    row["total_interest_in_suspense_balance"] or 0
+                ),
             }
     return result
 
@@ -865,6 +881,31 @@ def _run_loan_engine_for_date(
         else:
             regular_interest_period_to_date_save = as_10dp(regular_daily)
 
+        # Interest in suspense (provision reporting): regular rolls as prior + today's accrual
+        # (only when loan is in suspense and accruals run) − allocations to accrued interest;
+        # penalty/default suspense track the same closing balances as the economic buckets after EOD.
+        D = Decimal
+        y_reg_susp = (
+            D(str(yesterday_saved.get("regular_interest_in_suspense_balance", 0) or 0))
+            if yesterday_saved is not None
+            else D("0")
+        )
+        alloc_ia = D(str(alloc.get("alloc_interest_accrued", 0.0)))
+        rd_dec = regular_daily if isinstance(regular_daily, Decimal) else D(str(regular_daily))
+        if block_accruals:
+            acc_into_reg_susp = D("0")
+        else:
+            acc_into_reg_susp = rd_dec if is_in_suspense else D("0")
+        regular_interest_in_suspense_save = float(
+            as_10dp(max(D("0"), y_reg_susp + acc_into_reg_susp - alloc_ia))
+        )
+        penalty_interest_in_suspense_save = float(
+            as_10dp(max(D("0"), D(str(penalty_interest_balance_save))))
+        )
+        default_interest_in_suspense_save = float(
+            as_10dp(max(D("0"), D(str(default_interest_balance_save))))
+        )
+
         save_loan_daily_state(
             loan_id=loan_id_int,
             as_of_date=as_of_date,
@@ -884,6 +925,9 @@ def _run_loan_engine_for_date(
             default_interest_period_to_date=default_interest_period_to_date_save,
             net_allocation=net_alloc,
             unallocated=unalloc,
+            regular_interest_in_suspense_balance=regular_interest_in_suspense_save,
+            penalty_interest_in_suspense_balance=penalty_interest_in_suspense_save,
+            default_interest_in_suspense_balance=default_interest_in_suspense_save,
         )
         processed += 1
 
@@ -1094,7 +1138,8 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                         event_id=f"EOD-{as_of_date}-{loan_id}-{event_type}",
                         created_by="system",
                         entry_date=as_of_date,
-                        amount=amt
+                        amount=amt,
+                        loan_id=int(loan_id),
                     )
                 
     except Exception as e:
@@ -1196,6 +1241,7 @@ def _run_fee_amortisation_month_end(
                 created_by="system",
                 entry_date=as_of_date,
                 amount=monthly_amt,
+                loan_id=int(loan_id),
             )
 
         _post_if_positive("FEE_AMORTISATION_DRAWDOWN", draw_fee, "drawdown fee")

@@ -21,12 +21,11 @@ def custom_default(obj):
         return obj.isoformat()
     return str(obj)
 
-rows, meta = generate_customer_facing_statement(1, date(2025, 7, 10), date(2025, 9, 1), as_of_date=date(2025, 9, 1))
+rows, meta = generate_customer_facing_statement(1, date(2025, 7, 10), date(2025, 10, 1), as_of_date=date(2025, 10, 1))
 
-print("--- Statement Rows (1.9.25) ---")
+print("--- Statement Rows ---")
 for r in rows:
-    if str(r.get("Due Date")).startswith("2025-09-01"):
-        print(json.dumps(r, default=custom_default))
+    print(json.dumps(r, default=custom_default))
 
 from config import get_database_url
 conn = psycopg2.connect(get_database_url())
@@ -48,7 +47,7 @@ for row in cur.fetchall():
     print(json.dumps(row, default=custom_default))
 
 print("\n--- unapplied_funds_ledger (2025-09-01) ---")
-cur.execute("SELECT * FROM unapplied_funds_ledger WHERE loan_id = 1 AND value_date = '2025-09-01' ORDER BY id;")
+cur.execute("SELECT * FROM unapplied_funds_ledger WHERE loan_id = 1 AND value_date = '2025-09-01';")
 for row in cur.fetchall():
     print(json.dumps(row, default=custom_default))
 

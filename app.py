@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
@@ -113,6 +114,7 @@ AGENT_CORPORATE_DOC_TYPES = CORPORATE_DOC_TYPES.union(
     }
 )
 
+_loan_management_error: str = ""
 try:
     from loan_management import (
         save_loan as save_loan_to_db,
@@ -140,6 +142,7 @@ try:
         get_product_config_from_db,
         save_product_config_to_db,
         save_loan_approval_draft,
+        update_loan_approval_draft_staged,
         resubmit_loan_approval_draft,
         list_loan_approval_drafts,
         get_loan_approval_draft,
@@ -151,6 +154,41 @@ try:
 except Exception as e:
     _loan_management_available = False
     _loan_management_error = str(e)
+
+try:
+    from loan_management import get_cached_source_cash_account_entries
+except Exception:
+    def get_cached_source_cash_account_entries():
+        return []
+
+try:
+    from provisions_config import list_security_subtypes as list_provision_security_subtypes
+    from provisions_config import provision_schema_ready as _provision_schema_ready_fn
+
+    _PROVISIONS_CONFIG_OK = True
+except Exception:
+    list_provision_security_subtypes = None
+    _provision_schema_ready_fn = None
+    _PROVISIONS_CONFIG_OK = False
+
+
+# Same control as Teller: cached posting leaves under A100000 (per branch).
+SOURCE_CASH_GL_WIDGET_LABEL = "Source cash / bank GL account (A100000 tree, cached list)"
+
+
+def _source_cash_gl_cached_labels_and_ids() -> tuple[list[str], list[str]]:
+    entries = get_cached_source_cash_account_entries()
+    return (
+        [f"{e['code']} — {e['name']}" for e in entries],
+        [str(e["id"]) for e in entries],
+    )
+
+
+def _source_cash_gl_cache_empty_warning() -> None:
+    st.warning(
+        "The **source cash account cache** is empty. Rebuild it under **System configurations → "
+        "Accounting configurations → Maintenance — source cash account cache**."
+    )
 
 
 # --- App state & global settings (UI) ---
@@ -481,6 +519,12 @@ def _get_system_config() -> dict:
             "snapshot_max_rows": 100,
         },
     }
+    try:
+        from provision_config import PROVISION_RBZ_CONFIG_KEY, default_provision_rbz_config
+
+        defaults[PROVISION_RBZ_CONFIG_KEY] = default_provision_rbz_config()
+    except Exception:
+        pass
     if "system_config" not in st.session_state:
         try:
             from loan_management import load_system_config_from_db
@@ -505,7 +549,7 @@ def _get_system_config() -> dict:
 
 
 def system_configurations_ui():
-    """System configurations: sectors, EOD, accounting periods, and products."""
+    """System configurations: sectors, EOD, accounting periods, products, and IFRS provision tables."""
     st.markdown(
         "<div style='background-color: #16A34A; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.1rem;'>System configurations</div>",
         unsafe_allow_html=True,
@@ -541,13 +585,14 @@ def system_configurations_ui():
         blocking_stages = list(blocking_stage_default)
     advance_date_on_degraded = bool(policy_cfg.get("advance_date_on_degraded", False))
 
-    tab_sectors, tab_eod, tab_accounting, tab_consumer_schemes, tab_products = st.tabs(
+    tab_sectors, tab_eod, tab_accounting, tab_consumer_schemes, tab_products, tab_ifrs_prov = st.tabs(
         [
             "Sectors & subsectors",
             "EOD configurations",
             "Accounting configurations",
             "Consumer schemes",
             "Products",
+            "IFRS provision config",
         ],
     )
 
@@ -776,6 +821,50 @@ def system_configurations_ui():
             key="syscfg_acc_snapshot_max_rows",
             help="Upper bound for rows returned when loading snapshot history. Controls performance only (does not affect what is stored).",
         )
+
+        st.divider()
+        with st.expander("Maintenance — source cash account cache", expanded=False):
+            st.caption(
+                "Loan capture and Teller read a **saved** list of posting accounts: leaves under **A100000**, "
+                "one set per first-level branch (see accounting repository). Nothing is recomputed on each screen load."
+            )
+            _scc = cfg.get("source_cash_account_cache") or {}
+            _scc_n = len(_scc.get("entries") or [])
+            st.caption(
+                f"Last rebuilt: **{_scc.get('refreshed_at') or 'never'}** · "
+                f"Accounts in cache: **{_scc_n}** · Root: **{_scc.get('root_code') or 'A100000'}**"
+            )
+            with st.expander("Open only to rebuild the cache", expanded=False):
+                st.caption(
+                    "Recomputes from the **live** chart. Misuse can confuse operators until they pick from the new list."
+                )
+                _scc_confirm = st.checkbox(
+                    "I am an administrator and I intend to rebuild the source-cash account list.",
+                    value=False,
+                    key="syscfg_scc_confirm_chk",
+                )
+                _scc_type = st.text_input(
+                    "Type REBUILD to enable the action",
+                    key="syscfg_scc_type_confirm",
+                    help="Prevents accidental one-click rebuilds.",
+                )
+                if st.button(
+                    "Rebuild source cash account cache",
+                    key="syscfg_scc_rebuild_btn",
+                    disabled=(not _scc_confirm) or (_scc_type.strip().upper() != "REBUILD"),
+                ):
+                    try:
+                        from accounting_service import AccountingService
+
+                        _scc_block = AccountingService().refresh_source_cash_account_cache()
+                        st.session_state.pop("system_config", None)
+                        st.success(
+                            f"Cache rebuilt at {_scc_block.get('refreshed_at')} — "
+                            f"{len(_scc_block.get('entries') or [])} account(s)."
+                        )
+                        st.rerun()
+                    except Exception as _scc_ex:
+                        st.error(str(_scc_ex))
 
     with tab_consumer_schemes:
         st.subheader("Consumer schemes (admin)")
@@ -1012,6 +1101,22 @@ def system_configurations_ui():
                                 st.rerun()
                             except Exception as e:
                                 st.error(str(e))
+
+    with tab_ifrs_prov:
+        st.subheader("IFRS provision configuration")
+        st.caption(
+            "Collateral security subtypes, haircuts, and PD bands by DPD. Used by **Portfolio reports** "
+            "(ECL / IFRS view and single-loan IFRS Provisions)."
+        )
+        from provisions_ui import render_provisions_config_tables
+
+        render_provisions_config_tables()
+        st.divider()
+        st.markdown("**Regulatory (RBZ / non-IFRS)**")
+        st.info(
+            "Reserve Bank and other provisions that **do not** use the IFRS security haircut model "
+            "will be added here when required."
+        )
 
     # Keep existing config from DB; only EOD settings and accounting periods are edited directly in this UI.
     st.session_state["system_config"] = {
@@ -2346,16 +2451,58 @@ def capture_loan_ui():
 
     if "capture_loan_step" not in st.session_state:
         st.session_state["capture_loan_step"] = 0
+
+    def _stage1_session_details() -> dict:
+        return {
+            "agent_id": st.session_state.get("capture_agent_id"),
+            "relationship_manager_id": st.session_state.get("capture_relationship_manager_id"),
+            "disbursement_bank_option_id": None,
+            "cash_gl_account_id": st.session_state.get("capture_cash_gl_account_id"),
+            "collateral_security_subtype_id": st.session_state.get("capture_collateral_subtype_pick"),
+            "collateral_charge_amount": st.session_state.get("capture_collateral_charge"),
+            "collateral_valuation_amount": st.session_state.get("capture_collateral_valuation"),
+        }
+
+    def _step1_source_cash_gl_valid() -> bool:
+        entries = get_cached_source_cash_account_entries()
+        if not entries:
+            return True
+        cid = st.session_state.get("capture_cash_gl_account_id")
+        if cid is None or str(cid).strip() == "":
+            st.error(
+                "Select **Source cash / bank GL** below. When the **source cash account cache** is configured, "
+                "this operating account is required for disbursement and **LOAN_CAPTURE** on `cash_operating`. "
+                "Rebuild the cache under **System configurations → Accounting configurations → "
+                "Maintenance — source cash account cache** if the list is empty."
+            )
+            return False
+        allowed = {str(e.get("id")) for e in entries if e.get("id")}
+        if str(cid).strip() not in allowed:
+            st.error(
+                "The selected cash GL is not in the source cash cache. Rebuild the cache after chart changes, "
+                "or pick an account from the dropdown."
+            )
+            return False
+        return True
+
     flash_msg = st.session_state.pop("capture_flash_message", None)
     if flash_msg:
         st.success(str(flash_msg))
-    step = st.session_state["capture_loan_step"]
-    if step > 1:
-        step = 1
-        st.session_state["capture_loan_step"] = 1
-    step_labels = ["Key loan details", "Build schedule"]
-    progress = " · ".join([f"**{i + 1}. {step_labels[i]}**" if i == step else f"{i + 1}. {step_labels[i]}" for i in range(2)])
-    st.caption(f"Step {step + 1} of 2 — {progress}")
+    step = int(st.session_state["capture_loan_step"])
+    if step > 2:
+        step = 2
+        st.session_state["capture_loan_step"] = 2
+    if step < 0:
+        step = 0
+        st.session_state["capture_loan_step"] = 0
+    step_labels = ["Key loan details", "Build schedule", "Review & submit"]
+    progress = " · ".join(
+        [
+            f"**{i + 1}. {step_labels[i]}**" if i == step else f"{i + 1}. {step_labels[i]}"
+            for i in range(len(step_labels))
+        ]
+    )
+    st.caption(f"Step {step + 1} of {len(step_labels)} — {progress}")
     with st.popover("See loans for rework"):
         srch = st.text_input(
             "Search rework drafts",
@@ -2398,9 +2545,93 @@ def capture_loan_ui():
                     st.session_state["capture_approval_assigned_to"] = draft.get("assigned_approver_id")
                     st.session_state["capture_agent_id"] = det.get("agent_id")
                     st.session_state["capture_relationship_manager_id"] = det.get("relationship_manager_id")
+                    st.session_state.pop("capture_disbursement_bank_option_id", None)
+                    st.session_state["capture_cash_gl_account_id"] = det.get("cash_gl_account_id")
+                    _cs = det.get("collateral_security_subtype_id")
+                    if _cs is not None:
+                        try:
+                            st.session_state["capture_collateral_subtype_pick"] = int(_cs)
+                        except (TypeError, ValueError):
+                            st.session_state.pop("capture_collateral_subtype_pick", None)
+                    else:
+                        st.session_state.pop("capture_collateral_subtype_pick", None)
+                    st.session_state["capture_collateral_charge"] = float(det.get("collateral_charge_amount") or 0)
+                    st.session_state["capture_collateral_valuation"] = float(det.get("collateral_valuation_amount") or 0)
                     st.session_state["capture_rework_source_draft_id"] = int(draft.get("id"))
+                    st.session_state.pop("capture_stage1_draft_id", None)
                     st.session_state["capture_loan_step"] = 1
                     st.session_state["capture_flash_message"] = f"Loaded rework draft #{draft.get('id')} for editing."
+                    st.rerun()
+
+    with st.popover("Resume saved (step 1)"):
+        st.caption("Incomplete captures saved with **Save & continue later** (not yet sent for approval).")
+        stg_srch = st.text_input(
+            "Search staged drafts",
+            placeholder="Draft ID / Customer ID / Product",
+            key="cap_staged_search",
+        )
+        staged_rows = list_loan_approval_drafts(
+            status="STAGED",
+            search=stg_srch.strip() or None,
+            limit=200,
+        )
+        if not staged_rows:
+            st.caption("No staged step-1 drafts.")
+        else:
+            stg_df = pd.DataFrame(staged_rows)
+            stg_cols = [
+                c
+                for c in [
+                    "id",
+                    "customer_id",
+                    "loan_type",
+                    "product_code",
+                    "assigned_approver_id",
+                    "submitted_at",
+                ]
+                if c in stg_df.columns
+            ]
+            st.dataframe(stg_df[stg_cols], width="stretch", hide_index=True, height=140)
+            stg_options = [int(r["id"]) for r in staged_rows]
+            pick_stg = st.selectbox("Select draft", stg_options, key="cap_staged_pick")
+            if st.button("Load staged draft", key="cap_staged_load_btn", width="stretch"):
+                draft_s = get_loan_approval_draft(int(pick_stg))
+                if not draft_s:
+                    st.error(f"Draft #{pick_stg} not found.")
+                else:
+                    draft_loan_type_s = str(draft_s.get("loan_type") or "")
+                    type_map_s = {
+                        "consumer_loan": "Consumer Loan",
+                        "term_loan": "Term Loan",
+                        "bullet_loan": "Bullet Loan",
+                        "customised_repayments": "Customised Repayments",
+                    }
+                    display_type_s = type_map_s.get(draft_loan_type_s, draft_loan_type_s)
+                    det_s = draft_s.get("details_json") or {}
+                    st.session_state["capture_customer_id"] = int(draft_s.get("customer_id"))
+                    st.session_state["capture_loan_type"] = display_type_s
+                    st.session_state["capture_product_code"] = draft_s.get("product_code")
+                    st.session_state["capture_agent_id"] = det_s.get("agent_id")
+                    st.session_state["capture_relationship_manager_id"] = det_s.get("relationship_manager_id")
+                    st.session_state.pop("capture_disbursement_bank_option_id", None)
+                    st.session_state["capture_cash_gl_account_id"] = det_s.get("cash_gl_account_id")
+                    _cs_s = det_s.get("collateral_security_subtype_id")
+                    if _cs_s is not None:
+                        try:
+                            st.session_state["capture_collateral_subtype_pick"] = int(_cs_s)
+                        except (TypeError, ValueError):
+                            st.session_state.pop("capture_collateral_subtype_pick", None)
+                    else:
+                        st.session_state.pop("capture_collateral_subtype_pick", None)
+                    st.session_state["capture_collateral_charge"] = float(det_s.get("collateral_charge_amount") or 0)
+                    st.session_state["capture_collateral_valuation"] = float(det_s.get("collateral_valuation_amount") or 0)
+                    st.session_state["capture_approval_assigned_to"] = draft_s.get("assigned_approver_id")
+                    st.session_state["capture_stage1_draft_id"] = int(draft_s.get("id"))
+                    st.session_state.pop("capture_rework_source_draft_id", None)
+                    st.session_state.pop("capture_loan_details", None)
+                    st.session_state.pop("capture_loan_schedule_df", None)
+                    st.session_state["capture_loan_step"] = 0
+                    st.session_state["capture_flash_message"] = f"Resumed staged draft #{draft_s.get('id')} (step 1)."
                     st.rerun()
 
     # -------- Window 1: Key loan details --------
@@ -2474,7 +2705,128 @@ def capture_loan_ui():
                     st.session_state["capture_agent_id"] = agent_ids_cap[agent_labels_cap.index(sel_agent_label)] if sel_agent_label else None
                 else:
                     st.session_state["capture_agent_id"] = None
-        btn_clear, btn_next, _ = st.columns([1, 1, 2])
+            st.divider()
+            st.caption(
+                "**Source cash / bank GL (operating account)** — same cached list as **Teller**. "
+                "Defines the loan’s operating bank for **disbursement** and **LOAN_CAPTURE** resolution on "
+                "`cash_operating`. The list is built under **System configurations → Accounting configurations → "
+                "Maintenance — source cash account cache** (not a separate disbursement-bank screen). "
+                "**Receipts** still use the account chosen in Teller per payment."
+            )
+            _cg_lab, _cg_ids = _source_cash_gl_cached_labels_and_ids()
+            if _cg_ids:
+                _cg_default = 0
+                _prev_cg = st.session_state.get("capture_cash_gl_account_id")
+                if _prev_cg and str(_prev_cg) in _cg_ids:
+                    _cg_default = _cg_ids.index(str(_prev_cg))
+                _cg_i = st.selectbox(
+                    SOURCE_CASH_GL_WIDGET_LABEL,
+                    range(len(_cg_lab)),
+                    format_func=lambda i: _cg_lab[i],
+                    index=_cg_default,
+                    key="cap_cash_gl_sel_t0",
+                )
+                st.session_state["capture_cash_gl_account_id"] = _cg_ids[_cg_i]
+            else:
+                st.session_state["capture_cash_gl_account_id"] = None
+                _source_cash_gl_cache_empty_warning()
+
+            with st.expander("Collateral (IFRS provision inputs)", expanded=False):
+                st.caption(
+                    "Subtype and amounts are stored on the loan at approval. **DPD**, **total balance**, and "
+                    "**interest in suspense** for live provision come from **loan_daily_state** — use **Portfolio reports → "
+                    "IFRS Provisions** or **ECL / provisions (IFRS view)** after booking."
+                )
+                if (
+                    not _PROVISIONS_CONFIG_OK
+                    or list_provision_security_subtypes is None
+                    or _provision_schema_ready_fn is None
+                ):
+                    st.warning("Collateral tables unavailable — run **scripts/run_migration_53.py**.")
+                else:
+                    _sch_ok, _sch_msg = _provision_schema_ready_fn()
+                    if not _sch_ok:
+                        st.warning(_sch_msg)
+                    else:
+                        _subs = list_provision_security_subtypes(active_only=True) or []
+                        if not _subs:
+                            st.info("Add subtypes under **System configurations → IFRS provision config**.")
+                        else:
+                            _sid_opts = [int(s["id"]) for s in _subs]
+                            _pick_cur = st.session_state.get("capture_collateral_subtype_pick")
+                            if _pick_cur is not None and int(_pick_cur) not in _sid_opts:
+                                st.session_state.pop("capture_collateral_subtype_pick", None)
+                            _sid_lbl = {
+                                int(s["id"]): f"{s['security_type']} · {s['subtype_name']} (haircut {s['typical_haircut_pct']}%)" for s in _subs
+                            }
+                            st.selectbox(
+                                "Collateral subtype",
+                                _sid_opts,
+                                format_func=lambda i, m=_sid_lbl: m.get(int(i), str(i)),
+                                key="capture_collateral_subtype_pick",
+                            )
+                            _cca, _cva = st.columns(2)
+                            with _cca:
+                                st.number_input(
+                                    "Charge amount (registered / agreed)",
+                                    min_value=0.0,
+                                    step=0.01,
+                                    key="capture_collateral_charge",
+                                )
+                            with _cva:
+                                st.number_input(
+                                    "Valuation amount (market)",
+                                    min_value=0.0,
+                                    step=0.01,
+                                    key="capture_collateral_valuation",
+                                )
+
+        btn_save1, btn_clear, btn_next, _ = st.columns([1, 1, 1, 1])
+        with btn_save1:
+            if st.button("Save & continue later", key="cap_save_stage1"):
+                cid_sv = st.session_state.get("capture_customer_id")
+                ltype_sv = st.session_state.get("capture_loan_type")
+                pcode_sv = st.session_state.get("capture_product_code")
+                if not cid_sv or not ltype_sv:
+                    st.error("Select **customer** and **product** before saving.")
+                elif not _step1_source_cash_gl_valid():
+                    pass
+                else:
+                    try:
+                        appr_sv = st.session_state.get("capture_approval_assigned_to")
+                        empty_df = pd.DataFrame()
+                        sid_existing = st.session_state.get("capture_stage1_draft_id")
+                        if sid_existing is not None:
+                            update_loan_approval_draft_staged(
+                                int(sid_existing),
+                                int(cid_sv),
+                                str(ltype_sv),
+                                _stage1_session_details(),
+                                empty_df,
+                                product_code=pcode_sv,
+                                assigned_approver_id=str(appr_sv) if appr_sv is not None else None,
+                            )
+                            st.session_state["capture_flash_message"] = (
+                                f"Updated staged draft #{int(sid_existing)}. Resume anytime from **Resume saved (step 1)**."
+                            )
+                        else:
+                            new_sid = save_loan_approval_draft(
+                                int(cid_sv),
+                                str(ltype_sv),
+                                _stage1_session_details(),
+                                empty_df,
+                                product_code=pcode_sv,
+                                assigned_approver_id=str(appr_sv) if appr_sv is not None else None,
+                                created_by="capture_ui",
+                                status="STAGED",
+                            )
+                            st.session_state["capture_stage1_draft_id"] = int(new_sid)
+                            st.session_state["capture_flash_message"] = (
+                                f"Saved step 1 as draft **#{int(new_sid)}**. Continue later via **Resume saved (step 1)**."
+                            )
+                        st.rerun()
+                    except Exception as _ex:
+                        st.error(str(_ex))
         with btn_clear:
             if st.button("Clear selection", key="cap_clear_t1"):
                 for k in list(st.session_state.keys()):
@@ -2483,8 +2835,11 @@ def capture_loan_ui():
                 st.rerun()
         with btn_next:
             if st.button("Next →", type="primary", key="cap_next_0"):
-                st.session_state["capture_loan_step"] = 1
-                st.rerun()
+                if not _step1_source_cash_gl_valid():
+                    pass
+                else:
+                    st.session_state["capture_loan_step"] = 1
+                    st.rerun()
 
     # -------- Window 2: Build schedule --------
     elif step == 1:
@@ -3379,6 +3734,8 @@ def capture_loan_ui():
                     pcode = st.session_state.get("capture_product_code")
                     if not details or df_schedule is None or not cid or not ltype:
                         st.error("Draft is incomplete. Please rebuild schedule first.")
+                    elif not _step1_source_cash_gl_valid():
+                        pass
                     else:
                         base_meta = details.get("metadata") or {}
                         assigned_approver_id = st.session_state.get("capture_approval_assigned_to")
@@ -3388,12 +3745,29 @@ def capture_loan_ui():
                             **details,
                             "agent_id": st.session_state.get("capture_agent_id"),
                             "relationship_manager_id": st.session_state.get("capture_relationship_manager_id"),
+                            "disbursement_bank_option_id": None,
+                            "cash_gl_account_id": st.session_state.get("capture_cash_gl_account_id"),
+                            "collateral_security_subtype_id": st.session_state.get("capture_collateral_subtype_pick"),
+                            "collateral_charge_amount": st.session_state.get("capture_collateral_charge"),
+                            "collateral_valuation_amount": st.session_state.get("capture_collateral_valuation"),
                             "metadata": base_meta,
                         }
                         source_draft_id = st.session_state.get("capture_rework_source_draft_id")
+                        stage1_draft_id = st.session_state.get("capture_stage1_draft_id")
                         if source_draft_id is not None:
                             draft_id = resubmit_loan_approval_draft(
                                 int(source_draft_id),
+                                int(cid),
+                                str(ltype),
+                                details_to_queue,
+                                df_schedule,
+                                product_code=pcode,
+                                assigned_approver_id=str(assigned_approver_id) if assigned_approver_id is not None else None,
+                                created_by="capture_ui",
+                            )
+                        elif stage1_draft_id is not None:
+                            draft_id = resubmit_loan_approval_draft(
+                                int(stage1_draft_id),
                                 int(cid),
                                 str(ltype),
                                 details_to_queue,
@@ -3556,6 +3930,13 @@ def capture_loan_ui():
             from loan_management import build_loan_approval_journal_payload
             try:
                 payload_preview = build_loan_approval_journal_payload(details)
+                _cash_gl_prev = (details or {}).get("cash_gl_account_id") or st.session_state.get(
+                    "capture_cash_gl_account_id"
+                )
+                if _cash_gl_prev:
+                    _ao_prev = dict(payload_preview.get("account_overrides") or {})
+                    _ao_prev["cash_operating"] = str(_cash_gl_prev).strip()
+                    payload_preview["account_overrides"] = _ao_prev
                 sim = AccountingService().simulate_event("LOAN_APPROVAL", payload=payload_preview)
                 if sim.lines:
                     if not sim.balanced and sim.warning:
@@ -3603,52 +3984,73 @@ def capture_loan_ui():
             with col_save:
                 if st.button("Approve & save to database", type="primary", key="cap_save_btn"):
                     try:
-                        base_meta = details.get("metadata") or {}
-                        if assigned_approver_id is not None:
-                            base_meta["approval_assigned_to_user_id"] = str(assigned_approver_id)
-                        details_with_agent = {
-                            **details,
-                            "agent_id": st.session_state.get("capture_agent_id"),
-                            "relationship_manager_id": st.session_state.get("capture_relationship_manager_id"),
-                            "metadata": base_meta,
-                        }
-                        loan_id = save_loan_to_db(cid, ltype, details_with_agent, df_schedule, product_code=st.session_state.get("capture_product_code"))
-                        
-                        doc_count = 0
-                        staged_loan_docs = st.session_state.get("loan_docs_staged") or []
-                        if _documents_available and staged_loan_docs:
-                            for row in staged_loan_docs:
-                                cat_id = row["category_id"]
-                                f = row["file"]
-                                notes = row.get("notes") or ""
-                                try:
-                                    upload_document(
-                                        "loan",
-                                        loan_id,
-                                        cat_id,
-                                        f.name,
-                                        f.type,
-                                        f.size,
-                                        f.getvalue(),
-                                        uploaded_by="System User",
-                                        notes=notes,
-                                    )
-                                    doc_count += 1
-                                except Exception as e:
-                                    st.error(f"Failed to upload {f.name}: {e}")
-                                    
-                        st.session_state["capture_last_save_result"] = {"success": True, "loan_id": loan_id, "doc_count": doc_count}
-                        st.session_state["loan_docs_staged"] = []
-                        for k in ["capture_loan_details", "capture_loan_schedule_df"]:
-                            st.session_state.pop(k, None)
-                        st.rerun()
+                        if not _step1_source_cash_gl_valid():
+                            pass
+                        else:
+                            base_meta = details.get("metadata") or {}
+                            if assigned_approver_id is not None:
+                                base_meta["approval_assigned_to_user_id"] = str(assigned_approver_id)
+                            details_with_agent = {
+                                **details,
+                                "agent_id": st.session_state.get("capture_agent_id"),
+                                "relationship_manager_id": st.session_state.get("capture_relationship_manager_id"),
+                                "disbursement_bank_option_id": None,
+                                "cash_gl_account_id": details.get("cash_gl_account_id")
+                                if details.get("cash_gl_account_id") is not None
+                                else st.session_state.get("capture_cash_gl_account_id"),
+                                "collateral_security_subtype_id": st.session_state.get("capture_collateral_subtype_pick")
+                                if st.session_state.get("capture_collateral_subtype_pick") is not None
+                                else details.get("collateral_security_subtype_id"),
+                                "collateral_charge_amount": st.session_state.get("capture_collateral_charge")
+                                if st.session_state.get("capture_collateral_charge") is not None
+                                else details.get("collateral_charge_amount"),
+                                "collateral_valuation_amount": st.session_state.get("capture_collateral_valuation")
+                                if st.session_state.get("capture_collateral_valuation") is not None
+                                else details.get("collateral_valuation_amount"),
+                                "metadata": base_meta,
+                            }
+                            loan_id = save_loan_to_db(
+                                cid, ltype, details_with_agent, df_schedule,
+                                product_code=st.session_state.get("capture_product_code"),
+                            )
+
+                            doc_count = 0
+                            staged_loan_docs = st.session_state.get("loan_docs_staged") or []
+                            if _documents_available and staged_loan_docs:
+                                for row in staged_loan_docs:
+                                    cat_id = row["category_id"]
+                                    f = row["file"]
+                                    notes = row.get("notes") or ""
+                                    try:
+                                        upload_document(
+                                            "loan",
+                                            loan_id,
+                                            cat_id,
+                                            f.name,
+                                            f.type,
+                                            f.size,
+                                            f.getvalue(),
+                                            uploaded_by="System User",
+                                            notes=notes,
+                                        )
+                                        doc_count += 1
+                                    except Exception as e:
+                                        st.error(f"Failed to upload {f.name}: {e}")
+
+                            st.session_state["capture_last_save_result"] = {
+                                "success": True,
+                                "loan_id": loan_id,
+                                "doc_count": doc_count,
+                            }
+                            st.session_state["loan_docs_staged"] = []
+                            for k in ["capture_loan_details", "capture_loan_schedule_df"]:
+                                st.session_state.pop(k, None)
+                            st.rerun()
                     except Exception as e:
                         st.session_state["capture_last_save_result"] = {"success": False, "error": str(e)}
                         st.rerun()
             with col_rework:
-                if st.button("Save and send back for rework", key="cap_rework_t3"):
-                    assignee_txt = f" (assigned to user ID {assigned_approver_id})" if assigned_approver_id is not None else ""
-                    st.session_state["capture_rework_note"] = f"Loan draft sent back for rework{assignee_txt}."
+                if st.button("← Back to schedule builder", key="cap_back_sched_from_review"):
                     st.session_state["capture_loan_step"] = 1
                     st.rerun()
             with col_dismiss:
@@ -3667,6 +4069,9 @@ def capture_loan_ui():
 def approve_loans_ui():
     """Approval inbox for loan drafts submitted from capture Stage 2."""
     st.subheader("Approve loans")
+    if not _loan_management_available:
+        st.error(f"Loan management module is not available. ({_loan_management_error})")
+        return
     approve_flash = st.session_state.pop("approve_loans_flash_message", None)
     if approve_flash:
         st.success(str(approve_flash))
@@ -3809,6 +4214,7 @@ def approve_loans_ui():
                             f"{doc_count} document(s) copied."
                         )
                         st.session_state.pop("approve_selected_draft_id", None)
+                        st.session_state["loan_mgmt_subnav"] = "Approve loans"
                         st.rerun()
                     except Exception as e:
                         st.error(f"Could not approve draft: {e}")
@@ -3820,6 +4226,7 @@ def approve_loans_ui():
                             f"Draft #{selected_id} sent back for rework."
                         )
                         st.session_state.pop("approve_selected_draft_id", None)
+                        st.session_state["loan_mgmt_subnav"] = "Approve loans"
                         st.rerun()
                     except Exception as e:
                         st.error(f"Could not send back draft: {e}")
@@ -3831,6 +4238,7 @@ def approve_loans_ui():
                             f"Draft #{selected_id} dismissed."
                         )
                         st.session_state.pop("approve_selected_draft_id", None)
+                        st.session_state["loan_mgmt_subnav"] = "Approve loans"
                         st.rerun()
                     except Exception as e:
                         st.error(f"Could not dismiss draft: {e}")
@@ -4961,7 +5369,23 @@ def teller_ui():
 
                         now = datetime.now()
                         _sys = _get_system_date()
+                        st.caption(
+                            "**Source cash / bank GL** — same control as **loan capture** step 1. "
+                            "This choice applies to **this receipt only** (not the loan’s disbursement cash)."
+                        )
+                        _t_cash_lab, _t_cash_ids = _source_cash_gl_cached_labels_and_ids()
                         with st.form("teller_single_form", clear_on_submit=True):
+                            if _t_cash_ids:
+                                _t_sel = st.selectbox(
+                                    SOURCE_CASH_GL_WIDGET_LABEL,
+                                    range(len(_t_cash_lab)),
+                                    format_func=lambda i: _t_cash_lab[i],
+                                    key="teller_source_cash_gl",
+                                )
+                                _src_cash_gl = _t_cash_ids[_t_sel]
+                            else:
+                                _source_cash_gl_cache_empty_warning()
+                                _src_cash_gl = None
                             f_col1, f_col2 = st.columns(2)
                             with f_col1:
                                 amount = st.number_input("Amount", min_value=0.00, value=0.00, step=100.0, format="%.2f", key="teller_amount")
@@ -4975,33 +5399,53 @@ def teller_ui():
                                 system_date = st.date_input("System date", value=_sys, key="teller_system_date")
                             submitted = st.form_submit_button("Record repayment")
                             if submitted and amount > 0:
-                                try:
-                                    rid = record_repayment(
-                                        loan_id=loan_id,
-                                        amount=amount,
-                                        payment_date=value_date,
-                                        customer_reference=customer_ref.strip() or None,
-                                        company_reference=company_ref.strip() or None,
-                                        value_date=value_date,
-                                        system_date=datetime.combine(system_date, now.time()),
+                                if not _src_cash_gl:
+                                    st.error(
+                                        "No source cash account is available. Rebuild the **source cash account cache** "
+                                        "(System configurations → Accounting configurations), then try again."
                                     )
-                                    cfg = load_system_config_from_db() if _loan_management_available else {}
-                                    allocate_repayment_waterfall(rid, system_config=cfg)
-                                    st.success(f"Repayment recorded. **Repayment ID: {rid}**. Any overpayment was credited to Unapplied Funds.")
-                                except Exception as e:
+                                else:
+                                    try:
+                                        rid = record_repayment(
+                                            loan_id=loan_id,
+                                            amount=amount,
+                                            payment_date=value_date,
+                                            source_cash_gl_account_id=_src_cash_gl,
+                                            customer_reference=customer_ref.strip() or None,
+                                            company_reference=company_ref.strip() or None,
+                                            value_date=value_date,
+                                            system_date=datetime.combine(system_date, now.time()),
+                                        )
+                                        cfg = load_system_config_from_db() if _loan_management_available else {}
+                                        allocate_repayment_waterfall(rid, system_config=cfg)
+                                        st.success(
+                                            f"Repayment recorded. **Repayment ID: {rid}**. "
+                                            "Any overpayment was credited to Unapplied Funds."
+                                        )
+                                    except Exception as e:
                                         st.error(f"Could not record repayment: {e}")
                                         st.exception(e)
 
     with tab_batch:
         st.subheader("Batch payments")
-        st.caption("Upload an Excel file with repayment rows. Download the template below to see the required columns.")
+        st.caption(
+            "Upload an Excel file with repayment rows. **source_cash_gl_account_id** must be a UUID that appears in the "
+            "**source cash account cache** (same list as Teller — leaves under **A100000**). Rebuild the cache under "
+            "**System configurations → Accounting configurations** when the chart changes."
+        )
 
         # Template download
         template_df = pd.DataFrame(columns=[
-            "loan_id", "amount", "payment_date", "value_date", "customer_reference", "company_reference"
+            "loan_id",
+            "amount",
+            "payment_date",
+            "value_date",
+            "customer_reference",
+            "company_reference",
+            "source_cash_gl_account_id",
         ])
         today = _get_system_date().isoformat()
-        template_df.loc[0] = [1, 100.00, today, today, "Receipt-001", "GL-001"]
+        template_df.loc[0] = [1, 100.00, today, today, "Receipt-001", "GL-001", ""]
         buf = BytesIO()
         template_df.to_excel(buf, index=False, engine="openpyxl")
         buf.seek(0)
@@ -5019,7 +5463,7 @@ def teller_ui():
         if uploaded:
             try:
                 df = pd.read_excel(uploaded, engine="openpyxl")
-                required = ["loan_id", "amount"]
+                required = ["loan_id", "amount", "source_cash_gl_account_id"]
                 missing = [c for c in required if c not in df.columns]
                 if missing:
                     st.error(f"Missing columns: {', '.join(missing)}. Use the template.")
@@ -5056,6 +5500,16 @@ def teller_ui():
                                     vdate = str(vdate)[:10]
                                 else:
                                     vdate = pdate
+                                raw_gl = r.get("source_cash_gl_account_id")
+                                if raw_gl is None or (isinstance(raw_gl, float) and pd.isna(raw_gl)):
+                                    src_gl = None
+                                else:
+                                    src_gl = str(raw_gl).strip() or None
+                                if not src_gl:
+                                    parse_errors.append(
+                                        f"Row {i + 2}: source_cash_gl_account_id is required (posting account UUID from chart)"
+                                    )
+                                    continue
                                 valid_rows.append({
                                     "loan_id": lid,
                                     "amount": amt,
@@ -5063,6 +5517,7 @@ def teller_ui():
                                     "value_date": vdate,
                                     "customer_reference": str(r.get("customer_reference", "")).strip() or None,
                                     "company_reference": str(r.get("company_reference", "")).strip() or None,
+                                    "source_cash_gl_account_id": src_gl,
                                 })
                             except (ValueError, TypeError) as e:
                                 parse_errors.append(f"Row {i + 2}: {e}")
@@ -5354,6 +5809,7 @@ def teller_ui():
                                         amount=Decimal(str(amount)),
                                         payload=None,
                                         is_reversal=False,
+                                        loan_id=int(loan_id),
                                     )
                                     st.success(
                                         f"Recovery receipt posted successfully for loan #{loan_id}. "
@@ -6278,7 +6734,10 @@ def accounting_ui():
             st.warning("Chart of Accounts is not initialized.")
             if st.button("Initialize Default Chart of Accounts"):
                 svc.initialize_default_coa()
-                st.success("Default Chart of Accounts initialized!")
+                st.success(
+                    "Chart of Accounts initialized from bundled defaults "
+                    "(accounting_defaults/chart_of_accounts.json when present; else built-in)."
+                )
                 st.rerun()
         
         accounts = svc.list_accounts()
@@ -6288,163 +6747,281 @@ def accounting_ui():
                 "Name": a["name"],
                 "Category": a["category"],
                 "System Tag": a["system_tag"] or "",
-                "Parent Code": a["parent_code"] or ""
+                "Parent Code": a["parent_code"] or "",
+                "Resolve subaccounts": (a.get("subaccount_resolution") or ""),
             } for a in accounts])
             st.dataframe(df_accounts, use_container_width=True, hide_index=True)
+
+        with st.expander("Subaccount resolution (on tagged **parent** rows)", expanded=False):
+            st.caption(
+                "When a **system_tag** sits on an account that has **child GL accounts**, set how automated "
+                "posting picks the leaf: **PRODUCT** (maps per `loans.product_code`), **LOAN_CAPTURE** (`loans.cash_gl_account_id` "
+                "at capture — same accounts as **Maintenance — source cash account cache** / Teller; **cash_operating** only), "
+                "**JOURNAL** (pass `account_overrides` in API/UI). "
+                "Leave blank if the tagged "
+                "account has **no** children — behaviour is unchanged from before."
+            )
+            _tagged = [a for a in (accounts or []) if (a.get("system_tag") or "").strip()]
+            if _tagged:
+                _rlab = [f"{a['code']} — {a['name']} ({a['system_tag']})" for a in _tagged]
+                _rids = [a["id"] for a in _tagged]
+                ri = st.selectbox("Account", range(len(_rlab)), format_func=lambda i: _rlab[i], key="coa_res_pick")
+                cur_mode = (_tagged[ri].get("subaccount_resolution") or "") or "(not set)"
+                st.caption(f"Current: **{cur_mode}**")
+                new_mode = st.selectbox(
+                    "Subaccount resolution",
+                    ["(clear)", "PRODUCT", "LOAN_CAPTURE", "JOURNAL"],
+                    key="coa_res_mode",
+                )
+                if st.button("Save resolution mode", key="coa_res_save"):
+                    val = None if new_mode == "(clear)" else new_mode
+                    try:
+                        svc.update_account_subaccount_resolution(_rids[ri], val)
+                        st.success("Saved.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+            else:
+                st.info("No accounts with a system tag yet.")
+
+        with st.expander("Product → GL subaccounts (PRODUCT resolution)", expanded=False):
+            st.caption("Maps `products.code` + template `system_tag` → leaf GL account for that loan’s product.")
+            try:
+                _prods = list_products(active_only=False) if _loan_management_available else []
+            except Exception:
+                _prods = []
+            _plab = [f"{p['code']} — {p['name']}" for p in _prods] if _prods else []
+            _pcodes = [p["code"] for p in _prods] if _prods else []
+            _tmpl = svc.list_all_transaction_templates() or []
+            _tags = sorted({t["system_tag"] for t in _tmpl if t.get("system_tag")})
+            try:
+                _mrows = svc.list_product_gl_subaccount_map() or []
+            except Exception as ex:
+                _mrows = []
+                st.warning(f"Could not load map: {ex}")
+            if _mrows:
+                st.dataframe(
+                    pd.DataFrame([{
+                        "id": m["id"],
+                        "product": m["product_code"],
+                        "system_tag": m["system_tag"],
+                        "GL": f"{m.get('gl_account_code')} — {m.get('gl_account_name')}",
+                    } for m in _mrows]),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                if _plab:
+                    pi = st.selectbox("Product", range(len(_plab)), format_func=lambda i: _plab[i], key="coa_pmap_prod")
+                    pmap_pc = _pcodes[pi]
+                else:
+                    pmap_pc = st.text_input("Product code", key="coa_pmap_pc_manual")
+            with c2:
+                pmap_tag = st.selectbox("System tag", _tags, key="coa_pmap_tag") if _tags else st.text_input(
+                    "System tag", key="coa_pmap_tag_txt"
+                )
+            with c3:
+                pai = (
+                    st.selectbox("Leaf GL", range(len(_alab)), format_func=lambda i: _alab[i], key="coa_pmap_acct")
+                    if _alab
+                    else None
+                )
+            if not _alab:
+                st.warning("No GL accounts to map.")
+            if st.button("Save product GL map", key="coa_pmap_save"):
+                tag_u = str(pmap_tag or "").strip()
+                if (pmap_pc or "").strip() and tag_u and _aids and pai is not None:
+                    try:
+                        svc.upsert_product_gl_subaccount_map(str(pmap_pc).strip(), str(tag_u).strip(), _aids[pai])
+                        st.success("Saved map row.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+                else:
+                    st.error("Product code, tag, and account are required.")
         
         st.divider()
-        st.subheader("Add Custom Account")
-        _coa_accounts = svc.list_accounts() or []
-        _parent_labels = ["(None — top level)"]
-        _parent_ids: list = [None]
-        for _a in sorted(_coa_accounts, key=lambda x: (x.get("code") or "")):
-            _pid = _a.get("id")
-            if _pid is not None:
-                _parent_labels.append(f"{_a.get('code', '')} — {_a.get('name', '')}")
-                _parent_ids.append(_pid)
-        with st.form("add_account_form"):
-            code = st.text_input("Account Code (e.g. A100003)")
-            name = st.text_input("Account Name")
-            category = st.selectbox("Category", ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"])
-            _pi = st.selectbox(
-                "Parent account (optional)",
-                options=list(range(len(_parent_labels))),
-                format_func=lambda i: _parent_labels[i],
-                help="Choose a parent for roll-up reporting. The parent must already exist in the chart. "
-                "Typically the category matches the parent’s category.",
-                key="add_acct_parent_sel",
+        _show_add_acct = st.checkbox(
+            "Show **Add Custom Account**",
+            value=False,
+            key="acco_coa_show_add_account",
+            help="Create a new GL account. Hidden by default to reduce clutter.",
+        )
+        if _show_add_acct:
+            st.subheader("Add Custom Account")
+            _coa_accounts = svc.list_accounts() or []
+            _parent_labels = ["(None — top level)"]
+            _parent_ids: list = [None]
+            for _a in sorted(_coa_accounts, key=lambda x: (x.get("code") or "")):
+                _pid = _a.get("id")
+                if _pid is not None:
+                    _parent_labels.append(f"{_a.get('code', '')} — {_a.get('name', '')}")
+                    _parent_ids.append(_pid)
+            with st.form("add_account_form"):
+                use_grand = st.checkbox(
+                    "Use next **grandchild** code (`BASE-NN`) under selected parent",
+                    value=False,
+                    key="add_acct_grandchild",
+                    help="Requires a parent account. Ignores the manual code field and allocates the next free -NN suffix.",
+                )
+                code = st.text_input("Account Code (7-char or grandchild e.g. A100001-02)", key="add_acct_code_in")
+                name = st.text_input("Account Name")
+                category = st.selectbox("Category", ["ASSET", "LIABILITY", "EQUITY", "INCOME", "EXPENSE"])
+                _pi = st.selectbox(
+                    "Parent account (optional)",
+                    options=list(range(len(_parent_labels))),
+                    format_func=lambda i: _parent_labels[i],
+                    help="Choose a parent for roll-up reporting. The parent must already exist in the chart. "
+                    "Typically the category matches the parent’s category.",
+                    key="add_acct_parent_sel",
+                )
+                parent_id = _parent_ids[_pi]
+                system_tag = st.text_input("System Tag (Optional)")
+                res_opts = ["(none)", "PRODUCT", "LOAN_CAPTURE", "JOURNAL"]
+                res_i = st.selectbox(
+                    "Subaccount resolution (optional; for tagged parents with children)",
+                    range(len(res_opts)),
+                    format_func=lambda i: res_opts[i],
+                    key="add_acct_subres",
+                )
+                submitted = st.form_submit_button("Create Account")
+                if submitted:
+                    eff_code = (code or "").strip()
+                    if use_grand and parent_id:
+                        try:
+                            eff_code = svc.suggest_next_grandchild_code_for_parent_id(str(parent_id))
+                        except Exception as e:
+                            st.error(str(e))
+                            eff_code = ""
+                    subres = None if res_opts[res_i] == "(none)" else res_opts[res_i]
+                    if eff_code and name:
+                        try:
+                            svc.create_account(
+                                eff_code,
+                                name,
+                                category,
+                                system_tag=system_tag.strip() if system_tag else None,
+                                parent_id=parent_id,
+                                subaccount_resolution=subres,
+                            )
+                            st.success("Account created!")
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
+                        except Exception as e:
+                            st.error(f"Could not create account: {e}")
+                    else:
+                        st.error("Code and Name are required.")
+
+        st.divider()
+        _show_edit_parent = st.checkbox(
+            "Show **Edit account parent**",
+            value=False,
+            key="acco_coa_show_edit_parent",
+            help="Change the parent of an existing account. Hidden by default to reduce clutter.",
+        )
+        if _show_edit_parent:
+            st.subheader("Edit account parent")
+            st.caption(
+                "Set or change the parent for an **existing** account. "
+                "This account and its descendants cannot be chosen as parent (prevents cycles)."
             )
-            parent_id = _parent_ids[_pi]
-            system_tag = st.text_input("System Tag (Optional)")
-            submitted = st.form_submit_button("Create Account")
-            if submitted:
-                if code and name:
+            _edit_list = svc.list_accounts() or []
+            if _edit_list:
+                _sorted_edit = sorted(_edit_list, key=lambda x: (x.get("code") or ""))
+                _elabels = [f"{a.get('code', '')} — {a.get('name', '')}" for a in _sorted_edit]
+                _eids = [a["id"] for a in _sorted_edit]
+                st.caption(
+                    "Pick the account, choose the new parent, then click **Update parent**. "
+                    "(Not inside a form so your parent choice is saved to session state before the button runs.)"
+                )
+                _ei = st.selectbox(
+                    "Account to edit",
+                    options=list(range(len(_elabels))),
+                    format_func=lambda i: _elabels[i],
+                    key="edit_acct_pick",
+                )
+                selected_id = _eids[_ei]
+                acct_row = _sorted_edit[_ei]
+                current_parent_id = acct_row.get("parent_id")
+                # String IDs: UUID vs str from DB/cursors can break `x in set` and hide valid parents.
+                _subtree_raw = svc.get_account_subtree_ids(selected_id)
+                subtree = {str(x) for x in _subtree_raw}
+                _plabels: list[str] = ["(None — top level)"]
+                _pids: list = [None]
+                for _a in _sorted_edit:
+                    if str(_a["id"]) not in subtree:
+                        _plabels.append(f"{_a.get('code', '')} — {_a.get('name', '')}")
+                        _pids.append(_a["id"])
+                default_pi = 0
+                for _i, _pid in enumerate(_pids):
+                    if current_parent_id is not None and str(_pid) == str(current_parent_id):
+                        default_pi = _i
+                        break
+                default_pi = min(default_pi, max(0, len(_plabels) - 1))
+                # Integer index into _pids (avoids label→id dict collisions if two rows share same label text).
+                _sk_idx = f"coa_edit_parent_idx_{str(selected_id)}"
+                if _sk_idx not in st.session_state:
+                    st.session_state[_sk_idx] = default_pi
+                else:
+                    _cur = st.session_state[_sk_idx]
+                    if not isinstance(_cur, int) or _cur < 0 or _cur >= len(_plabels):
+                        st.session_state[_sk_idx] = default_pi
+                st.selectbox(
+                    "New parent",
+                    options=list(range(len(_plabels))),
+                    format_func=lambda i: _plabels[i],
+                    key=_sk_idx,
+                    help="Choose (None — top level) to clear the parent. "
+                    "If an account is missing here, it may be under this account in the tree (cannot be parent).",
+                )
+                if st.button("Update parent", key="coa_btn_update_parent", type="primary"):
                     try:
-                        svc.create_account(
-                            code,
-                            name,
-                            category,
-                            system_tag=system_tag.strip() if system_tag else None,
-                            parent_id=parent_id,
-                        )
-                        st.success("Account created!")
+                        _idx = st.session_state.get(_sk_idx, default_pi)
+                        try:
+                            _idx = int(_idx)
+                        except (TypeError, ValueError):
+                            _idx = default_pi
+                        _idx = max(0, min(_idx, len(_pids) - 1))
+                        new_parent_id = _pids[_idx]
+                        old_lbl = _coa_parent_display_label(_sorted_edit, current_parent_id)
+                        new_lbl = _coa_parent_display_label(_sorted_edit, new_parent_id)
+                        acct_code = (acct_row.get("code") or "").strip() or "?"
+                        acct_name = (acct_row.get("name") or "").strip()
+                        acct_title = f"{acct_code} — {acct_name}" if acct_name else acct_code
+                        if str(current_parent_id or "") == str(new_parent_id or ""):
+                            st.session_state["coa_parent_edit_banner"] = (
+                                "info",
+                                f"**No change saved.** **{acct_title}** already has parent **{old_lbl}**.",
+                            )
+                        else:
+                            svc.update_account_parent(selected_id, new_parent_id)
+                            st.session_state.pop(_sk_idx, None)
+                            st.session_state["coa_parent_edit_banner"] = (
+                                "success",
+                                f"**Saved.** **{acct_title}**: parent **{old_lbl}** → **{new_lbl}**.",
+                            )
                         st.rerun()
                     except ValueError as e:
                         st.error(str(e))
                     except Exception as e:
-                        st.error(f"Could not create account: {e}")
-                else:
-                    st.error("Code and Name are required.")
-
-        st.divider()
-        st.subheader("Edit account parent")
-        st.caption(
-            "Set or change the parent for an **existing** account. "
-            "This account and its descendants cannot be chosen as parent (prevents cycles)."
-        )
-        _edit_list = svc.list_accounts() or []
-        if _edit_list:
-            _sorted_edit = sorted(_edit_list, key=lambda x: (x.get("code") or ""))
-            _elabels = [f"{a.get('code', '')} — {a.get('name', '')}" for a in _sorted_edit]
-            _eids = [a["id"] for a in _sorted_edit]
-            st.caption(
-                "Pick the account, choose the new parent, then click **Update parent**. "
-                "(Not inside a form so your parent choice is saved to session state before the button runs.)"
-            )
-            _ei = st.selectbox(
-                "Account to edit",
-                options=list(range(len(_elabels))),
-                format_func=lambda i: _elabels[i],
-                key="edit_acct_pick",
-            )
-            selected_id = _eids[_ei]
-            acct_row = _sorted_edit[_ei]
-            current_parent_id = acct_row.get("parent_id")
-            # String IDs: UUID vs str from DB/cursors can break `x in set` and hide valid parents.
-            _subtree_raw = svc.get_account_subtree_ids(selected_id)
-            subtree = {str(x) for x in _subtree_raw}
-            _plabels: list[str] = ["(None — top level)"]
-            _pids: list = [None]
-            for _a in _sorted_edit:
-                if str(_a["id"]) not in subtree:
-                    _plabels.append(f"{_a.get('code', '')} — {_a.get('name', '')}")
-                    _pids.append(_a["id"])
-            default_pi = 0
-            for _i, _pid in enumerate(_pids):
-                if current_parent_id is not None and str(_pid) == str(current_parent_id):
-                    default_pi = _i
-                    break
-            default_pi = min(default_pi, max(0, len(_plabels) - 1))
-            # Integer index into _pids (avoids label→id dict collisions if two rows share same label text).
-            _sk_idx = f"coa_edit_parent_idx_{str(selected_id)}"
-            if _sk_idx not in st.session_state:
-                st.session_state[_sk_idx] = default_pi
+                        st.error(f"Could not update parent: {e}")
             else:
-                _cur = st.session_state[_sk_idx]
-                if not isinstance(_cur, int) or _cur < 0 or _cur >= len(_plabels):
-                    st.session_state[_sk_idx] = default_pi
-            st.selectbox(
-                "New parent",
-                options=list(range(len(_plabels))),
-                format_func=lambda i: _plabels[i],
-                key=_sk_idx,
-                help="Choose (None — top level) to clear the parent. "
-                "If an account is missing here, it may be under this account in the tree (cannot be parent).",
-            )
-            if st.button("Update parent", key="coa_btn_update_parent", type="primary"):
-                try:
-                    _idx = st.session_state.get(_sk_idx, default_pi)
-                    try:
-                        _idx = int(_idx)
-                    except (TypeError, ValueError):
-                        _idx = default_pi
-                    _idx = max(0, min(_idx, len(_pids) - 1))
-                    new_parent_id = _pids[_idx]
-                    old_lbl = _coa_parent_display_label(_sorted_edit, current_parent_id)
-                    new_lbl = _coa_parent_display_label(_sorted_edit, new_parent_id)
-                    acct_code = (acct_row.get("code") or "").strip() or "?"
-                    acct_name = (acct_row.get("name") or "").strip()
-                    acct_title = f"{acct_code} — {acct_name}" if acct_name else acct_code
-                    if str(current_parent_id or "") == str(new_parent_id or ""):
-                        st.session_state["coa_parent_edit_banner"] = (
-                            "info",
-                            f"**No change saved.** **{acct_title}** already has parent **{old_lbl}**.",
-                        )
-                    else:
-                        svc.update_account_parent(selected_id, new_parent_id)
-                        st.session_state.pop(_sk_idx, None)
-                        st.session_state["coa_parent_edit_banner"] = (
-                            "success",
-                            f"**Saved.** **{acct_title}**: parent **{old_lbl}** → **{new_lbl}**.",
-                        )
-                    st.rerun()
-                except ValueError as e:
-                    st.error(str(e))
-                except Exception as e:
-                    st.error(f"Could not update parent: {e}")
-        else:
-            st.caption("Initialize the chart of accounts above before editing parents.")
+                st.caption("Initialize the chart of accounts above before editing parents.")
 
     # 2. Transaction Templates
     with tab_templates:
         st.subheader("Transaction Templates (Journal Links)")
+
+        if st.session_state.pop("acco_tt_restored_ok", None):
+            st.success("Transaction templates were replaced from bundled defaults.")
 
         # Show current template counts (helps confirm reset)
         _templates_now = svc.list_all_transaction_templates()
         _event_count = len(set([t["event_type"] for t in _templates_now])) if _templates_now else 0
         st.caption(f"Currently loaded: {_event_count} event types / {len(_templates_now)} journal legs.")
 
-        if st.button("Reset Default Transaction Templates"):
-            try:
-                svc.initialize_default_transaction_templates()
-                st.session_state["tt_reset_ok"] = True
-            except Exception as e:
-                st.session_state["tt_reset_ok"] = False
-                st.error(f"Reset failed: {e}")
-
-        if st.session_state.get("tt_reset_ok"):
-            st.success("Default Transaction Templates reset successfully.")
-                
         templates = svc.list_all_transaction_templates()
         if templates:
             evt_options = sorted(list({t["event_type"] for t in templates}))
@@ -6575,74 +7152,117 @@ def accounting_ui():
             st.info("No transaction templates defined.")
 
         st.divider()
-        st.subheader("Link New Journal (Double Entry)")
-        st.caption(
-            "Adds one **debit** and one **credit** template row for an **event_type**. "
-            "Posting code (e.g. `AccountingService.post_event`) must use the **exact same** event type string. "
-            "Choose **Use existing** or **Define new**; the new name field appears as soon as you pick Define new."
+        _show_link_journal = st.checkbox(
+            "Show **Link New Journal (Double Entry)**",
+            value=False,
+            key="acco_tt_show_link_journal",
+            help="Adds a debit and credit template row for one event type. Hidden by default to reduce clutter.",
         )
-        _accounts = svc.list_accounts() or []
-        _all_system_tags = sorted(set(a["system_tag"] for a in _accounts if a.get("system_tag")))
-        _all_system_tags = _all_system_tags or ["cash_operating", "loan_principal", "deferred_fee_liability"]
-        _templates_for_evt = svc.list_all_transaction_templates() or []
-        _event_types = sorted(set(t["event_type"] for t in _templates_for_evt))
-
-        _evt_mode = st.radio(
-            "Event type",
-            ["Use existing", "Define new"],
-            horizontal=True,
-            key="link_evt_mode",
-            help="Define new: enter the identifier your posting code will use (same spelling/casing after normalization).",
-        )
-        evt_resolved = ""
-        if _evt_mode == "Use existing":
-            if _event_types:
-                evt_resolved = st.selectbox(
-                    "Existing event type",
-                    _event_types,
-                    key="link_evt_existing",
-                )
-            else:
-                st.info("No event types in the database yet. Switch to **Define new** above.")
-        else:
-            _new_evt = st.text_input(
-                "New event type name",
-                placeholder="e.g. LOAN_DISBURSEMENT",
-                key="link_evt_new_name",
-                help="Use the same identifier your code will pass to post_event(event_type=...). "
-                "Stored uppercase with spaces → underscores.",
+        if _show_link_journal:
+            st.subheader("Link New Journal (Double Entry)")
+            st.caption(
+                "Adds one **debit** and one **credit** template row for an **event_type**. "
+                "Posting code (e.g. `AccountingService.post_event`) must use the **exact same** event type string. "
+                "Choose **Use existing** or **Define new**; the new name field appears as soon as you pick Define new."
             )
-            evt_resolved = (_new_evt or "").strip().upper().replace(" ", "_")
+            _accounts = svc.list_accounts() or []
+            _all_system_tags = sorted(set(a["system_tag"] for a in _accounts if a.get("system_tag")))
+            _all_system_tags = _all_system_tags or ["cash_operating", "loan_principal", "deferred_fee_liability"]
+            _templates_for_evt = svc.list_all_transaction_templates() or []
+            _event_types = sorted(set(t["event_type"] for t in _templates_for_evt))
 
-        trigger_type = st.selectbox("Trigger Type", ["EVENT", "EOD", "EOM"], index=0, key="link_trig")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**Debit leg**")
-            debit_tag = st.selectbox("System tag to debit", _all_system_tags, key="link_debit_tag")
-        with col2:
-            st.markdown("**Credit leg**")
-            credit_tag = st.selectbox("System tag to credit", _all_system_tags, key="link_credit_tag")
-
-        desc = st.text_input("Description / memo", key="link_desc")
-
-        if st.button("Add journal link", key="link_journal_btn", type="primary"):
-            if not evt_resolved or not debit_tag or not credit_tag:
-                st.error("Event type (existing or new name), debit tag, and credit tag are required.")
-            elif _evt_mode == "Define new" and len(evt_resolved) < 2:
-                st.error("Enter a valid new event type name (at least 2 characters after cleanup).")
+            _evt_mode = st.radio(
+                "Event type",
+                ["Use existing", "Define new"],
+                horizontal=True,
+                key="link_evt_mode",
+                help="Define new: enter the identifier your posting code will use (same spelling/casing after normalization).",
+            )
+            evt_resolved = ""
+            if _evt_mode == "Use existing":
+                if _event_types:
+                    evt_resolved = st.selectbox(
+                        "Existing event type",
+                        _event_types,
+                        key="link_evt_existing",
+                    )
+                else:
+                    st.info("No event types in the database yet. Switch to **Define new** above.")
             else:
+                _new_evt = st.text_input(
+                    "New event type name",
+                    placeholder="e.g. LOAN_DISBURSEMENT",
+                    key="link_evt_new_name",
+                    help="Use the same identifier your code will pass to post_event(event_type=...). "
+                    "Stored uppercase with spaces → underscores.",
+                )
+                evt_resolved = (_new_evt or "").strip().upper().replace(" ", "_")
+
+            trigger_type = st.selectbox("Trigger Type", ["EVENT", "EOD", "EOM"], index=0, key="link_trig")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Debit leg**")
+                debit_tag = st.selectbox("System tag to debit", _all_system_tags, key="link_debit_tag")
+            with col2:
+                st.markdown("**Credit leg**")
+                credit_tag = st.selectbox("System tag to credit", _all_system_tags, key="link_credit_tag")
+
+            desc = st.text_input("Description / memo", key="link_desc")
+
+            if st.button("Add journal link", key="link_journal_btn", type="primary"):
+                if not evt_resolved or not debit_tag or not credit_tag:
+                    st.error("Event type (existing or new name), debit tag, and credit tag are required.")
+                elif _evt_mode == "Define new" and len(evt_resolved) < 2:
+                    st.error("Enter a valid new event type name (at least 2 characters after cleanup).")
+                else:
+                    try:
+                        svc.link_journal(evt_resolved, debit_tag, "DEBIT", desc, trigger_type)
+                        svc.link_journal(evt_resolved, credit_tag, "CREDIT", desc, trigger_type)
+                        st.success(f"Double-entry template for **{evt_resolved}** added.")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(str(ex))
+
+        st.divider()
+        with st.expander(
+            "Danger zone — replace ALL transaction templates from bundled defaults",
+            expanded=False,
+        ):
+            st.error(
+                "This **permanently deletes every row** in transaction templates and reloads from "
+                "`accounting_defaults/transaction_templates.json` when present, otherwise built-in definitions. "
+                "Export the live database first: `python scripts/export_accounting_defaults.py`."
+            )
+            _tt_danger_ack = st.checkbox(
+                "I understand all existing journal template rows will be deleted and replaced.",
+                key="tt_danger_ack",
+            )
+            _tt_danger_phrase = st.text_input(
+                "Type the phrase **REPLACE TEMPLATES** exactly (case-sensitive) to enable the action.",
+                key="tt_danger_phrase",
+            )
+            _tt_danger_ready = _tt_danger_ack and (_tt_danger_phrase.strip() == "REPLACE TEMPLATES")
+            if st.button(
+                "Replace all templates from bundled defaults",
+                key="tt_danger_restore_btn",
+                type="primary",
+                disabled=not _tt_danger_ready,
+                help="Requires the checkbox and exact phrase above.",
+            ):
                 try:
-                    svc.link_journal(evt_resolved, debit_tag, "DEBIT", desc, trigger_type)
-                    svc.link_journal(evt_resolved, credit_tag, "CREDIT", desc, trigger_type)
-                    st.success(f"Double-entry template for **{evt_resolved}** added.")
+                    svc.initialize_default_transaction_templates()
+                    st.session_state["acco_tt_restored_ok"] = True
                     st.rerun()
-                except Exception as ex:
-                    st.error(str(ex))
+                except Exception as e:
+                    st.error(f"Restore failed: {e}")
 
     # 3. Receipt → GL Mapping (dedicated tab)
     with tab_mapping:
         st.subheader("Receipt Allocation → Accounting Events")
+        if st.session_state.pop("acco_rgl_restored_ok", None):
+            st.success("Receipt → GL mappings were updated from bundled defaults.")
+
         st.caption(
             "This table tells the system how to translate repayment allocations "
             "into accounting events (and therefore GL postings)."
@@ -6684,29 +7304,11 @@ def accounting_ui():
             else:
                 raise
 
-        # Initialize defaults when table exists but is empty
-        if _table_exists and mappings is not None and len(mappings) == 0:
-            if st.button("Initialize Default Mappings"):
-                try:
-                    if svc.initialize_default_receipt_gl_mappings():
-                        st.success("Default receipt mappings loaded.")
-                        st.rerun()
-                    else:
-                        st.info("Mappings already initialized.")
-                except Exception as ex:
-                    st.error(f"Could not initialize: {ex}")
-                    st.exception(ex)
-
-        # Reset to defaults when mappings exist (reload updated definitions)
-        if _table_exists and mappings and len(mappings) > 0:
-            if st.button("Reset to Defaults", type="secondary"):
-                try:
-                    svc.reset_receipt_gl_mappings_to_defaults()
-                    st.success("Mappings reset to defaults.")
-                    st.rerun()
-                except Exception as ex:
-                    st.error(f"Could not reset: {ex}")
-                    st.exception(ex)
+        st.caption(
+            "Bundled defaults live in `accounting_defaults/receipt_gl_mapping.json` (active rows only), "
+            "else built-in. Export from live DB: `python scripts/export_accounting_defaults.py`. "
+            "Loading or replacing defaults is only available at the bottom of this tab, inside **Danger zone**."
+        )
 
         if mappings:
             df_map = pd.DataFrame(mappings)
@@ -6730,108 +7332,178 @@ def accounting_ui():
             st.info("No receipt GL mappings defined yet.")
 
         st.divider()
-        st.subheader("Add / Edit Mapping")
+        _show_rgl_form = st.checkbox(
+            "Show **Add / Edit Mapping**",
+            value=False,
+            key="acco_rgl_show_form",
+            help="Create or update receipt → GL mapping rows. Hidden by default to reduce clutter.",
+        )
+        if _show_rgl_form:
+            st.subheader("Add / Edit Mapping")
 
-        # Dropdown options from DB for Receipt GL Mapping form
-        _templates_for_events = svc.list_all_transaction_templates()
-        _event_types_for_mapping = sorted(set(t["event_type"] for t in (_templates_for_events or [])))
-        _predefined_allocation_keys = [
-            "alloc_principal_arrears", "alloc_principal_not_due",
-            "alloc_interest_arrears", "alloc_interest_accrued",
-            "alloc_penalty_interest", "alloc_default_interest",
-            "alloc_regular_interest", "alloc_fees_charges", "amount",
-        ]
-        _allocation_keys_from_db = sorted(set(m["allocation_key"] for m in (mappings or [])))
-        _amount_sources_from_db = sorted(set(m["amount_source"] for m in (mappings or [])))
-        _allocation_key_options = sorted(set(_predefined_allocation_keys + _allocation_keys_from_db))
-        _amount_source_options = sorted(set(_predefined_allocation_keys + _amount_sources_from_db))
+            # Dropdown options from DB for Receipt GL Mapping form
+            _templates_for_events = svc.list_all_transaction_templates()
+            _event_types_for_mapping = sorted(set(t["event_type"] for t in (_templates_for_events or [])))
+            _predefined_allocation_keys = [
+                "alloc_principal_arrears", "alloc_principal_not_due",
+                "alloc_interest_arrears", "alloc_interest_accrued",
+                "alloc_penalty_interest", "alloc_default_interest",
+                "alloc_regular_interest", "alloc_fees_charges", "amount",
+            ]
+            _allocation_keys_from_db = sorted(set(m["allocation_key"] for m in (mappings or [])))
+            _amount_sources_from_db = sorted(set(m["amount_source"] for m in (mappings or [])))
+            _allocation_key_options = sorted(set(_predefined_allocation_keys + _allocation_keys_from_db))
+            _amount_source_options = sorted(set(_predefined_allocation_keys + _amount_sources_from_db))
 
-        with st.form("receipt_gl_mapping_form"):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                mapping_options = ["New mapping"]
-                mapping_options += [f"Edit id={m['id']} ({m['trigger_source']} / {m['allocation_key']} → {m['event_type']})" for m in (mappings or [])]
-                edit_sel = st.selectbox(
-                    "Mapping (choose existing to update or New mapping to create)",
-                    mapping_options,
-                    key="rgl_edit_sel",
-                )
-                edit_id = ""
-                if edit_sel != "New mapping" and "id=" in edit_sel:
-                    edit_id = edit_sel.replace("Edit id=", "").split(" (")[0].strip()
-                trigger_source = st.selectbox(
-                    "Trigger Source",
-                    ["SAVE_RECEIPT", "SAVE_REVERSAL", "APPLY_UNAPPLIED"],
-                    index=0,
-                    key="rgl_trigger",
-                )
-            with col2:
-                allocation_key = st.selectbox(
-                    "Allocation Key",
-                    _allocation_key_options,
-                    key="rgl_alloc_key",
-                    help="Allocation bucket from repayment engine.",
-                )
-                event_type = st.selectbox(
-                    "Accounting Event Type",
-                    _event_types_for_mapping if _event_types_for_mapping else ["PAYMENT_PRINCIPAL", "PAYMENT_REGULAR_INTEREST", "WRITEOFF_RECOVERY"],
-                    key="rgl_event_type",
-                )
-            with col3:
-                amount_source = st.selectbox(
-                    "Amount Source",
-                    _amount_source_options,
-                    key="rgl_amount_source",
-                    help="Usually same as allocation key.",
-                )
-                amount_sign = st.selectbox(
-                    "Sign",
-                    [1, -1],
-                    index=0,
-                    format_func=lambda x: "Normal (+1)" if x == 1 else "Reversal (-1)",
-                    key="rgl_sign",
-                )
-
-            col4, col5 = st.columns(2)
-            with col4:
-                is_active = st.checkbox("Active", value=True, key="rgl_active")
-            with col5:
-                priority = st.number_input(
-                    "Priority (lower runs first)",
-                    min_value=0,
-                    max_value=1000,
-                    value=100,
-                    step=10,
-                    key="rgl_priority",
-                )
-
-            col_save, col_del = st.columns(2)
-            with col_save:
-                submit_map = st.form_submit_button("Save Mapping")
-            with col_del:
-                delete_map = st.form_submit_button("Delete Mapping")
-
-            if submit_map:
-                if not allocation_key or not event_type or not amount_source:
-                    st.error("Allocation Key, Event Type, and Amount Source are required.")
-                else:
-                    mapping_id = int(edit_id) if edit_id.strip() else None
-                    svc.upsert_receipt_gl_mapping(
-                        mapping_id=mapping_id,
-                        trigger_source=trigger_source,
-                        allocation_key=allocation_key.strip(),
-                        event_type=event_type.strip(),
-                        amount_source=amount_source.strip(),
-                        amount_sign=int(amount_sign),
-                        is_active=is_active,
-                        priority=int(priority),
+            with st.form("receipt_gl_mapping_form"):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    mapping_options = ["New mapping"]
+                    mapping_options += [f"Edit id={m['id']} ({m['trigger_source']} / {m['allocation_key']} → {m['event_type']})" for m in (mappings or [])]
+                    edit_sel = st.selectbox(
+                        "Mapping (choose existing to update or New mapping to create)",
+                        mapping_options,
+                        key="rgl_edit_sel",
                     )
-                    st.success("Mapping saved.")
+                    edit_id = ""
+                    if edit_sel != "New mapping" and "id=" in edit_sel:
+                        edit_id = edit_sel.replace("Edit id=", "").split(" (")[0].strip()
+                    trigger_source = st.selectbox(
+                        "Trigger Source",
+                        ["SAVE_RECEIPT", "SAVE_REVERSAL", "APPLY_UNAPPLIED"],
+                        index=0,
+                        key="rgl_trigger",
+                    )
+                with col2:
+                    allocation_key = st.selectbox(
+                        "Allocation Key",
+                        _allocation_key_options,
+                        key="rgl_alloc_key",
+                        help="Allocation bucket from repayment engine.",
+                    )
+                    event_type = st.selectbox(
+                        "Accounting Event Type",
+                        _event_types_for_mapping if _event_types_for_mapping else ["PAYMENT_PRINCIPAL", "PAYMENT_REGULAR_INTEREST", "WRITEOFF_RECOVERY"],
+                        key="rgl_event_type",
+                    )
+                with col3:
+                    amount_source = st.selectbox(
+                        "Amount Source",
+                        _amount_source_options,
+                        key="rgl_amount_source",
+                        help="Usually same as allocation key.",
+                    )
+                    amount_sign = st.selectbox(
+                        "Sign",
+                        [1, -1],
+                        index=0,
+                        format_func=lambda x: "Normal (+1)" if x == 1 else "Reversal (-1)",
+                        key="rgl_sign",
+                    )
+
+                col4, col5 = st.columns(2)
+                with col4:
+                    is_active = st.checkbox("Active", value=True, key="rgl_active")
+                with col5:
+                    priority = st.number_input(
+                        "Priority (lower runs first)",
+                        min_value=0,
+                        max_value=1000,
+                        value=100,
+                        step=10,
+                        key="rgl_priority",
+                    )
+
+                col_save, col_del = st.columns(2)
+                with col_save:
+                    submit_map = st.form_submit_button("Save Mapping")
+                with col_del:
+                    delete_map = st.form_submit_button("Delete Mapping")
+
+                if submit_map:
+                    if not allocation_key or not event_type or not amount_source:
+                        st.error("Allocation Key, Event Type, and Amount Source are required.")
+                    else:
+                        mapping_id = int(edit_id) if edit_id.strip() else None
+                        svc.upsert_receipt_gl_mapping(
+                            mapping_id=mapping_id,
+                            trigger_source=trigger_source,
+                            allocation_key=allocation_key.strip(),
+                            event_type=event_type.strip(),
+                            amount_source=amount_source.strip(),
+                            amount_sign=int(amount_sign),
+                            is_active=is_active,
+                            priority=int(priority),
+                        )
+                        st.success("Mapping saved.")
+                        st.rerun()
+                if delete_map and edit_id.strip():
+                    svc.delete_receipt_gl_mapping(int(edit_id))
+                    st.success("Mapping deleted.")
                     st.rerun()
-            if delete_map and edit_id.strip():
-                svc.delete_receipt_gl_mapping(int(edit_id))
-                st.success("Mapping deleted.")
-                st.rerun()
+
+        if _table_exists:
+            st.divider()
+            with st.expander(
+                "Danger zone — load or replace ALL receipt → GL mappings from bundled defaults",
+                expanded=False,
+            ):
+                if not mappings:
+                    st.warning(
+                        "The table is **empty**. This action inserts the bundled default mapping set "
+                        "(from JSON or built-in). It does not delete existing rows."
+                    )
+                    _rgl_ack = st.checkbox(
+                        "I want to insert the bundled default receipt → GL mappings.",
+                        key="rgl_danger_ack_init",
+                    )
+                    _rgl_phrase = st.text_input(
+                        "Type **LOAD DEFAULT MAPPINGS** exactly (case-sensitive).",
+                        key="rgl_danger_phrase_init",
+                    )
+                    _rgl_ready = _rgl_ack and (_rgl_phrase.strip() == "LOAD DEFAULT MAPPINGS")
+                    if st.button(
+                        "Load bundled default mappings (empty table only)",
+                        key="rgl_danger_init_btn",
+                        type="primary",
+                        disabled=not _rgl_ready,
+                    ):
+                        try:
+                            if svc.initialize_default_receipt_gl_mappings():
+                                st.session_state["acco_rgl_restored_ok"] = True
+                                st.rerun()
+                            else:
+                                st.info("Mappings were already present; nothing to load.")
+                        except Exception as ex:
+                            st.error(f"Could not load defaults: {ex}")
+                            st.exception(ex)
+                else:
+                    st.error(
+                        "This **permanently deletes every row** in `receipt_gl_mapping` and reloads bundled defaults. "
+                        "Export first if you need to keep the current configuration."
+                    )
+                    _rgl_ack = st.checkbox(
+                        "I understand all existing receipt → GL mapping rows will be deleted and replaced.",
+                        key="rgl_danger_ack_reset",
+                    )
+                    _rgl_phrase = st.text_input(
+                        "Type **REPLACE RECEIPT MAPPINGS** exactly (case-sensitive).",
+                        key="rgl_danger_phrase_reset",
+                    )
+                    _rgl_ready = _rgl_ack and (_rgl_phrase.strip() == "REPLACE RECEIPT MAPPINGS")
+                    if st.button(
+                        "Replace all receipt → GL mappings from bundled defaults",
+                        key="rgl_danger_reset_btn",
+                        type="primary",
+                        disabled=not _rgl_ready,
+                    ):
+                        try:
+                            svc.reset_receipt_gl_mappings_to_defaults()
+                            st.session_state["acco_rgl_restored_ok"] = True
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"Could not replace mappings: {ex}")
+                            st.exception(ex)
 
     # 4. Manual Journals
     with tab_manual:
@@ -7220,12 +7892,50 @@ def notifications_ui():
             st.dataframe(df_history, hide_index=True, use_container_width=True)
 
 
+MJ_MANUAL_SUBACCOUNT_PLACEHOLDER = "— Select sub account —"
+
+
+def _mj_widget_key_part(s) -> str:
+    x = re.sub(r"[^a-zA-Z0-9]+", "_", str(s))
+    x = x.strip("_") or "k"
+    return x[:48]
+
+
+def _mj_ordered_system_tags_for_direction(templates: list | None, direction: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    dir_u = (direction or "").strip().upper()
+    for t in templates or []:
+        if (t.get("direction") or "").strip().upper() != dir_u:
+            continue
+        tag = t.get("system_tag")
+        if tag and tag not in seen:
+            seen.add(tag)
+            out.append(str(tag))
+    return out
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _cached_posting_leaf_accounts_for_balance_adjust() -> list:
+    """
+    Posting-leaf list for balance adjustment dropdowns.
+    Cached ~2m to limit DB + tree walks on Streamlit reruns; TTL keeps COA edits visible quickly.
+    """
+    from accounting_service import AccountingService
+
+    return AccountingService().list_posting_leaf_accounts()
+
+
 def journals_ui():
     """
     Standalone Journals module for operational users.
     Focuses on posting manual journals using configured templates.
     """
+    import psycopg2
+    import psycopg2.extras
+
     from accounting_service import AccountingService
+    from config import get_database_url
     from datetime import datetime
     from decimal import Decimal
 
@@ -7275,24 +7985,85 @@ def journals_ui():
     with tab_manual:
         st.subheader("Post Manual Journal")
         with st.form("journals_manual_journal_form"):
-            col_cust, col_loan = st.columns(2)
-            with col_cust:
-                st.info("Ensure the loan ID belongs to the target customer if posting to a loan.")
-            with col_loan:
-                loan_id = st.text_input("Loan ID (Optional)", help="Leave blank for general journals")
-
             templates_all = svc.list_all_transaction_templates()
-            event_types = sorted(list(set([t["event_type"] for t in templates_all])))
+            event_types = sorted({t["event_type"] for t in templates_all})
 
-            event_type = st.selectbox("Journal Template (Event Type)", event_types)
+            col_l, col_r = st.columns(2)
+            with col_l:
+                loan_id = st.text_input(
+                    "Loan ID (optional)",
+                    help="Required for templates that resolve accounts from the loan (e.g. PRODUCT / LOAN_CAPTURE).",
+                )
+                event_type = st.selectbox(
+                    "Journal template (event type)",
+                    event_types if event_types else ["(no templates configured)"],
+                )
+                amount = st.number_input("Amount", min_value=0.0, step=0.01, format="%.2f")
+            with col_r:
+                st.caption(
+                    "Enter a **loan ID** when the template needs it to auto-pick accounts. "
+                    "Otherwise use subaccount dropdowns where shown."
+                )
+                description = st.text_input("Narration (description)")
+                is_reversal = st.checkbox("Reverse entry (swap debits and credits)", value=False)
 
-            amount = st.number_input("Amount", min_value=0.0, step=0.01)
-            description = st.text_input("Narration (Description)")
-            is_reversal = st.checkbox("Reverse Entry (Swaps Debits and Credits)", value=False)
+            _et_ok = event_type and event_type != "(no templates configured)"
+            loan_id_int = int(str(loan_id).strip()) if loan_id and str(loan_id).strip().isdigit() else None
+            tmpl_rows = svc.get_transaction_templates(event_type) if _et_ok else []
+            dr_tags = _mj_ordered_system_tags_for_direction(tmpl_rows, "DEBIT")
+            cr_tags = _mj_ordered_system_tags_for_direction(tmpl_rows, "CREDIT")
+
+            st.markdown("**Accounts from template**")
+            st.caption(
+                "Debit lines (left) and credit lines (right). When the tagged account has **subaccounts**, "
+                "choose a leaf; **"
+                + MJ_MANUAL_SUBACCOUNT_PLACEHOLDER
+                + "** is not valid for posting."
+            )
+            c_dr, c_cr = st.columns(2)
+
+            def _mj_render_one_side(side_label: str, side_k: str, tags: list[str]) -> None:
+                st.markdown(f"**{side_label}**")
+                if not tags:
+                    st.caption("No lines on this side for this template.")
+                    return
+                for tag in tags:
+                    st.caption(f"Tag `{tag}`")
+                    row = svc.fetch_account_row_for_system_tag(tag)
+                    if not row:
+                        st.warning(f"No chart account carries system tag `{tag}`.")
+                        continue
+                    resolved, err = svc.try_resolve_posting_account_for_tag(tag, loan_id=loan_id_int)
+                    kids = svc.list_active_direct_children_accounts(row["id"])
+                    if resolved:
+                        st.caption(
+                            f"Posting account: **{resolved.get('code')}** — {resolved.get('name')} "
+                            "*(auto-resolved)*"
+                        )
+                        continue
+                    if kids:
+                        labels = [MJ_MANUAL_SUBACCOUNT_PLACEHOLDER] + [
+                            f"{c['code']} — {c['name']}" for c in kids
+                        ]
+                        sk = f"mj_pick_{side_k}_{_mj_widget_key_part(event_type)}_{_mj_widget_key_part(tag)}"
+                        st.selectbox(
+                            "Posting account",
+                            range(len(labels)),
+                            format_func=lambda i, lab=labels: lab[i],
+                            index=0,
+                            key=sk,
+                            help="Pick the leaf account; the first option cannot be posted.",
+                        )
+                        continue
+                    st.error(err or f"Cannot resolve `{tag}` and there are no subaccounts to choose.")
+
+            with c_dr:
+                _mj_render_one_side("Debit accounts", "dr", dr_tags)
+            with c_cr:
+                _mj_render_one_side("Credit accounts", "cr", cr_tags)
 
             journal_to_reverse = None
             if is_reversal:
-                # Allow user to pick the exact journal entry to reverse (by event and optional loan id)
                 all_entries = svc.get_journal_entries()
                 candidates = [
                     e
@@ -7308,51 +8079,139 @@ def journals_ui():
                     sel = st.selectbox(
                         "Journal to reverse",
                         labels,
-                        help="Pick the original journal entry you want to reverse.",
+                        help="Same template and accounts as the original; debits/credits are swapped on post.",
                     )
                     journal_to_reverse = candidates[labels.index(sel)]
                 else:
                     st.info(
                         "No matching journals found to reverse for this template "
-                        "and (if provided) Loan ID."
+                        "and (if provided) loan ID."
                     )
 
-            submitted3 = st.form_submit_button("Post Journal")
+            with st.expander("Extra account_overrides (JSON, optional)", expanded=False):
+                overrides_json = st.text_area(
+                    "Additional overrides",
+                    height=56,
+                    placeholder='{"some_system_tag": "uuid-of-leaf-account"}',
+                    help="Merged with account picks above; explicit picks for a tag win over JSON for that tag.",
+                    key="manual_journal_overrides_json",
+                    label_visibility="collapsed",
+                )
+                st.caption("Optional. Per-tag dropdown selections above are applied automatically.")
+
+            submitted3 = st.form_submit_button("Post journal")
             if submitted3:
-                if not event_type or amount <= 0:
-                    st.error("Please select a template and enter an amount > 0.")
+                if not _et_ok or amount <= 0:
+                    st.error("Choose a valid template and enter an amount greater than zero.")
                 elif is_reversal and journal_to_reverse is None:
-                    st.error("Please select the original journal you want to reverse.")
+                    st.error("Select the original journal entry to reverse.")
                 else:
                     ref = f"MANUAL-{int(datetime.now().timestamp())}"
-                    # If reversing, tag description/reference with original entry
                     if is_reversal and journal_to_reverse:
                         ref = f"REV-{journal_to_reverse.get('reference') or journal_to_reverse['id']}"
                         if not description:
                             description = f"Reversal of entry {journal_to_reverse['id']}"
-                    try:
-                        svc.post_event(
-                            event_type=event_type,
-                            reference=ref,
-                            description=description,
-                            event_id=loan_id or (journal_to_reverse.get("event_id") if journal_to_reverse else "MANUAL"),
-                            created_by="ui_user",
-                            entry_date=datetime.today().date(),
-                            amount=Decimal(str(amount)),
-                            is_reversal=is_reversal,
-                        )
-                        st.success("Manual Journal Posted Successfully!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error posting journal: {e}")
+                    _manual_loan_id = None
+                    if loan_id and str(loan_id).strip().isdigit():
+                        _manual_loan_id = int(str(loan_id).strip())
+
+                    import json as _json
+
+                    _merge_ov: dict = {}
+                    _pick_errs: list[str] = []
+                    _payload_ok = True
+                    if overrides_json and str(overrides_json).strip():
+                        try:
+                            _pour = _json.loads(overrides_json)
+                            if not isinstance(_pour, dict):
+                                st.error("account_overrides JSON must be an object.")
+                                _payload_ok = False
+                            else:
+                                _merge_ov.update(_pour)
+                        except _json.JSONDecodeError as je:
+                            st.error(f"Invalid JSON: {je}")
+                            _payload_ok = False
+
+                    tmpl_submit = svc.get_transaction_templates(event_type) if _payload_ok else []
+                    if _payload_ok and not tmpl_submit:
+                        st.error("This event type has no transaction template lines.")
+                        _payload_ok = False
+
+                    if _payload_ok:
+                        dr_s = _mj_ordered_system_tags_for_direction(tmpl_submit, "DEBIT")
+                        cr_s = _mj_ordered_system_tags_for_direction(tmpl_submit, "CREDIT")
+                        for side_k, tags in (("dr", dr_s), ("cr", cr_s)):
+                            for tag in tags:
+                                row = svc.fetch_account_row_for_system_tag(tag)
+                                if not row:
+                                    _pick_errs.append(f"No chart account for system tag `{tag}`.")
+                                    continue
+                                kids = svc.list_active_direct_children_accounts(row["id"])
+                                resolved, err = svc.try_resolve_posting_account_for_tag(
+                                    tag, loan_id=_manual_loan_id
+                                )
+                                if resolved:
+                                    continue
+                                if not kids:
+                                    _pick_errs.append(
+                                        f"`{tag}`: {err or 'Cannot resolve posting account.'}"
+                                    )
+                                    continue
+                                sk = f"mj_pick_{side_k}_{_mj_widget_key_part(event_type)}_{_mj_widget_key_part(tag)}"
+                                idx = int(st.session_state.get(sk, 0))
+                                uuid_list = [None] + [str(c["id"]) for c in kids]
+                                if idx <= 0 or idx >= len(uuid_list) or not uuid_list[idx]:
+                                    _pick_errs.append(
+                                        f"Choose a sub account for `{tag}` on the "
+                                        f"{'debit' if side_k == 'dr' else 'credit'} side "
+                                        f"({MJ_MANUAL_SUBACCOUNT_PLACEHOLDER!r} is not valid for posting)."
+                                    )
+                                else:
+                                    _merge_ov[tag] = uuid_list[idx]
+
+                    if _pick_errs:
+                        for msg in _pick_errs:
+                            st.error(msg)
+                        _payload_ok = False
+
+                    _manual_payload = {"account_overrides": _merge_ov} if (_payload_ok and _merge_ov) else None
+
+                    if _payload_ok:
+                        try:
+                            svc.post_event(
+                                event_type=event_type,
+                                reference=ref,
+                                description=description,
+                                event_id=loan_id
+                                or (journal_to_reverse.get("event_id") if journal_to_reverse else "MANUAL"),
+                                created_by="ui_user",
+                                entry_date=datetime.today().date(),
+                                amount=Decimal(str(amount)),
+                                payload=_manual_payload,
+                                is_reversal=is_reversal,
+                                loan_id=_manual_loan_id,
+                            )
+                            st.success("Manual journal posted successfully.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error posting journal: {e}")
 
     with tab_adjust:
         st.subheader("Balance Adjustment Journal")
         st.info(
-            "Use this for one-off GL balance corrections. "
-            "Select posting (child) accounts only – parents cannot be posted to."
+            "One-off GL corrections. Only **posting accounts** are listed: active accounts with **no** "
+            "active subaccounts (the youngest nodes in each branch — e.g. A700000 alone if it has no children; "
+            "otherwise A710000 / A720000 / … down to leaves). Labels show the code path from the root."
+        )
+        st.caption(
+            "The leaf list is cached briefly (about two minutes) to avoid repeating the same chart walk on "
+            "every Streamlit rerun; one `list_accounts` query plus an in-memory pass is already light."
         )
 
+        posting_leaves = _cached_posting_leaf_accounts_for_balance_adjust()
+
+        dr_i = 0
+        cr_i = 0
         with st.form("balance_adjust_form"):
             col_dt, col_amt = st.columns([1, 1])
             with col_dt:
@@ -7360,85 +8219,103 @@ def journals_ui():
             with col_amt:
                 amount = st.number_input("Amount", min_value=0.0, step=0.01)
 
-            # Load GL accounts for selection
-            accounts = svc.list_accounts()
-            account_options = [f"{a['code']} - {a['name']}" for a in accounts]
-
             col_dr, col_cr = st.columns(2)
-            with col_dr:
-                dr_sel = st.selectbox("Debit Account", account_options, key="bal_adj_dr")
-            with col_cr:
-                cr_sel = st.selectbox("Credit Account", account_options, key="bal_adj_cr")
+            if posting_leaves:
+                with col_dr:
+                    dr_i = st.selectbox(
+                        "Debit account",
+                        range(len(posting_leaves)),
+                        format_func=lambda i, pl=posting_leaves: pl[i]["display_label"],
+                        key="bal_adj_dr_leaf_idx",
+                    )
+                with col_cr:
+                    cr_i = st.selectbox(
+                        "Credit account",
+                        range(len(posting_leaves)),
+                        format_func=lambda i, pl=posting_leaves: pl[i]["display_label"],
+                        key="bal_adj_cr_leaf_idx",
+                    )
+            else:
+                with col_dr:
+                    st.selectbox(
+                        "Debit account",
+                        ["(no posting accounts in chart)"],
+                        disabled=True,
+                        key="bal_adj_dr_leaf_idx_empty",
+                    )
+                with col_cr:
+                    st.selectbox(
+                        "Credit account",
+                        ["(no posting accounts in chart)"],
+                        disabled=True,
+                        key="bal_adj_cr_leaf_idx_empty",
+                    )
 
             narration = st.text_input("Narration / Description", key="bal_adj_narr")
 
-            submitted_adj = st.form_submit_button("Post Balance Adjustment")
+            submitted_adj = st.form_submit_button(
+                "Post Balance Adjustment",
+                disabled=not posting_leaves,
+            )
 
-        if submitted_adj:
-            dr_code = dr_sel.split(" - ")[0] if dr_sel else None
-            cr_code = cr_sel.split(" - ")[0] if cr_sel else None
+        if submitted_adj and posting_leaves:
+            dr_row = posting_leaves[int(dr_i)] if 0 <= int(dr_i) < len(posting_leaves) else None
+            cr_row = posting_leaves[int(cr_i)] if 0 <= int(cr_i) < len(posting_leaves) else None
+            dr_code = dr_row["code"] if dr_row else None
+            cr_code = cr_row["code"] if cr_row else None
+            dr_id = dr_row["id"] if dr_row else None
+            cr_id = cr_row["id"] if cr_row else None
 
-            if not dr_code or not cr_code:
-                st.error("Please select both Debit and Credit accounts.")
+            if not dr_code or not cr_code or not dr_id or not cr_id:
+                st.error("Please select both debit and credit posting accounts.")
             elif dr_code == cr_code:
-                st.error("Debit and Credit accounts must be different.")
+                st.error("Debit and credit accounts must be different.")
             elif amount <= 0:
                 st.error("Amount must be greater than zero.")
-            elif svc.is_parent_account(dr_code) or svc.is_parent_account(cr_code):
-                st.error("You cannot post directly to parent accounts. Please select posting (child) accounts.")
             else:
                 try:
-                    # Map codes to account IDs
-                    code_to_id = {a["code"]: a["id"] for a in accounts}
-                    dr_id = code_to_id.get(dr_code)
-                    cr_id = code_to_id.get(cr_code)
-                    if not dr_id or not cr_id:
-                        st.error("Selected accounts could not be resolved. Please refresh and try again.")
-                    else:
-                        conn = psycopg2.connect(
-                            get_database_url(), cursor_factory=psycopg2.extras.RealDictCursor
-                        )
-                        try:
-                            with conn.cursor() as cur:
-                                # Create journal entry header
-                                cur.execute(
-                                    """
-                                    INSERT INTO journal_entries (entry_date, reference, description, event_id, event_tag, created_by)
-                                    VALUES (%s, %s, %s, %s, %s, %s)
-                                    RETURNING id
-                                    """,
-                                    (
-                                        value_date,
-                                        "BAL_ADJ",
-                                        narration or "Balance adjustment journal",
-                                        None,
-                                        "BALANCE_ADJUSTMENT",
-                                        "ui_user",
-                                    ),
-                                )
-                                entry_id = cur.fetchone()["id"]
+                    conn = psycopg2.connect(
+                        get_database_url(), cursor_factory=psycopg2.extras.RealDictCursor
+                    )
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                INSERT INTO journal_entries (entry_date, reference, description, event_id, event_tag, created_by)
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                                RETURNING id
+                                """,
+                                (
+                                    value_date,
+                                    "BAL_ADJ",
+                                    narration or "Balance adjustment journal",
+                                    None,
+                                    "BALANCE_ADJUSTMENT",
+                                    "ui_user",
+                                ),
+                            )
+                            entry_id = cur.fetchone()["id"]
 
-                                # Debit line
-                                cur.execute(
-                                    """
-                                    INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
-                                    VALUES (%s, %s, %s, %s, %s)
-                                    """,
-                                    (entry_id, dr_id, Decimal(str(amount)), Decimal("0.0"), narration),
-                                )
-                                # Credit line
-                                cur.execute(
-                                    """
-                                    INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
-                                    VALUES (%s, %s, %s, %s, %s)
-                                    """,
-                                    (entry_id, cr_id, Decimal("0.0"), Decimal(str(amount)), narration),
-                                )
-                            conn.commit()
-                            st.success("Balance adjustment journal posted successfully.")
-                            st.experimental_rerun()
-                        finally:
-                            conn.close()
+                            cur.execute(
+                                """
+                                INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
+                                VALUES (%s, %s, %s, %s, %s)
+                                """,
+                                (entry_id, dr_id, Decimal(str(amount)), Decimal("0.0"), narration),
+                            )
+                            cur.execute(
+                                """
+                                INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
+                                VALUES (%s, %s, %s, %s, %s)
+                                """,
+                                (entry_id, cr_id, Decimal("0.0"), Decimal(str(amount)), narration),
+                            )
+                        conn.commit()
+                        st.success("Balance adjustment journal posted successfully.")
+                        _cached_posting_leaf_accounts_for_balance_adjust.clear()
+                        st.rerun()
+                    finally:
+                        conn.close()
                 except Exception as e:
                     st.error(f"Error posting balance adjustment journal: {e}")
 
@@ -7626,6 +8503,7 @@ LOAN_APP_SECTIONS = [
     "Customers",
     "Loan management",
     "Interest in Suspense",
+    "Portfolio reports",
     "Teller",
     "Reamortisation",
     "Statements",
@@ -7656,6 +8534,10 @@ def render_loan_app_section(nav: str) -> None:
         from interest_suspense_ui import render_suspense_ui
 
         render_suspense_ui()
+    elif nav == "Portfolio reports":
+        from portfolio_reports_ui import render_portfolio_reports_ui
+
+        render_portfolio_reports_ui()
     elif nav == "Loan management":
         st.markdown(
             "<div style='color:#16A34A; font-weight:700; font-size:2rem; margin:0.25rem 0 0.75rem 0;'>Loan Management</div>",
@@ -7668,19 +8550,28 @@ def render_loan_app_section(nav: str) -> None:
             )
         except Exception:
             pending_approval_count = 0
-        tab_capture, tab_schedule, tab_calculators, tab_approve = st.tabs(
-            [
-                "Loan capture",
-                "View schedule",
-                "Loan calculators",
-                f"Approve loans ({pending_approval_count})",
-            ]
+        st.caption(
+            f"**{pending_approval_count}** loan draft(s) awaiting approval. "
+            "Use the section control below; your choice is kept after actions such as **Send back for rework**."
         )
-        with tab_capture:
+        _lm_sections = ["Loan capture", "View schedule", "Loan calculators", "Approve loans"]
+        st.session_state.setdefault("loan_mgmt_subnav", "Loan capture")
+        if st.session_state["loan_mgmt_subnav"] not in _lm_sections:
+            st.session_state["loan_mgmt_subnav"] = "Loan capture"
+        _lm_idx = _lm_sections.index(st.session_state["loan_mgmt_subnav"])
+        _lm_pick = st.radio(
+            "Loan management section",
+            _lm_sections,
+            index=_lm_idx,
+            horizontal=True,
+            key="loan_mgmt_subnav",
+            label_visibility="collapsed",
+        )
+        if _lm_pick == "Loan capture":
             capture_loan_ui()
-        with tab_schedule:
+        elif _lm_pick == "View schedule":
             view_schedule_ui()
-        with tab_calculators:
+        elif _lm_pick == "Loan calculators":
             st.caption("All calculators are available on one page. Open any section below.")
             col_left, col_right = st.columns(2)
             with col_left:
@@ -7693,7 +8584,7 @@ def render_loan_app_section(nav: str) -> None:
                     term_loan_ui()
                 with st.expander("Customised Repayments Calculator", expanded=False):
                     customised_repayments_ui()
-        with tab_approve:
+        else:
             approve_loans_ui()
     elif nav == "Accounting":
         accounting_ui()

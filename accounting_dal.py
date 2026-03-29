@@ -81,7 +81,28 @@ class AccountingRepository:
             cur.execute("SELECT COUNT(*) as count FROM accounts")
             return cur.fetchone()["count"] > 0
 
+    def replace_account_template_rows(self, rows: list) -> None:
+        """
+        Replace account_template content (code, name, category, system_tag, parent_code).
+        Used so Initialize COA matches bundled / exported chart defaults.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM account_template")
+            for code, name, cat, tag, parent in rows:
+                cur.execute(
+                    """
+                    INSERT INTO account_template (code, name, category, system_tag, parent_code)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (code, name, cat, tag, parent),
+                )
+        self.conn.commit()
+
     def initialize_default_coa(self) -> None:
+        from accounting_defaults_loader import get_chart_account_template_tuples
+
+        rows = get_chart_account_template_tuples()
+        self.replace_account_template_rows(rows)
         with self.conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO accounts (code, name, category, system_tag, is_active)
@@ -97,7 +118,15 @@ class AccountingRepository:
             """)
         self.conn.commit()
 
-    def create_account(self, code, name, category, system_tag=None, parent_id=None):
+    def create_account(
+        self,
+        code,
+        name,
+        category,
+        system_tag=None,
+        parent_id=None,
+        subaccount_resolution=None,
+    ):
         with self.conn.cursor() as cur:
             cur.execute("SELECT 1 FROM accounts WHERE code = %s", (code,))
             if cur.fetchone():
@@ -107,10 +136,10 @@ class AccountingRepository:
             try:
                 cur.execute(
                     """
-                    INSERT INTO accounts (code, name, category, system_tag, parent_id, is_active)
-                    VALUES (%s, %s, %s, %s, %s, TRUE)
+                    INSERT INTO accounts (code, name, category, system_tag, parent_id, is_active, subaccount_resolution)
+                    VALUES (%s, %s, %s, %s, %s, TRUE, %s)
                     """,
-                    (code, name, category, system_tag, parent_id),
+                    (code, name, category, system_tag, parent_id, subaccount_resolution),
                 )
             except pg_errors.UniqueViolation as e:
                 self.conn.rollback()
@@ -190,6 +219,309 @@ class AccountingRepository:
 
             return account
 
+    def _account_has_active_children(self, account_id) -> bool:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM accounts WHERE parent_id = %s AND is_active = TRUE LIMIT 1",
+                (account_id,),
+            )
+            return cur.fetchone() is not None
+
+    def get_account_by_id(self, account_id):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM accounts WHERE id = %s AND is_active = TRUE",
+                (account_id,),
+            )
+            return cur.fetchone()
+
+    def fetch_account_row_for_system_tag(self, system_tag: str):
+        """Return the active account row tagged with system_tag (may be a parent with children)."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM accounts
+                WHERE system_tag = %s AND is_active = TRUE
+                ORDER BY code
+                LIMIT 1
+                """,
+                (system_tag,),
+            )
+            return cur.fetchone()
+
+    def list_active_direct_children_accounts(self, parent_id):
+        """Posting candidates: active direct children of a parent account, ordered by code."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, code, name
+                FROM accounts
+                WHERE parent_id = %s AND is_active = TRUE
+                ORDER BY code
+                """,
+                (parent_id,),
+            )
+            return list(cur.fetchall() or [])
+
+    def assert_account_is_posting_leaf(self, account: dict) -> None:
+        """Raise if account has active children (cannot post to roll-up parents)."""
+        if self._account_has_active_children(account["id"]):
+            raise ValueError(
+                f"Account {account.get('code')} cannot accept postings: it has active child accounts."
+            )
+
+    def resolve_posting_account_for_tag(
+        self,
+        system_tag: str,
+        *,
+        loan_id: int | None = None,
+        account_overrides: dict | None = None,
+    ):
+        """
+        Resolve template system_tag to a single posting (leaf) account row.
+
+        Backward compatible:
+        - No active children on tagged account → same as get_account_by_tag.
+        - Active children + subaccount_resolution NULL → same error as get_account_by_tag.
+        - Active children + PRODUCT / LOAN_CAPTURE → use maps + loan_id.
+        - account_overrides: { system_tag: account_uuid_str } wins first.
+        """
+        overrides = account_overrides or {}
+        oid = overrides.get(system_tag)
+        if oid:
+            acc = self.get_account_by_id(oid)
+            if not acc:
+                raise ValueError(
+                    f"account_overrides[{system_tag!r}] points to missing or inactive account id {oid!r}."
+                )
+            self.assert_account_is_posting_leaf(acc)
+            return acc
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM accounts WHERE system_tag = %s AND is_active = TRUE",
+                (system_tag,),
+            )
+            account = cur.fetchone()
+        if not account:
+            return None
+
+        if not self._account_has_active_children(account["id"]):
+            return account
+
+        mode = (account.get("subaccount_resolution") or "").strip().upper()
+        if not mode:
+            raise ValueError(
+                f"System tag '{system_tag}' maps to {account['code']} which has child accounts. "
+                "Set **Subaccount resolution** (PRODUCT / LOAN_CAPTURE / JOURNAL) on that COA row, "
+                "add maps, or pass account_overrides in the posting payload."
+            )
+
+        if mode == "JOURNAL":
+            raise ValueError(
+                f"Tag '{system_tag}' is configured for **JOURNAL** resolution: provide "
+                f"payload['account_overrides'][{system_tag!r}] = <leaf account uuid> for automated posting."
+            )
+
+        if loan_id is None:
+            raise ValueError(
+                f"loan_id is required to resolve tag '{system_tag}' ({account['code']}, mode={mode})."
+            )
+
+        if mode == "LOAN_CAPTURE":
+            if system_tag != "cash_operating":
+                raise ValueError(
+                    f"LOAN_CAPTURE resolution for {account['code']} applies to system_tag 'cash_operating' only; "
+                    f"got {system_tag!r}."
+                )
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT cash_gl_account_id, disbursement_bank_option_id
+                    FROM loans WHERE id = %s
+                    """,
+                    (loan_id,),
+                )
+                lr = cur.fetchone()
+            if lr and lr.get("cash_gl_account_id"):
+                leaf = self.get_account_by_id(str(lr["cash_gl_account_id"]))
+                if not leaf:
+                    raise ValueError(
+                        f"Loan {loan_id} cash_gl_account_id points to a missing or inactive GL account."
+                    )
+                self.assert_account_is_posting_leaf(leaf)
+                return leaf
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT d.gl_account_id
+                    FROM loans l
+                    JOIN disbursement_bank_options d ON d.id = l.disbursement_bank_option_id
+                    WHERE l.id = %s AND d.is_active = TRUE
+                    LIMIT 1
+                    """,
+                    (loan_id,),
+                )
+                row = cur.fetchone()
+            if not row or not row.get("gl_account_id"):
+                raise ValueError(
+                    f"Loan {loan_id} has no cash_gl_account_id and no active disbursement bank option; "
+                    "set **loans.cash_gl_account_id** at loan capture (from **Maintenance — source cash account cache** list), "
+                    "or link a legacy disbursement_bank_option_id if used."
+                )
+            leaf = self.get_account_by_id(row["gl_account_id"])
+            if not leaf:
+                raise ValueError("Disbursement bank option points to a missing or inactive GL account.")
+            self.assert_account_is_posting_leaf(leaf)
+            return leaf
+
+        if mode == "PRODUCT":
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT product_code FROM loans WHERE id = %s",
+                    (loan_id,),
+                )
+                lr = cur.fetchone()
+            pc = (lr.get("product_code") or "").strip() if lr else ""
+            if not pc:
+                raise ValueError(
+                    f"Loan {loan_id} has no product_code; cannot resolve PRODUCT subaccount for tag '{system_tag}'."
+                )
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT gl_account_id FROM product_gl_subaccount_map
+                    WHERE product_code = %s AND system_tag = %s
+                    LIMIT 1
+                    """,
+                    (pc, system_tag),
+                )
+                m = cur.fetchone()
+            if not m:
+                raise ValueError(
+                    f"No product_gl_subaccount_map row for product_code={pc!r} and system_tag={system_tag!r}. "
+                    "Add a mapping under Accounting → Product GL subaccounts."
+                )
+            leaf = self.get_account_by_id(m["gl_account_id"])
+            if not leaf:
+                raise ValueError("Product GL map points to a missing or inactive account.")
+            self.assert_account_is_posting_leaf(leaf)
+            return leaf
+
+        raise ValueError(
+            f"Unknown subaccount_resolution {account.get('subaccount_resolution')!r} on account {account['code']}."
+        )
+
+    def list_child_codes_for_parent(self, parent_id):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT code FROM accounts WHERE parent_id = %s ORDER BY code",
+                (parent_id,),
+            )
+            return [r["code"] for r in cur.fetchall()]
+
+    def update_account_subaccount_resolution(self, account_id, subaccount_resolution) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT id FROM accounts WHERE id = %s", (account_id,))
+            if not cur.fetchone():
+                raise ValueError("Account not found.")
+            cur.execute(
+                "UPDATE accounts SET subaccount_resolution = %s WHERE id = %s",
+                (subaccount_resolution, account_id),
+            )
+        self.conn.commit()
+
+    def list_disbursement_bank_options(self, active_only: bool = True):
+        with self.conn.cursor() as cur:
+            if active_only:
+                cur.execute(
+                    """
+                    SELECT d.*, a.code AS gl_account_code, a.name AS gl_account_name
+                    FROM disbursement_bank_options d
+                    JOIN accounts a ON a.id = d.gl_account_id
+                    WHERE d.is_active = TRUE
+                    ORDER BY d.sort_order, d.id
+                    """
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT d.*, a.code AS gl_account_code, a.name AS gl_account_name
+                    FROM disbursement_bank_options d
+                    JOIN accounts a ON a.id = d.gl_account_id
+                    ORDER BY d.sort_order, d.id
+                    """
+                )
+            return cur.fetchall()
+
+    def insert_disbursement_bank_option(self, label: str, gl_account_id, sort_order: int = 0) -> int:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO disbursement_bank_options (label, gl_account_id, sort_order)
+                VALUES (%s, %s, %s)
+                RETURNING id
+                """,
+                (label, gl_account_id, sort_order),
+            )
+            new_id = cur.fetchone()["id"]
+        self.conn.commit()
+        return int(new_id)
+
+    def set_disbursement_bank_option_active(self, option_id: int, is_active: bool) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "UPDATE disbursement_bank_options SET is_active = %s, updated_at = NOW() WHERE id = %s",
+                (is_active, option_id),
+            )
+        self.conn.commit()
+
+    def list_product_gl_subaccount_map(self, product_code: str | None = None):
+        with self.conn.cursor() as cur:
+            if product_code:
+                cur.execute(
+                    """
+                    SELECT m.*, a.code AS gl_account_code, a.name AS gl_account_name
+                    FROM product_gl_subaccount_map m
+                    JOIN accounts a ON a.id = m.gl_account_id
+                    WHERE m.product_code = %s
+                    ORDER BY m.system_tag
+                    """,
+                    (product_code,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT m.*, a.code AS gl_account_code, a.name AS gl_account_name
+                    FROM product_gl_subaccount_map m
+                    JOIN accounts a ON a.id = m.gl_account_id
+                    ORDER BY m.product_code, m.system_tag
+                    """
+                )
+            return cur.fetchall()
+
+    def upsert_product_gl_subaccount_map(self, product_code: str, system_tag: str, gl_account_id) -> None:
+        pc = (product_code or "").strip()
+        st = (system_tag or "").strip()
+        if not pc or not st:
+            raise ValueError("product_code and system_tag are required.")
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO product_gl_subaccount_map (product_code, system_tag, gl_account_id)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (product_code, system_tag)
+                DO UPDATE SET gl_account_id = EXCLUDED.gl_account_id
+                """,
+                (pc, st, gl_account_id),
+            )
+        self.conn.commit()
+
+    def delete_product_gl_subaccount_map(self, map_id: int) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM product_gl_subaccount_map WHERE id = %s", (map_id,))
+        self.conn.commit()
+
     def list_accounts(self):
         with self.conn.cursor() as cur:
             cur.execute("""
@@ -199,6 +531,145 @@ class AccountingRepository:
                 ORDER BY a.code
             """)
             return cur.fetchall()
+
+    def list_posting_leaf_accounts(self) -> list[dict]:
+        """
+        Accounts that accept postings: active rows with **no** active children (deepest nodes only).
+
+        If A700000 has no children, it appears alone. If it has children A71/A72/A73, only those
+        branches are expanded; any branch with further children continues until leaves.
+
+        Returns dicts: id (str), code, name, display_label (ancestor codes › … › code — name).
+        Single ``list_accounts`` round-trip; O(n) in Python.
+        """
+        rows = self.list_accounts()
+        active: list[dict] = [dict(r) for r in rows if r.get("is_active") is not False]
+        by_id: dict[str, dict] = {}
+        for a in active:
+            aid = a.get("id")
+            if aid is not None:
+                by_id[str(aid)] = a
+
+        ids_that_are_parent: set[str] = set()
+        for a in active:
+            p = a.get("parent_id")
+            if p is not None:
+                ids_that_are_parent.add(str(p))
+
+        leaves = [a for a in active if str(a.get("id")) not in ids_that_are_parent]
+
+        def code_path_for(account_id) -> str:
+            parts: list[str] = []
+            cur_a = by_id.get(str(account_id))
+            guard = 0
+            while cur_a is not None and guard < 64:
+                parts.append(str(cur_a.get("code") or "").strip() or "?")
+                pid = cur_a.get("parent_id")
+                if pid is None:
+                    break
+                cur_a = by_id.get(str(pid))
+                guard += 1
+            parts.reverse()
+            return " › ".join(parts) if parts else ""
+
+        out: list[dict] = []
+        for a in sorted(leaves, key=lambda x: str(x.get("code") or "")):
+            aid = a.get("id")
+            if aid is None:
+                continue
+            code = str(a.get("code") or "").strip()
+            name = str(a.get("name") or "").strip()
+            trail = code_path_for(aid)
+            label = f"{trail} — {name}" if trail else f"{code} — {name}"
+            out.append({"id": str(aid), "code": code, "name": name, "display_label": label})
+        return out
+
+    def compute_source_cash_leaf_accounts(self, *, root_code: str = "A100000") -> list[dict]:
+        """
+        Build the allowed "source cash / bank" account list for loan capture and receipts.
+
+        Rules (under ``root_code``, default A100000 — CASH AND CASH EQUIVALENTS tree):
+        - If the root has **no** active child accounts, the root itself is listed (when it is a leaf).
+        - Otherwise, for each **direct child** of the root (first-level branch), collect every **posting
+          leaf** in that branch's subtree — i.e. active accounts with no active children (any depth).
+
+        Returns rows: ``{"id": str(uuid), "code": str, "name": str}`` sorted by code.
+        """
+        root_code = (root_code or "").strip()
+        if not root_code:
+            return []
+
+        rows = self.list_accounts()
+        all_accts: list[dict] = [dict(r) for r in rows]
+
+        def is_active_row(a: dict) -> bool:
+            return a.get("is_active") is not False
+
+        active = [a for a in all_accts if is_active_row(a)]
+        by_id: dict[str, dict] = {str(a["id"]): a for a in active if a.get("id") is not None}
+
+        root = next((a for a in active if (a.get("code") or "").strip() == root_code), None)
+        if not root or root.get("id") is None:
+            return []
+
+        root_id = str(root["id"])
+
+        def has_active_child(aid: str) -> bool:
+            aid = str(aid)
+            for a in active:
+                p = a.get("parent_id")
+                if p is None:
+                    continue
+                if str(p) == aid:
+                    return True
+            return False
+
+        direct_children = [a for a in active if a.get("parent_id") is not None and str(a["parent_id"]) == root_id]
+
+        def subtree_ids(start_id: str) -> set[str]:
+            start_id = str(start_id)
+            stack = [start_id]
+            seen: set[str] = set()
+            while stack:
+                nid = stack.pop()
+                if nid in seen:
+                    continue
+                seen.add(nid)
+                for a in active:
+                    if a.get("parent_id") is not None and str(a["parent_id"]) == nid:
+                        stack.append(str(a["id"]))
+            return seen
+
+        out: list[dict] = []
+
+        if not direct_children:
+            if not has_active_child(root_id):
+                out.append(
+                    {
+                        "id": root_id,
+                        "code": str(root.get("code") or ""),
+                        "name": str(root.get("name") or ""),
+                    }
+                )
+        else:
+            seen_ids: set[str] = set()
+            for branch in sorted(direct_children, key=lambda x: str(x.get("code") or "")):
+                bid = str(branch["id"])
+                for nid in subtree_ids(bid):
+                    if not has_active_child(nid):
+                        a = by_id.get(nid)
+                        if a and nid not in seen_ids:
+                            seen_ids.add(nid)
+                            out.append(
+                                {
+                                    "id": nid,
+                                    "code": str(a.get("code") or ""),
+                                    "name": str(a.get("name") or ""),
+                                }
+                            )
+
+        out.sort(key=lambda r: r["code"])
+        return out
 
     def is_parent_account(self, account_code: str) -> bool:
         """Return True if the given code has one or more active child accounts."""

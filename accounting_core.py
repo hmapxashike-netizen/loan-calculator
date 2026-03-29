@@ -117,30 +117,69 @@ ACCOUNT_STEM_RANGE_BY_CATEGORY: Dict[AccountCategory, Tuple[int, int]] = {
 }
 
 
-def parse_account_code(code: str) -> Tuple[str, int, int]:
+def split_account_code(code: str) -> Tuple[str, int | None]:
     """
-    Split an account code into (prefix, stem, suffix).
+    Split a stored account code into (seven_char_base, grandchild_suffix_or_none).
 
-    Format: <prefix><stem><suffix>
-      - prefix: 1 letter indicating class (A/L/C/R/E)
-      - stem: 4 digits within the configured range for that category
-      - suffix: 2 digits, 00 for parent, 01-99 for children
-    Example: A101000 -> prefix="A", stem=1010, suffix=0
+    Grandchild format (visual sub-ledger): ``BASE-NN`` where BASE is exactly 7 characters
+    and NN is 01–99. Example: ``A100001-03`` → base ``A100001``, suffix 3.
+    Plain 7-char codes return (code, None).
     """
-    if len(code) != 7:
-        raise ValueError(f"Account code '{code}' must be exactly 7 characters.")
+    s = (code or "").strip().upper()
+    if not s:
+        raise ValueError("Account code is empty.")
+    if "-" not in s:
+        return s, None
+    base, suf_part = s.split("-", 1)
+    if len(base) != 7:
+        raise ValueError(
+            f"Account code '{code}': grandchild form must use a 7-character base before '-'."
+        )
+    if len(suf_part) != 2 or not suf_part.isdigit():
+        raise ValueError(
+            f"Account code '{code}': grandchild suffix must be two digits (01-99) after '-'."
+        )
+    g = int(suf_part)
+    if not (1 <= g <= 99):
+        raise ValueError(f"Account code '{code}': grandchild suffix must be between 01 and 99.")
+    return base, g
 
-    prefix = code[0]
-    body = code[1:]
+
+def parse_seven_char_account_code(seven: str) -> Tuple[str, int, int]:
+    """
+    Parse a strict 7-character account code into (prefix, stem, suffix_two_digit_int).
+    Suffix 0 means ..00 (rollup parent); 1–99 means ..01–..99.
+    """
+    if len(seven) != 7:
+        raise ValueError(f"Account code '{seven}' must be exactly 7 characters.")
+
+    prefix = seven[0]
+    body = seven[1:]
     stem_str = body[:4]
     suffix_str = body[4:]
 
     if not (stem_str.isdigit() and suffix_str.isdigit()):
-        raise ValueError(f"Account code '{code}' must have numeric stem and suffix.")
+        raise ValueError(f"Account code '{seven}' must have numeric stem and suffix.")
 
     stem = int(stem_str)
     suffix = int(suffix_str)
     return prefix, stem, suffix
+
+
+def parse_account_code(code: str) -> Tuple[str, int, int]:
+    """
+    Split **7-character** codes only (same as parse_seven_char_account_code).
+
+    For grandchild codes like ``A100001-01``, use ``split_account_code`` and parse the base:
+    ``parse_seven_char_account_code(split_account_code(code)[0])``.
+    """
+    base, grand = split_account_code(code)
+    if grand is not None:
+        raise ValueError(
+            f"Account code '{code}' uses a grandchild suffix (-NN). "
+            f"Use split_account_code() for the base, or parse_seven_char_account_code() on the 7-char base only."
+        )
+    return parse_seven_char_account_code(base)
 
 
 def validate_account_code(account: Account, accounts: Dict[str, Account]) -> None:
@@ -148,11 +187,43 @@ def validate_account_code(account: Account, accounts: Dict[str, Account]) -> Non
     Enforce COA coding rules:
     - Prefix must match account category.
     - Stem must fall within category range.
-    - Suffix 00 for parents, 01-99 for children.
+    - Suffix 00 for parents, 01-99 for children (7-char codes).
+    - Grandchild codes ``BASE-NN``: parent account id in registry must equal BASE (same category).
     - Category consistency between parent and child.
     """
     code = account.id
-    prefix, stem, suffix = parse_account_code(code)
+    base, grand = split_account_code(code)
+    if grand is not None:
+        prefix, stem, suff7 = parse_seven_char_account_code(base)
+        expected_prefix = ACCOUNT_PREFIX_BY_CATEGORY[account.category]
+        if prefix != expected_prefix:
+            raise ValueError(
+                f"Account {code}: prefix '{prefix}' does not match expected "
+                f"'{expected_prefix}' for category {account.category}."
+            )
+        stem_min, stem_max = ACCOUNT_STEM_RANGE_BY_CATEGORY[account.category]
+        if not (stem_min <= stem <= stem_max):
+            raise ValueError(
+                f"Account {code}: stem {stem} must be between {stem_min} and {stem_max} "
+                f"for category {account.category}."
+            )
+        parent = accounts.get(account.parent_id) if account.parent_id else None
+        if parent is None:
+            raise ValueError(
+                f"Account {code}: grandchild account must reference a parent in the registry."
+            )
+        if parent.id != base:
+            raise ValueError(
+                f"Account {code}: parent account id must be the 7-char base '{base}' for grandchild codes."
+            )
+        if parent.category != account.category:
+            raise ValueError(
+                f"Account {code}: category {account.category} does not match parent "
+                f"{parent.id} category {parent.category}."
+            )
+        return
+
+    prefix, stem, suffix = parse_seven_char_account_code(base)
 
     expected_prefix = ACCOUNT_PREFIX_BY_CATEGORY[account.category]
     if prefix != expected_prefix:
@@ -206,7 +277,10 @@ def suggest_next_parent_account_code(
     for acc in accounts.values():
         if acc.category != category or acc.parent_id is not None:
             continue
-        p, stem, _ = parse_account_code(acc.id)
+        b, g = split_account_code(acc.id)
+        if g is not None:
+            continue
+        p, stem, _ = parse_seven_char_account_code(b)
         if p == prefix:
             used_stems.add(stem)
 
@@ -221,16 +295,26 @@ def suggest_next_child_account_code(
     parent_account_id: str, accounts: Dict[str, Account]
 ) -> str:
     """
-    Suggest the next available child code under a given parent,
-    using suffixes 01-99.
+    Suggest the next available **7-character** child code under a given parent,
+    using suffixes 01-99 on the parent's stem.
+
+    ``parent_account_id`` is the parent's **id** in the registry (typically the 7-char code).
+    Best suited when the parent is a rollup (suffix 00); for intermediate nodes (e.g. A100001),
+    prefer ``suggest_next_grandchild_account_code`` instead to avoid code collisions.
     """
-    prefix, stem, _ = parse_account_code(parent_account_id)
+    b, g = split_account_code(parent_account_id)
+    if g is not None:
+        raise ValueError("suggest_next_child_account_code: parent must be a 7-character code.")
+    prefix, stem, _ = parse_seven_char_account_code(b)
     existing_suffixes = set()
 
     for acc in accounts.values():
         if acc.parent_id != parent_account_id:
             continue
-        p, s, suffix = parse_account_code(acc.id)
+        ab, ag = split_account_code(acc.id)
+        if ag is not None:
+            continue
+        p, s, suffix = parse_seven_char_account_code(ab)
         if p == prefix and s == stem:
             existing_suffixes.add(suffix)
 
@@ -239,6 +323,30 @@ def suggest_next_child_account_code(
             return f"{prefix}{stem:04d}{suffix:02d}"
 
     raise ValueError(f"No child suffixes left under parent {parent_account_id}.")
+
+
+def suggest_next_grandchild_account_code(parent_base_code: str, existing_codes: Iterable[str]) -> str:
+    """
+    Next grandchild code ``{parent_base_code}-NN`` not present in ``existing_codes``.
+    ``parent_base_code`` must be exactly 7 characters (the immediate parent account code).
+    """
+    b, g = split_account_code(parent_base_code)
+    if g is not None:
+        raise ValueError("Grandchild parent must be a 7-character base code.")
+    parse_seven_char_account_code(b)
+    used: Set[int] = set()
+    prefix = f"{b}-"
+    for raw in existing_codes:
+        try:
+            bb, gg = split_account_code(str(raw).strip())
+        except ValueError:
+            continue
+        if gg is not None and bb == b:
+            used.add(gg)
+    for n in range(1, 100):
+        if n not in used:
+            return f"{b}-{n:02d}"
+    raise ValueError(f"No grandchild suffixes left under parent code {b}.")
 
 
 @dataclass
@@ -714,10 +822,13 @@ __all__ = [
     # COA helpers
     "ACCOUNT_PREFIX_BY_CATEGORY",
     "ACCOUNT_STEM_RANGE_BY_CATEGORY",
+    "split_account_code",
+    "parse_seven_char_account_code",
     "parse_account_code",
     "validate_account_code",
     "suggest_next_parent_account_code",
     "suggest_next_child_account_code",
+    "suggest_next_grandchild_account_code",
     # Mapping
     "MappingCategory",
     "EventAccountMapping",

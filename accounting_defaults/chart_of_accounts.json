@@ -1,0 +1,426 @@
+{
+  "version": 1,
+  "description": "Chart of accounts template rows (parent_code before children not required; loader topologically sorts).",
+  "accounts": [
+    {
+      "code": "A100000",
+      "name": "CASH AND CASH EQUIVALENTS",
+      "category": "ASSET",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "A100001",
+      "name": "BANK - MAIN OPERATING ACCOUNT",
+      "category": "ASSET",
+      "system_tag": "cash_operating",
+      "parent_code": "A100000"
+    },
+    {
+      "code": "A100002",
+      "name": "PETTY CASH",
+      "category": "ASSET",
+      "system_tag": "petty_cash",
+      "parent_code": "A100000"
+    },
+    {
+      "code": "A110000",
+      "name": "CUSTOMER LOAN PORTFOLIO (PRINCIPAL)",
+      "category": "ASSET",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "A110001",
+      "name": "PRINCIPAL - NOT YET DUE",
+      "category": "ASSET",
+      "system_tag": "loan_principal",
+      "parent_code": "A110000"
+    },
+    {
+      "code": "A110002",
+      "name": "PRINCIPAL ARREARS",
+      "category": "ASSET",
+      "system_tag": "principal_arrears",
+      "parent_code": "A110000"
+    },
+    {
+      "code": "A120000",
+      "name": "LOAN INTEREST & FEES RECEIVABLE",
+      "category": "ASSET",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "A120001",
+      "name": "REGULAR INTEREST ACCRUED (UNBILLED)",
+      "category": "ASSET",
+      "system_tag": "regular_interest_accrued",
+      "parent_code": "A120000"
+    },
+    {
+      "code": "A120002",
+      "name": "REGULAR INTEREST ARREARS",
+      "category": "ASSET",
+      "system_tag": "regular_interest_arrears",
+      "parent_code": "A120000"
+    },
+    {
+      "code": "A120003",
+      "name": "PENALTY INTEREST ASSET",
+      "category": "ASSET",
+      "system_tag": "penalty_interest_asset",
+      "parent_code": "A120000"
+    },
+    {
+      "code": "A120004",
+      "name": "DEFAULT INTEREST ASSET",
+      "category": "ASSET",
+      "system_tag": "default_interest_asset",
+      "parent_code": "A120000"
+    },
+    {
+      "code": "A120005",
+      "name": "FEES AND CHARGES ARREARS",
+      "category": "ASSET",
+      "system_tag": "fees_charges_arrears",
+      "parent_code": "A120000"
+    },
+    {
+      "code": "A130000",
+      "name": "PORTFOLIO CONTRA-ASSETS (PROVISION)",
+      "category": "ASSET",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "A130001",
+      "name": "ALLOWANCE FOR CREDIT LOSSES",
+      "category": "ASSET",
+      "system_tag": "allowance_credit_losses",
+      "parent_code": "A130000"
+    },
+    {
+      "code": "A130002",
+      "name": "PENALTY INTEREST IN SUSPENSE",
+      "category": "ASSET",
+      "system_tag": "penalty_interest_suspense",
+      "parent_code": "A130000"
+    },
+    {
+      "code": "A130003",
+      "name": "DEFAULT INTEREST IN SUSPENSE",
+      "category": "ASSET",
+      "system_tag": "default_interest_suspense",
+      "parent_code": "A130000"
+    },
+    {
+      "code": "A130004",
+      "name": "REGULAR INTEREST IN SUSPENSE",
+      "category": "ASSET",
+      "system_tag": "regular_interest_suspense",
+      "parent_code": "A130000"
+    },
+    {
+      "code": "A140000",
+      "name": "FIXED & OTHER ASSETS",
+      "category": "ASSET",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "A140001",
+      "name": "FIXED ASSETS - COST",
+      "category": "ASSET",
+      "system_tag": "fixed_assets_cost",
+      "parent_code": "A140000"
+    },
+    {
+      "code": "A140002",
+      "name": "ACCUMULATED DEPRECIATION",
+      "category": "ASSET",
+      "system_tag": "accumulated_depreciation",
+      "parent_code": "A140000"
+    },
+    {
+      "code": "A140003",
+      "name": "DEFERRED FEE AND COMMISSION ASSET",
+      "category": "ASSET",
+      "system_tag": "deferred_fee_commission_asset",
+      "parent_code": "A140000"
+    },
+    {
+      "code": "A150000",
+      "name": "DEFERRED BORROWING COSTS",
+      "category": "ASSET",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "A150001",
+      "name": "DEFERRED FEE ASSET (BORROWINGS)",
+      "category": "ASSET",
+      "system_tag": "deferred_fee_asset_borrowings",
+      "parent_code": "A150000"
+    },
+    {
+      "code": "L200000",
+      "name": "CUSTOMER & SHORT-TERM LIABILITIES",
+      "category": "LIABILITY",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "L200001",
+      "name": "DEFERRED FEE LIABILITY",
+      "category": "LIABILITY",
+      "system_tag": "deferred_fee_liability",
+      "parent_code": "L200000"
+    },
+    {
+      "code": "L200002",
+      "name": "REGULAR INTEREST INCOME HOLDING",
+      "category": "LIABILITY",
+      "system_tag": "regular_interest_income_holding",
+      "parent_code": "L200000"
+    },
+    {
+      "code": "L210000",
+      "name": "BORROWINGS & EXTERNAL DEBT",
+      "category": "LIABILITY",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "L210001",
+      "name": "BORROWINGS - LOAN PRINCIPAL",
+      "category": "LIABILITY",
+      "system_tag": "borrowings_loan_principal",
+      "parent_code": "L210000"
+    },
+    {
+      "code": "L210002",
+      "name": "INTEREST PAYABLE",
+      "category": "LIABILITY",
+      "system_tag": "interest_payable",
+      "parent_code": "L210000"
+    },
+    {
+      "code": "L220000",
+      "name": "OPERATIONAL LIABILITIES",
+      "category": "LIABILITY",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "L220001",
+      "name": "ACCOUNTS PAYABLE",
+      "category": "LIABILITY",
+      "system_tag": "accounts_payable",
+      "parent_code": "L220000"
+    },
+    {
+      "code": "L220002",
+      "name": "ACCRUED EXPENSES",
+      "category": "LIABILITY",
+      "system_tag": "accrued_expenses",
+      "parent_code": "L220000"
+    },
+    {
+      "code": "L220003",
+      "name": "TAX LIABILITY",
+      "category": "LIABILITY",
+      "system_tag": "tax_liability",
+      "parent_code": "L220000"
+    },
+    {
+      "code": "L220004",
+      "name": "UNAPPLIED FUNDS (OVERPAYMENTS)",
+      "category": "LIABILITY",
+      "system_tag": "unapplied_funds",
+      "parent_code": "L220000"
+    },
+    {
+      "code": "C300000",
+      "name": "EQUITY AND CAPITAL",
+      "category": "EQUITY",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "C300001",
+      "name": "SHARE CAPITAL",
+      "category": "EQUITY",
+      "system_tag": "share_capital",
+      "parent_code": "C300000"
+    },
+    {
+      "code": "C300002",
+      "name": "SHARE PREMIUM",
+      "category": "EQUITY",
+      "system_tag": "share_premium",
+      "parent_code": "C300000"
+    },
+    {
+      "code": "C300003",
+      "name": "RETAINED EARNINGS",
+      "category": "EQUITY",
+      "system_tag": "retained_earnings",
+      "parent_code": "C300000"
+    },
+    {
+      "code": "C300004",
+      "name": "DIVIDENDS PAID",
+      "category": "EQUITY",
+      "system_tag": "dividends_paid",
+      "parent_code": "C300000"
+    },
+    {
+      "code": "R400000",
+      "name": "LENDING INCOME (REVENUE)",
+      "category": "INCOME",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "R400001",
+      "name": "REGULAR INTEREST INCOME",
+      "category": "INCOME",
+      "system_tag": "regular_interest_income",
+      "parent_code": "R400000"
+    },
+    {
+      "code": "R400002",
+      "name": "DEFERRED FEE INCOME",
+      "category": "INCOME",
+      "system_tag": "deferred_fee_income",
+      "parent_code": "R400000"
+    },
+    {
+      "code": "R400003",
+      "name": "PENALTY INTEREST INCOME",
+      "category": "INCOME",
+      "system_tag": "penalty_interest_income",
+      "parent_code": "R400000"
+    },
+    {
+      "code": "R400004",
+      "name": "DEFAULT INTEREST INCOME",
+      "category": "INCOME",
+      "system_tag": "default_interest_income",
+      "parent_code": "R400000"
+    },
+    {
+      "code": "R400005",
+      "name": "BAD DEBTS RECOVERED",
+      "category": "INCOME",
+      "system_tag": "bad_debts_recovered",
+      "parent_code": "R400000"
+    },
+    {
+      "code": "E500000",
+      "name": "FINANCIAL & LENDING EXPENSES",
+      "category": "EXPENSE",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "E500001",
+      "name": "INTEREST EXPENSE",
+      "category": "EXPENSE",
+      "system_tag": "interest_expense",
+      "parent_code": "E500000"
+    },
+    {
+      "code": "E500002",
+      "name": "IMPAIRMENT LOSS EXPENSE",
+      "category": "EXPENSE",
+      "system_tag": "impairment_loss_expense",
+      "parent_code": "E500000"
+    },
+    {
+      "code": "E500003",
+      "name": "BAD DEBTS EXPENSE",
+      "category": "EXPENSE",
+      "system_tag": "bad_debts_expense",
+      "parent_code": "E500000"
+    },
+    {
+      "code": "E500004",
+      "name": "FEES AND COMMISSION EXPENSE",
+      "category": "EXPENSE",
+      "system_tag": "fees_commission_expense",
+      "parent_code": "E500000"
+    },
+    {
+      "code": "E500005",
+      "name": "AMORTIZATION OF BORROWING FEES",
+      "category": "EXPENSE",
+      "system_tag": "amortization_borrowing_fees",
+      "parent_code": "E500000"
+    },
+    {
+      "code": "E510000",
+      "name": "ADMINISTRATIVE EXPENSES",
+      "category": "EXPENSE",
+      "system_tag": null,
+      "parent_code": null
+    },
+    {
+      "code": "E510001",
+      "name": "STAFF COSTS",
+      "category": "EXPENSE",
+      "system_tag": "staff_costs",
+      "parent_code": "E510000"
+    },
+    {
+      "code": "E510002",
+      "name": "PREMISES & UTILITIES",
+      "category": "EXPENSE",
+      "system_tag": "premises_utilities",
+      "parent_code": "E510000"
+    },
+    {
+      "code": "E510003",
+      "name": "COMMUNICATION & IT",
+      "category": "EXPENSE",
+      "system_tag": "communication_it",
+      "parent_code": "E510000"
+    },
+    {
+      "code": "E510004",
+      "name": "DEPRECIATION EXPENSE",
+      "category": "EXPENSE",
+      "system_tag": "depreciation_expense",
+      "parent_code": "E510000"
+    },
+    {
+      "code": "E510005",
+      "name": "TRAVEL & MOTOR",
+      "category": "EXPENSE",
+      "system_tag": "travel_motor",
+      "parent_code": "E510000"
+    },
+    {
+      "code": "E510006",
+      "name": "PROFESSIONAL FEES",
+      "category": "EXPENSE",
+      "system_tag": "professional_fees",
+      "parent_code": "E510000"
+    },
+    {
+      "code": "E510007",
+      "name": "OFFICE ADMIN",
+      "category": "EXPENSE",
+      "system_tag": "office_admin",
+      "parent_code": "E510000"
+    },
+    {
+      "code": "E510008",
+      "name": "MARKETING",
+      "category": "EXPENSE",
+      "system_tag": "marketing",
+      "parent_code": "E510000"
+    }
+  ]
+}

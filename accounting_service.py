@@ -12,11 +12,15 @@ from decimal import Decimal
 import json
 import psycopg2
 from decimal_utils import as_10dp, as_2dp
-from loan_management import load_system_config_from_db
+from loan_management import load_system_config_from_db, _merge_cash_gl_into_payload
 from accounting_periods import (
     normalize_accounting_period_config,
     get_month_period_bounds,
     get_year_period_bounds,
+)
+from accounting_defaults_loader import (
+    get_default_receipt_gl_mapping_tuples,
+    get_default_transaction_template_tuples,
 )
 
 
@@ -57,121 +61,7 @@ class AccountingService:
             conn.close()
 
     def initialize_default_transaction_templates(self):
-        DEFAULT_TEMPLATES = [
-            ("LOAN_APPROVAL", "loan_principal", "DEBIT", "Creation of Loan - Principal", "EVENT"),
-            ("LOAN_APPROVAL", "cash_operating", "CREDIT", "Creation of Loan - Disbursed Amount", "EVENT"),
-            ("LOAN_APPROVAL", "deferred_fee_liability", "CREDIT", "Creation of Loan - Fees", "EVENT"),
-
-            # 2 / 2a / 2b. Amortisation of fees by component (straight-line EOM)
-            ("FEE_AMORTISATION_DRAWDOWN", "deferred_fee_liability", "DEBIT", "Amortisation of drawdown fees", "EOM"),
-            ("FEE_AMORTISATION_DRAWDOWN", "deferred_fee_income", "CREDIT", "Amortisation of drawdown fees", "EOM"),
-            ("FEE_AMORTISATION_ARRANGEMENT", "deferred_fee_liability", "DEBIT", "Amortisation of arrangement fees", "EOM"),
-            ("FEE_AMORTISATION_ARRANGEMENT", "deferred_fee_income", "CREDIT", "Amortisation of arrangement fees", "EOM"),
-            ("FEE_AMORTISATION_ADMIN", "deferred_fee_liability", "DEBIT", "Amortisation of administration fees", "EOM"),
-            ("FEE_AMORTISATION_ADMIN", "deferred_fee_income", "CREDIT", "Amortisation of administration fees", "EOM"),
-
-            # 3–5. Principal billing / receipts / direct payment not yet due
-            ("BILLING_PRINCIPAL_ARREARS", "principal_arrears", "DEBIT", "Billing of principal arrears", "EOD"),
-            ("BILLING_PRINCIPAL_ARREARS", "loan_principal", "CREDIT", "Billing of principal arrears", "EOD"),
-            ("PAYMENT_PRINCIPAL", "cash_operating", "DEBIT", "Payment of principal", "EVENT"),
-            ("PAYMENT_PRINCIPAL", "principal_arrears", "CREDIT", "Payment of principal", "EVENT"),
-            ("PAYMENT_PRINCIPAL_NOT_YET_DUE", "cash_operating", "DEBIT", "Direct payment of principal not yet due", "EVENT"),
-            ("PAYMENT_PRINCIPAL_NOT_YET_DUE", "loan_principal", "CREDIT", "Direct payment of principal not yet due", "EVENT"),
-
-            # 6–10. Regular interest (accrual, billing, receipts, direct payment not yet due)
-            ("ACCRUAL_REGULAR_INTEREST", "regular_interest_accrued", "DEBIT", "Accrual of REGULAR interest", "EOD"),
-            ("ACCRUAL_REGULAR_INTEREST", "regular_interest_income_holding", "CREDIT", "Accrual of REGULAR interest", "EOD"),
-            ("ACCRUAL_PENALTY_INTEREST", "penalty_interest_asset", "DEBIT", "Daily penalty interest accrual (11)", "EOD"),
-            ("ACCRUAL_PENALTY_INTEREST", "penalty_interest_suspense", "CREDIT", "Daily penalty interest accrual (11)", "EOD"),
-            ("ACCRUAL_DEFAULT_INTEREST", "default_interest_asset", "DEBIT", "Daily default interest accrual (14)", "EOD"),
-            ("ACCRUAL_DEFAULT_INTEREST", "default_interest_suspense", "CREDIT", "Daily default interest accrual (14)", "EOD"),
-            ("CLEAR_DAILY_ACCRUAL", "regular_interest_income_holding", "DEBIT", "Clear the Daily Accrual Accounts", "EOD"),
-            ("CLEAR_DAILY_ACCRUAL", "regular_interest_accrued", "CREDIT", "Clear the Daily Accrual Accounts", "EOD"),
-            ("BILLING_REGULAR_INTEREST", "regular_interest_arrears", "DEBIT", "Billing of REGULAR interest arrears", "EOD"),
-            ("BILLING_REGULAR_INTEREST", "regular_interest_income", "CREDIT", "Billing of REGULAR interest arrears", "EOD"),
-            ("PAYMENT_REGULAR_INTEREST", "cash_operating", "DEBIT", "Payment of REGULAR interest", "EVENT"),
-            ("PAYMENT_REGULAR_INTEREST", "regular_interest_arrears", "CREDIT", "Payment of REGULAR interest", "EVENT"),
-            ("PAYMENT_REGULAR_INTEREST_NOT_YET_DUE", "cash_operating", "DEBIT", "Direct payment of regular interest not yet due", "EVENT"),
-            ("PAYMENT_REGULAR_INTEREST_NOT_YET_DUE", "regular_interest_accrued", "CREDIT", "Direct payment of regular interest not yet due", "EVENT"),
-
-            # 11–13. Penalty interest (accrual, payment, recognise income, reversal)
-            ("PAYMENT_PENALTY_INTEREST", "cash_operating", "DEBIT", "Payment of penalty interest (12)", "EVENT"),
-            ("PAYMENT_PENALTY_INTEREST", "penalty_interest_asset", "CREDIT", "Payment of penalty interest (12)", "EVENT"),
-            ("PAYMENT_PENALTY_INTEREST", "penalty_interest_suspense", "DEBIT", "Recognise penalty income (12a)", "EVENT"),
-            ("PAYMENT_PENALTY_INTEREST", "penalty_interest_income", "CREDIT", "Recognise penalty income (12a)", "EVENT"),
-            ("REVERSAL_PENALTY_INTEREST", "penalty_interest_income", "DEBIT", "Reversal of penalty interest", "EVENT"),
-            ("REVERSAL_PENALTY_INTEREST", "penalty_interest_asset", "CREDIT", "Reversal of penalty interest", "EVENT"),
-
-            # 14–16. Default interest (accrual, payment, recognise income, reversal)
-            ("PAYMENT_DEFAULT_INTEREST", "cash_operating", "DEBIT", "Payment of default interest (15)", "EVENT"),
-            ("PAYMENT_DEFAULT_INTEREST", "default_interest_asset", "CREDIT", "Payment of default interest (15)", "EVENT"),
-            ("PAYMENT_DEFAULT_INTEREST", "default_interest_suspense", "DEBIT", "Recognise default income (15a)", "EVENT"),
-            ("PAYMENT_DEFAULT_INTEREST", "default_interest_income", "CREDIT", "Recognise default income (15a)", "EVENT"),
-            ("REVERSAL_DEFAULT_INTEREST", "default_interest_income", "DEBIT", "Reversal of default interest", "EVENT"),
-            ("REVERSAL_DEFAULT_INTEREST", "default_interest_asset", "CREDIT", "Reversal of default interest", "EVENT"),
-
-            # 17–22. Regular interest in suspense / reversals (configured for completeness)
-            ("ACCRUAL_REGULAR_INTEREST_SUSPENSE", "regular_interest_accrued", "DEBIT", "Daily accrual of regular interest into suspense", "EOD"),
-            ("ACCRUAL_REGULAR_INTEREST_SUSPENSE", "regular_interest_suspense", "CREDIT", "Daily accrual of regular interest into suspense", "EOD"),
-            ("PAYMENT_REGULAR_INTEREST_SUSPENSE", "cash_operating", "DEBIT", "Payment of regular interest in suspense", "EVENT"),
-            ("PAYMENT_REGULAR_INTEREST_SUSPENSE", "regular_interest_suspense", "CREDIT", "Payment of regular interest in suspense", "EVENT"),
-            ("PAYMENT_REGULAR_INTEREST_ACCRUED", "cash_operating", "DEBIT", "Payment of regular interest accrued (unbilled)", "EVENT"),
-            ("PAYMENT_REGULAR_INTEREST_ACCRUED", "regular_interest_accrued", "CREDIT", "Payment of regular interest accrued (unbilled)", "EVENT"),
-            ("RECOGNISE_REGULAR_INTEREST_INCOME", "regular_interest_income_holding", "DEBIT", "Recognise regular interest income", "EVENT"),
-            ("RECOGNISE_REGULAR_INTEREST_INCOME", "regular_interest_income", "CREDIT", "Recognise regular interest income", "EVENT"),
-            ("REVERSAL_REGULAR_INTEREST_ACCRUAL", "regular_interest_income_holding", "DEBIT", "Reversal of regular interest accrual", "EVENT"),
-            ("REVERSAL_REGULAR_INTEREST_ACCRUAL", "regular_interest_accrued", "CREDIT", "Reversal of regular interest accrual", "EVENT"),
-
-            # 23–24. Provisions (impairment)
-            ("PROVISION_RAISE", "impairment_loss_expense", "DEBIT", "Raising a provision (increasing risk)", "EOM"),
-            ("PROVISION_RAISE", "allowance_credit_losses", "CREDIT", "Raising a provision (increasing risk)", "EOM"),
-            ("PROVISION_REVERSAL", "allowance_credit_losses", "DEBIT", "Reversing a provision (quality improves)", "EOM"),
-            ("PROVISION_REVERSAL", "impairment_loss_expense", "CREDIT", "Reversing a provision (quality improves)", "EOM"),
-
-            # 25–27. Write-offs and recoveries
-            ("PRINCIPAL_WRITEOFF", "allowance_credit_losses", "DEBIT", "Principal write-off (final loss)", "EVENT"),
-            ("PRINCIPAL_WRITEOFF", "loan_principal", "CREDIT", "Principal write-off (final loss)", "EVENT"),
-            ("INTEREST_WRITEOFF", "bad_debts_expense", "DEBIT", "Interest write-off (no suspense balance)", "EVENT"),
-            ("INTEREST_WRITEOFF", "regular_interest_arrears", "CREDIT", "Interest write-off (no suspense balance)", "EVENT"),
-            ("WRITEOFF_RECOVERY", "cash_operating", "DEBIT", "Receipt from a fully written-off loan", "EVENT"),
-            ("WRITEOFF_RECOVERY", "bad_debts_recovered", "CREDIT", "Receipt from a fully written-off loan", "EVENT"),
-
-            # 28–28b. Restructuring (high-level configured for completeness)
-            ("LOAN_RESTRUCTURE_CAPITALISE", "loan_principal", "DEBIT", "Capitalisation of interest and arrears (restructure)", "EVENT"),
-            ("LOAN_RESTRUCTURE_CAPITALISE", "principal_arrears", "CREDIT", "Capitalisation of principal arrears (restructure)", "EVENT"),
-            ("LOAN_RESTRUCTURE_CAPITALISE", "regular_interest_arrears", "CREDIT", "Capitalisation of regular interest arrears (restructure)", "EVENT"),
-            ("LOAN_RESTRUCTURE_CAPITALISE", "penalty_interest_asset", "CREDIT", "Capitalisation of penalty interest (restructure)", "EVENT"),
-            ("LOAN_RESTRUCTURE_CAPITALISE", "default_interest_asset", "CREDIT", "Capitalisation of default interest (restructure)", "EVENT"),
-            ("LOAN_RESTRUCTURE_CAPITALISE", "fees_charges_arrears", "CREDIT", "Capitalisation of fees and charges arrears (restructure)", "EVENT"),
-            ("RESTRUCTURE_FEE_CHARGE", "loan_principal", "DEBIT", "Restructure fee (charged to customer)", "EVENT"),
-            ("RESTRUCTURE_FEE_CHARGE", "deferred_fee_liability", "CREDIT", "Restructure fee (deferred)", "EVENT"),
-            ("RESTRUCTURE_FEE_AMORTISATION", "deferred_fee_liability", "DEBIT", "Restructure fee amortisation (monthly)", "EOM"),
-            ("RESTRUCTURE_FEE_AMORTISATION", "deferred_fee_income", "CREDIT", "Restructure fee amortisation (monthly)", "EOM"),
-
-            # 29–33. Pass-through costs / commission (configured for completeness)
-            ("PASS_THROUGH_COST_DISBURSEMENT", "deferred_fee_commission_asset", "DEBIT", "Payment of third-party cost (pass-through)", "EVENT"),
-            ("PASS_THROUGH_COST_DISBURSEMENT", "cash_operating", "CREDIT", "Payment of third-party cost (pass-through)", "EVENT"),
-            ("PASS_THROUGH_COST_RECOVERY", "cash_operating", "DEBIT", "Receipt of pass-through costs (recovery)", "EVENT"),
-            ("PASS_THROUGH_COST_RECOVERY", "deferred_fee_commission_asset", "CREDIT", "Receipt of pass-through costs (recovery)", "EVENT"),
-            ("FEES_CHARGES_WRITEOFF", "allowance_credit_losses", "DEBIT", "Fees and charges arrears write-off (final loss)", "EVENT"),
-            ("FEES_CHARGES_WRITEOFF", "fees_charges_arrears", "CREDIT", "Fees and charges arrears write-off (final loss)", "EVENT"),
-            ("AGENT_COMMISSION_PAYMENT", "fees_commission_expense", "DEBIT", "Payment of agent commission", "EVENT"),
-            ("AGENT_COMMISSION_PAYMENT", "cash_operating", "CREDIT", "Payment of agent commission", "EVENT"),
-            ("COMMISSION_AMORTISATION", "fees_commission_expense", "DEBIT", "Monthly amortisation of commission", "EOM"),
-            ("COMMISSION_AMORTISATION", "deferred_fee_commission_asset", "CREDIT", "Monthly amortisation of commission", "EOM"),
-
-            # 34–37. Borrowings (aligned with GL mapping sheet)
-            ("BORROWING_DRAWDOWN", "cash_operating", "DEBIT", "Drawdown on a borrowing from a Financier", "EVENT"),
-            ("BORROWING_DRAWDOWN", "deferred_fee_asset_borrowings", "DEBIT", "Drawdown on a borrowing from a Financier - fees paid", "EVENT"),
-            ("BORROWING_DRAWDOWN", "borrowings_loan_principal", "CREDIT", "Drawdown on a borrowing from a Financier - principal owed", "EVENT"),
-            ("INTEREST_EXPENSE_ACCRUAL", "interest_expense", "DEBIT", "Monthly Accrual of interest expense", "EOM"),
-            ("INTEREST_EXPENSE_ACCRUAL", "interest_payable", "CREDIT", "Monthly Accrual of interest expense", "EOM"),
-            ("BORROWING_FEES_AMORTISATION", "amortization_borrowing_fees", "DEBIT", "Amortization of Loan Fees", "EOM"),
-            ("BORROWING_FEES_AMORTISATION", "deferred_fee_asset_borrowings", "CREDIT", "Amortization of Loan Fees", "EOM"),
-            ("BORROWING_REPAYMENT", "borrowings_loan_principal", "DEBIT", "Payment of borrowings", "EVENT"),
-            ("BORROWING_REPAYMENT", "interest_payable", "DEBIT", "Payment of borrowings - interest component", "EVENT"),
-            ("BORROWING_REPAYMENT", "cash_operating", "CREDIT", "Payment of borrowings - cash outflow", "EVENT"),
-        ]
+        DEFAULT_TEMPLATES = get_default_transaction_template_tuples()
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
@@ -207,6 +97,45 @@ class AccountingService:
         finally:
             conn.close()
 
+    def list_posting_leaf_accounts(self) -> list[dict]:
+        """Active accounts with no active children (posting leaves), with display_label path."""
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.list_posting_leaf_accounts()
+        finally:
+            conn.close()
+
+    def compute_source_cash_leaf_accounts(self, *, root_code: str = "A100000") -> list[dict]:
+        """Recompute allowed source-cash accounts from the live chart (see repository rules)."""
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.compute_source_cash_leaf_accounts(root_code=root_code)
+        finally:
+            conn.close()
+
+    def refresh_source_cash_account_cache(self, *, root_code: str = "A100000") -> dict:
+        """
+        Persist the source-cash account list into ``system_config.source_cash_account_cache``.
+        Call from admin maintenance UI; loan capture and Teller read the cache only (no per-request tree walk).
+        """
+        from datetime import datetime, timezone
+
+        from loan_management import load_system_config_from_db, save_system_config_to_db
+
+        entries = self.compute_source_cash_leaf_accounts(root_code=root_code)
+        cfg = load_system_config_from_db() or {}
+        cfg["source_cash_account_cache"] = {
+            "version": 1,
+            "root_code": root_code,
+            "refreshed_at": datetime.now(timezone.utc).isoformat(),
+            "entries": entries,
+        }
+        if not save_system_config_to_db(cfg):
+            raise RuntimeError("Failed to save system configuration after rebuilding source cash cache.")
+        return dict(cfg["source_cash_account_cache"])
+
     def is_parent_account(self, account_code: str) -> bool:
         conn = get_conn()
         try:
@@ -228,6 +157,57 @@ class AccountingService:
         try:
             repo = AccountingRepository(conn)
             return repo.list_all_transaction_templates()
+        finally:
+            conn.close()
+
+    def get_transaction_templates(self, event_type: str):
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            rows = repo.get_transaction_templates(event_type)
+            return list(rows or [])
+        finally:
+            conn.close()
+
+    def fetch_account_row_for_system_tag(self, system_tag: str):
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.fetch_account_row_for_system_tag(system_tag)
+        finally:
+            conn.close()
+
+    def list_active_direct_children_accounts(self, parent_id):
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.list_active_direct_children_accounts(parent_id)
+        finally:
+            conn.close()
+
+    def try_resolve_posting_account_for_tag(
+        self,
+        system_tag: str,
+        *,
+        loan_id: int | None = None,
+        account_overrides: dict | None = None,
+    ):
+        """
+        Try resolve_posting_account_for_tag without raising.
+        Returns (account_row_or_None, error_message_or_None).
+        """
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            try:
+                acc = repo.resolve_posting_account_for_tag(
+                    system_tag,
+                    loan_id=loan_id,
+                    account_overrides=account_overrides or {},
+                )
+                return (acc, None)
+            except ValueError as e:
+                return (None, str(e))
         finally:
             conn.close()
 
@@ -256,7 +236,15 @@ class AccountingService:
         finally:
             conn.close()
 
-    def create_account(self, code, name, category, system_tag=None, parent_id=None):
+    def create_account(
+        self,
+        code,
+        name,
+        category,
+        system_tag=None,
+        parent_id=None,
+        subaccount_resolution=None,
+    ):
         code = (code or "").strip() if code is not None else ""
         name = (name or "").strip() if name is not None else ""
         if not code or not name:
@@ -264,8 +252,89 @@ class AccountingService:
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
-            repo.create_account(code, name, category, system_tag, parent_id)
+            repo.create_account(
+                code,
+                name,
+                category,
+                system_tag,
+                parent_id,
+                subaccount_resolution=subaccount_resolution,
+            )
             return True
+        finally:
+            conn.close()
+
+    def suggest_next_grandchild_code_for_parent_id(self, parent_account_id: str) -> str:
+        """Suggest next ``BASE-NN`` code for children of the given parent account UUID."""
+        from accounting_core import suggest_next_grandchild_account_code
+
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            with conn.cursor() as cur:
+                cur.execute("SELECT code FROM accounts WHERE id = %s", (parent_account_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError("Parent account not found.")
+                parent_code = row["code"]
+            existing = repo.list_child_codes_for_parent(parent_account_id)
+            return suggest_next_grandchild_account_code(parent_code, existing)
+        finally:
+            conn.close()
+
+    def update_account_subaccount_resolution(self, account_id, subaccount_resolution) -> None:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.update_account_subaccount_resolution(account_id, subaccount_resolution)
+        finally:
+            conn.close()
+
+    def list_disbursement_bank_options(self, active_only: bool = True):
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.list_disbursement_bank_options(active_only=active_only)
+        finally:
+            conn.close()
+
+    def add_disbursement_bank_option(self, label: str, gl_account_id: str, sort_order: int = 0) -> int:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.insert_disbursement_bank_option(label, gl_account_id, sort_order=sort_order)
+        finally:
+            conn.close()
+
+    def set_disbursement_bank_option_active(self, option_id: int, is_active: bool) -> None:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.set_disbursement_bank_option_active(option_id, is_active)
+        finally:
+            conn.close()
+
+    def list_product_gl_subaccount_map(self, product_code: str | None = None):
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.list_product_gl_subaccount_map(product_code=product_code)
+        finally:
+            conn.close()
+
+    def upsert_product_gl_subaccount_map(self, product_code: str, system_tag: str, gl_account_id: str) -> None:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.upsert_product_gl_subaccount_map(product_code, system_tag, gl_account_id)
+        finally:
+            conn.close()
+
+    def delete_product_gl_subaccount_map(self, map_id: int) -> None:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.delete_product_gl_subaccount_map(map_id)
         finally:
             conn.close()
 
@@ -361,6 +430,7 @@ class AccountingService:
             created_by=created_by,
             entry_date=e_date,
             payload=payload,
+            loan_id=int(loan_id),
         )
 
     def get_account_ledger(self, account_code: str, start_date: date = None, end_date: date = None):
@@ -580,28 +650,8 @@ class AccountingService:
             conn.close()
 
     def _build_default_receipt_gl_mappings(self):
-        """Build default allocation→event mappings (originals + reversals)."""
-        ORIGINALS = [
-            ("alloc_principal_arrears", "PAYMENT_PRINCIPAL"),
-            ("alloc_principal_not_due", "PAYMENT_PRINCIPAL_NOT_YET_DUE"),
-            ("alloc_interest_arrears", "PAYMENT_REGULAR_INTEREST"),
-            ("alloc_interest_accrued", "PAYMENT_REGULAR_INTEREST_NOT_YET_DUE"),
-            ("alloc_penalty_interest", "PAYMENT_PENALTY_INTEREST"),
-            ("alloc_default_interest", "PAYMENT_DEFAULT_INTEREST"),
-            ("alloc_regular_interest", "PAYMENT_REGULAR_INTEREST_SUSPENSE"),
-            ("alloc_regular_interest", "PAYMENT_REGULAR_INTEREST_ACCRUED"),
-            ("alloc_fees_charges", "PASS_THROUGH_COST_RECOVERY"),
-        ]
-        rows = []
-        for i, (alloc_key, evt) in enumerate(ORIGINALS):
-            rows.append(("SAVE_RECEIPT", alloc_key, evt, alloc_key, 1, 10 + i))
-        for i, (alloc_key, evt) in enumerate(ORIGINALS):
-            rows.append(("SAVE_REVERSAL", alloc_key, evt, alloc_key, -1, 100 + i))
-        # When unapplied funds are applied via recast, mirror the same
-        # allocation→event behaviour so GL stays aligned with the loan engine.
-        for i, (alloc_key, evt) in enumerate(ORIGINALS):
-            rows.append(("APPLY_UNAPPLIED", alloc_key, evt, alloc_key, 1, 200 + i))
-        return rows
+        """Bundled defaults: `accounting_defaults/receipt_gl_mapping.json` or built-in."""
+        return get_default_receipt_gl_mapping_tuples()
 
     def initialize_default_receipt_gl_mappings(self) -> bool:
         """
@@ -684,7 +734,15 @@ class AccountingService:
         finally:
             conn.close()
 
-    def simulate_event(self, event_type: str, amount: Decimal = None, payload: dict = None, is_reversal: bool = False):
+    def simulate_event(
+        self,
+        event_type: str,
+        amount: Decimal = None,
+        payload: dict = None,
+        is_reversal: bool = False,
+        loan_id: int | None = None,
+        repayment_id: int | None = None,
+    ):
         """
         Dry-run journal lines for an event. Does **not** persist.
 
@@ -693,6 +751,9 @@ class AccountingService:
         """
         if payload is None:
             payload = {}
+        payload = dict(payload)
+        if loan_id is not None:
+            payload = _merge_cash_gl_into_payload(int(loan_id), repayment_id, payload)
 
         conn = get_conn()
         try:
@@ -701,9 +762,17 @@ class AccountingService:
             if not templates:
                 return JournalSimulationResult.empty()
 
+            overrides = payload.get("account_overrides")
+            if not isinstance(overrides, dict):
+                overrides = {}
+
             lines: list[dict] = []
             for tmpl in templates:
-                account = repo.get_account_by_tag(tmpl["system_tag"])
+                account = repo.resolve_posting_account_for_tag(
+                    tmpl["system_tag"],
+                    loan_id=loan_id,
+                    account_overrides=overrides,
+                )
                 account_name = account["name"] if account else f"Missing Account ({tmpl['system_tag']})"
                 account_code = account["code"] if account else "???"
 
@@ -750,12 +819,31 @@ class AccountingService:
         finally:
             conn.close()
 
-    def post_event(self, event_type: str, reference: str, description: str, event_id: str, created_by: str, entry_date: date = None, amount: Decimal = None, payload: dict = None, is_reversal: bool = False):
+    def post_event(
+        self,
+        event_type: str,
+        reference: str,
+        description: str,
+        event_id: str,
+        created_by: str,
+        entry_date: date = None,
+        amount: Decimal = None,
+        payload: dict = None,
+        is_reversal: bool = False,
+        loan_id: int | None = None,
+        repayment_id: int | None = None,
+    ):
         if entry_date is None:
             entry_date = date.today()
         
         if payload is None:
             payload = {}
+        payload = dict(payload)
+        if loan_id is not None:
+            payload = _merge_cash_gl_into_payload(int(loan_id), repayment_id, payload)
+        overrides = payload.get("account_overrides")
+        if not isinstance(overrides, dict):
+            overrides = {}
         
         conn = get_conn()
         try:
@@ -766,7 +854,11 @@ class AccountingService:
             
             lines = []
             for tmpl in templates:
-                account = repo.get_account_by_tag(tmpl["system_tag"])
+                account = repo.resolve_posting_account_for_tag(
+                    tmpl["system_tag"],
+                    loan_id=loan_id,
+                    account_overrides=overrides,
+                )
                 if not account:
                     raise ValueError(f"Account not found for system tag: {tmpl['system_tag']}")
                 

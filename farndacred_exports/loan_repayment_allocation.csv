@@ -1,4 +1,8 @@
 id,repayment_id,alloc_principal_not_due,alloc_principal_arrears,alloc_interest_accrued,alloc_interest_arrears,alloc_default_interest,alloc_penalty_interest,alloc_fees_charges,alloc_principal_total,alloc_interest_total,alloc_fees_total,created_at,event_type,source_repayment_id,unallocated,alloc_total,loan_id,repayment_amount,value_date
+24,25,0,0,0,0,0,0,0,0,0,0,2026-03-28T09:23:06.088864+02:00,new_allocation,,140,0,1,140,2025-09-26
+23,24,0,0,0,0,0,0,0,0,0,0,2026-03-28T09:22:22.738326+02:00,new_allocation,,150,0,1,150,2025-09-24
+32,33,0,0,0,0,0,0,0,0,0,0,2026-03-28T15:28:08.612480+02:00,unallocation_parent_reversed,,-150,0,1,-150,2025-09-24
+22,23,0,0,0,0,0,0,0,0,0,0,2026-03-28T09:21:39.877455+02:00,new_allocation,,100,0,1,100,2025-09-23
 15,16,0,0,0,0,0,0,0,0,0,0,2026-03-28T07:23:09.706127+02:00,new_allocation,,100,0,1,100,2025-09-11
 16,17,0,0,0,0,0,0,0,0,0,0,2026-03-28T07:23:21.002419+02:00,new_allocation,,100,0,1,100,2025-09-11
 17,18,0,0,0,0,0,0,0,0,0,0,2026-03-28T07:23:37.240692+02:00,new_allocation,,10,0,1,10,2025-09-11

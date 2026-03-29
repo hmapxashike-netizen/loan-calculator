@@ -172,6 +172,28 @@ def _f3(v: Any) -> float:
     return float(_q3(v))
 
 
+def _liq_rev_interleave_sort(narr: str) -> tuple[int, int, str]:
+    """
+    Order LIQ-<id> immediately before REV-LIQ-<id> on the same date.
+    Putting all LIQ rows before all REV-LIQ rows breaks running Balance / Unapplied columns
+    when a liquidation is reversed after later liquidations were posted.
+    """
+    import re
+
+    s = str(narr or "")
+    m = re.match(r"^LIQ-(\d+)", s)
+    if m:
+        return (int(m.group(1)), 0, s)
+    m = re.match(r"^REV-LIQ-(\d+)", s)
+    if m:
+        return (int(m.group(1)), 1, s)
+    if s.startswith("Liquidation of unapplied"):
+        return (10_000_000, 0, s)
+    if "Reversal of unapplied liquidation" in s:
+        return (10_000_000, 1, s)
+    return (10_000_001, 0, s)
+
+
 def _total_delinquency_arrears(ds: dict | None) -> float:
     """
     Total delinquency from loan_daily_state: amounts past due / in arrears buckets
@@ -311,6 +333,10 @@ def _reorder_customer_facing_rows_receipts_last(rows: list[dict[str, Any]]) -> l
                 "Unapplied funds credit" in narr
                 or narr.startswith("Liquidation of unapplied")
                 or "Reversal of unapplied" in narr
+                or narr.startswith("OP-")
+                or narr.startswith("LIQ-")
+                or narr.startswith("REV-LIQ-")
+                or narr.startswith("REV-RCPT-")
             )
 
         other_before = [
@@ -372,6 +398,8 @@ def _match_ledger_row_for_unapplied_narration(
     import re
 
     rk_m = re.search(r"receipt no\s+(\S+)", narr, re.I)
+    if not rk_m:
+        rk_m = re.search(r"From Repayment id\s+(\S+)", narr, re.I)
     if not rk_m:
         rk_m = re.search(r"(?:OP|LIQ|RCPT)-(\d+)", narr)
     rk = (rk_m.group(1).rstrip(")") if rk_m else "").strip()
@@ -1073,7 +1101,14 @@ def _generate_periodic_statement(
             else:
                 row["Narration"] = f"LIQ-{rep_id}"
         elif kind == "credit":
-            row["Narration"] = f"OP-{rep_id}"
+            rid_disp = rep_id if rep_id is not None else (rk or "").strip() or "?"
+            src_amt = u.get("source_receipt_amount")
+            if src_amt is not None:
+                row["Narration"] = (
+                    f"OP-{rid_disp} From Repayment id {rid_disp} (Receipt {_f2(float(src_amt))})"
+                )
+            else:
+                row["Narration"] = f"OP-{rid_disp} From Repayment id {rid_disp}"
         elif kind == "reversal":
             if delta > 0:
                 # Reversal of liquidation
@@ -1222,17 +1257,21 @@ def _generate_periodic_statement(
         narr = r.get("Narration") or ""
         
         if narr.startswith("Total outstanding"):
-            order = 99
-        elif "Unapplied funds credit" in narr or narr.startswith("OP-"):
-            order = 5
-        elif narr.startswith("Liquidation of unapplied") or narr.startswith("LIQ-"):
-            order = 6
-        elif "Reversal of unapplied" in narr or narr.startswith("REV-LIQ-") or narr.startswith("REV-RCPT-"):
-            order = 7
-        else:
-            order = 1
-            
-        return (due_date, order, narr)
+            return (due_date, 99, (0, 0, ""), narr)
+        if "Unapplied funds credit" in narr or narr.startswith("OP-"):
+            return (due_date, 5, (0, 0, ""), narr)
+        if (
+            narr.startswith("Liquidation of unapplied")
+            or narr.startswith("LIQ-")
+            or narr.startswith("REV-LIQ-")
+            or "Reversal of unapplied liquidation" in narr
+        ):
+            return (due_date, 6, _liq_rev_interleave_sort(narr), narr)
+        if narr.startswith("REV-RCPT-") or (
+            "Reversal of unapplied" in narr and "liquidation" not in narr.lower()
+        ):
+            return (due_date, 7, (0, 0, ""), narr)
+        return (due_date, 1, (0, 0, ""), narr)
 
     rows.sort(key=_sort_key)
     return rows, meta
@@ -1340,17 +1379,14 @@ def generate_customer_facing_statement(
                 "_unapplied_delta": delta_val,
             })
         elif narration.startswith("Unapplied funds credit") or narration.startswith("Reversal of unapplied") or narration.startswith("OP-") or narration.startswith("REV-RCPT-"):
-            # Mark the unapplied delta explicitly so the waterfall can adjust the running balance
-            # backwards or forwards through intraday receipts. We pull this from the narration.
+            # Use ledger _unapplied_delta only. Do not substitute (Receipt X) = full receipt amount;
+            # that is not the same as unapplied_delta and breaks running Unapplied after reversals.
             delta_val = r.get("_unapplied_delta", 0.0)
-            
-            # Extract receipt amount explicitly from the unapplied_lines if possible
-            # Here we parse it out from the narration "(Receipt XX)"
             import re
             m = re.search(r"\(Receipt ([0-9.]+)\)", narration)
-            if m and float(delta_val) == 0.0:
+            if m and float(delta_val) == 0.0 and not narration.startswith("OP-") and not narration.startswith("REV-RCPT-"):
                 val = float(m.group(1))
-                if "Unapplied funds credit" in narration or "Liquidation of unapplied" in narration or narration.startswith("OP-") or narration.startswith("LIQ-"):
+                if "Unapplied funds credit" in narration or "Liquidation of unapplied" in narration or narration.startswith("LIQ-"):
                     delta_val = val
                 else:
                     delta_val = -val
