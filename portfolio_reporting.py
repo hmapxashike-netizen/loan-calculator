@@ -1,0 +1,650 @@
+"""
+Read-only portfolio analytics: debtor arrears ageing buckets and principal maturity profile.
+
+Uses latest `loan_schedules` version + `schedule_lines` and latest `loan_daily_state` on/before as-of.
+Does not modify allocations, EOD, or engine persistence.
+
+Arrears ageing methodology (credit-style vintage by obligation):
+- Only instalments **strictly past due** are used: **due date < as-of** (due on as-of is not in arrears for
+  this report; **0 days past due** is not bucketed into 1–30).
+- **Principal arrears**: allocated to past-due instalments **newest due date first** (most recent missed
+  instalment before as-of), each line taking at most its scheduled **principal**. Surplus after all caps stacks
+  on that **newest** past-due line (same index-0 rule as the allocator).
+- **Interest arrears**: same order against scheduled **interest**, surplus on **newest** past-due line.
+- **Penalty & default interest**: daily ``loan_daily_state`` rows supply ``penalty_interest_balance``,
+  ``penalty_interest_daily``, ``default_interest_balance``, and ``default_interest_daily``. **Primary**
+  vintage uses **positive daily accrual** on each row’s ``as_of_date``, bucketed by ``max(1, (as_of - d).days)``,
+  then **scaled** to the reporting **balance**. If no row has positive daily accrual for that component, **fallback**
+  is **positive day-over-day balance deltas** (same scaling). **Fees** use balance deltas only (no ``*_daily`` in LDS).
+  If there is no history, that component falls back to **pro-rata** by allocated P+I per past-due line (else newest).
+- **DPD buckets** (inclusive): **1–30**, **31–60**, **61–90**, **91–180**, **181+** days past due (from each line’s
+  **due date < as-of**). There is **no** arrears “unallocated” bucket: if arrears > 0 but no past-due schedule
+  lines are available, the report raises.
+
+Maturity: `principal_not_due` spread across **future** instalments by scheduled **principal** weights;
+buckets by **days to due**.
+"""
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
+
+import pandas as pd
+from psycopg2.extras import RealDictCursor
+
+from decimal_utils import as_10dp
+from loan_management import _connection
+from statements import _parse_schedule_date
+
+
+def _parse_schedule_line_date(raw: Any) -> date | None:
+    """Parse schedule line Date; same as statements, plus common ISO / slash formats."""
+    d = _parse_schedule_date(raw)
+    if d is not None:
+        return d
+    if isinstance(raw, str):
+        s = raw.strip()[:32]
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+    return None
+
+
+def _row_schedule_date(row: dict[str, Any]) -> date | None:
+    """Resolve Date column regardless of PG/psycopg2 key casing."""
+    return _parse_schedule_line_date(
+        row.get("Date") or row.get("date") or row.get("DATE")
+    )
+
+
+def _row_period(row: dict[str, Any]) -> int:
+    try:
+        return int(row.get("Period") or row.get("period") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+# Arrears: dpd = (as_of - due_date).days for lines with due < as-of; only buckets 1–30 … 181+.
+ARREARS_BUCKET_KEYS = ("bkt_1_30", "bkt_31_60", "bkt_61_90", "bkt_91_180", "bkt_181p")
+ARREARS_BUCKET_LABELS = ("1–30 dpd", "31–60 dpd", "61–90 dpd", "91–180 dpd", "181+ dpd")
+
+# Maturity: days to due = (due_date - as_of).days
+MATURITY_BUCKET_KEYS = ("bkt_1_7", "bkt_8_30", "bkt_31_60", "bkt_61_90", "bkt_91_360", "bkt_360p", "bkt_unallocated")
+MATURITY_BUCKET_LABELS = ("0–7 days", "8–30 days", "31–60 days", "61–90 days", "91–360 days", "360+ days", "Unallocated")
+
+
+def _zero_arrears_buckets() -> dict[str, Decimal]:
+    return {k: Decimal("0") for k in ARREARS_BUCKET_KEYS}
+
+
+def _zero_maturity_buckets() -> dict[str, Decimal]:
+    return {k: Decimal("0") for k in MATURITY_BUCKET_KEYS}
+
+
+def _arrears_bucket_index(days_past_due: int) -> int:
+    """Map integer DPD to bucket index (0..4). Requires DPD >= 1 (due date strictly before as-of)."""
+    if days_past_due < 1:
+        raise ValueError(
+            f"Arrears ageing requires days past due >= 1 for schedule-based lines; got {days_past_due}"
+        )
+    if days_past_due <= 30:
+        return 0
+    if days_past_due <= 60:
+        return 1
+    if days_past_due <= 90:
+        return 2
+    if days_past_due <= 180:
+        return 3
+    return 4
+
+
+def _scale_arrears_buckets_to_closing(
+    raw: dict[str, Decimal], closing_balance: Decimal
+) -> dict[str, Decimal]:
+    """Scale non-negative bucket weights so they sum to `closing_balance` (10 dp); residue on 181+ bucket."""
+    closing = as_10dp(closing_balance)
+    total_raw = as_10dp(sum(raw.values(), Decimal("0")))
+    if total_raw <= 0 or closing <= 0:
+        return _zero_arrears_buckets()
+    scale = as_10dp(closing / total_raw)
+    scaled = {k: as_10dp(raw[k] * scale) for k in ARREARS_BUCKET_KEYS}
+    ssum = as_10dp(sum(scaled.values(), Decimal("0")))
+    diff = as_10dp(closing - ssum)
+    if diff != 0:
+        k_last = ARREARS_BUCKET_KEYS[-1]
+        scaled[k_last] = as_10dp(scaled[k_last] + diff)
+    return scaled
+
+
+def buckets_from_daily_balance_series(
+    as_of: date,
+    dated_balances: list[tuple[date, Decimal]],
+    closing_balance: Decimal,
+) -> dict[str, Decimal]:
+    """
+    Map a component balance into arrears DPD buckets using **positive day-over-day balance increases** only.
+    Assumes `dated_balances` is sorted ascending by date. Scaled to `closing_balance`.
+    """
+    closing = as_10dp(closing_balance)
+    raw = _zero_arrears_buckets()
+    if closing <= 0:
+        return raw
+    if not dated_balances:
+        return raw
+
+    prev = Decimal("0")
+    for d, bal in dated_balances:
+        b = as_10dp(bal)
+        chg = as_10dp(b - prev)
+        prev = b
+        if chg > 0:
+            age_days = max(1, (as_of - d).days)
+            idx = _arrears_bucket_index(age_days)
+            k = ARREARS_BUCKET_KEYS[idx]
+            raw[k] = as_10dp(raw[k] + chg)
+
+    total_raw = as_10dp(sum(raw.values(), Decimal("0")))
+    if total_raw <= 0:
+        d_last = dated_balances[-1][0]
+        age_days = max(1, (as_of - d_last).days)
+        idx = _arrears_bucket_index(age_days)
+        out = _zero_arrears_buckets()
+        out[ARREARS_BUCKET_KEYS[idx]] = closing
+        return out
+
+    return _scale_arrears_buckets_to_closing(raw, closing)
+
+
+def buckets_from_daily_flow_or_balance(
+    as_of: date,
+    dated_rows: list[tuple[date, Decimal, Decimal]],
+    closing_balance: Decimal,
+) -> dict[str, Decimal]:
+    """
+    Each row is ``(as_of_date, end_of_day_balance, daily_accrual)``. If any row has ``daily_accrual > 0`` in the
+    series, **primary** attribution uses those positive flows (by row date). Otherwise uses **balance deltas**
+    between consecutive balances (see ``buckets_from_daily_balance_series``). Result scaled to ``closing_balance``.
+    """
+    closing = as_10dp(closing_balance)
+    if closing <= 0 or not dated_rows:
+        return _zero_arrears_buckets()
+
+    raw_flow = _zero_arrears_buckets()
+    total_flow = Decimal("0")
+    for d, _bal, daily in dated_rows:
+        fl = as_10dp(max(Decimal("0"), daily))
+        if fl > 0:
+            age_days = max(1, (as_of - d).days)
+            k = ARREARS_BUCKET_KEYS[_arrears_bucket_index(age_days)]
+            raw_flow[k] = as_10dp(raw_flow[k] + fl)
+            total_flow = as_10dp(total_flow + fl)
+
+    if total_flow > 0:
+        return _scale_arrears_buckets_to_closing(raw_flow, closing)
+
+    return buckets_from_daily_balance_series(
+        as_of, [(d, b) for d, b, _ in dated_rows], closing
+    )
+
+
+def _normalize_ancillary_daily_rows(
+    series: list[tuple[date, Decimal] | tuple[date, Decimal, Decimal]],
+) -> list[tuple[date, Decimal, Decimal]]:
+    """Allow legacy ``(date, balance)`` rows; third element defaults to zero daily flow."""
+    out: list[tuple[date, Decimal, Decimal]] = []
+    for row in series:
+        if len(row) == 3:
+            d, bal, daily = row
+            out.append((d, as_10dp(bal), as_10dp(daily)))
+        else:
+            d, bal = row
+            out.append((d, as_10dp(bal), Decimal("0")))
+    return out
+
+
+def _ancillary_to_buckets_by_pi_weights(
+    as_of: date,
+    anc: Decimal,
+    entries: list[tuple[date, int, Decimal, Decimal]],
+    alloc_p: list[Decimal],
+    alloc_i: list[Decimal],
+) -> dict[str, Decimal]:
+    """Spread one ancillary total across past-due lines by P+I weights, then bucket by line due date."""
+    buckets = _zero_arrears_buckets()
+    anc = as_10dp(anc)
+    if anc <= 0 or not entries:
+        return buckets
+    weights = [as_10dp(alloc_p[j] + alloc_i[j]) for j in range(len(entries))]
+    if as_10dp(sum(weights)) <= 0:
+        due0, _per0, _, _ = entries[0]
+        bk = ARREARS_BUCKET_KEYS[_arrears_bucket_index(max(1, (as_of - due0).days))]
+        buckets[bk] = anc
+        return buckets
+    parts = _allocate_proportional(anc, weights)
+    for j, (due, _per, _, _) in enumerate(entries):
+        part = as_10dp(parts[j])
+        if part <= 0:
+            continue
+        bk = ARREARS_BUCKET_KEYS[_arrears_bucket_index(max(1, (as_of - due).days))]
+        buckets[bk] = as_10dp(buckets[bk] + part)
+    return buckets
+
+
+def _maturity_bucket_index(days_to_due: int) -> int:
+    if days_to_due < 0:
+        return 6
+    if days_to_due <= 7:
+        return 0
+    if days_to_due <= 30:
+        return 1
+    if days_to_due <= 60:
+        return 2
+    if days_to_due <= 90:
+        return 3
+    if days_to_due <= 360:
+        return 4
+    return 5
+
+
+def _line_principal_interest(row: dict[str, Any]) -> tuple[Decimal, Decimal]:
+    p = as_10dp(row.get("principal") or row.get("Principal") or 0)
+    i = as_10dp(row.get("interest") or row.get("Interest") or 0)
+    return p, i
+
+
+def _allocate_proportional(total: Decimal, weights: list[Decimal]) -> list[Decimal]:
+    """Split total across weights at 10dp; last line absorbs rounding residual."""
+    total = as_10dp(total)
+    if total <= 0:
+        return [Decimal("0")] * len(weights)
+    s = as_10dp(sum(weights))
+    if s <= 0 or not weights:
+        return [Decimal("0")] * len(weights)
+    out: list[Decimal] = []
+    acc = Decimal("0")
+    for k, w in enumerate(weights):
+        if k == len(weights) - 1:
+            out.append(as_10dp(total - acc))
+        else:
+            part = as_10dp(total * as_10dp(w) / s)
+            out.append(part)
+            acc = as_10dp(acc + part)
+    return out
+
+
+def _fifo_allocate_to_lines(total: Decimal, caps: list[Decimal]) -> list[Decimal]:
+    """
+    Allocate `total` across lines in list order, each line taking at most its cap.
+    Surplus after all caps is added to the first line (for arrears: newest past-due instalment).
+    """
+    total = as_10dp(total)
+    n = len(caps)
+    if n == 0:
+        return []
+    out = [Decimal("0")] * n
+    rem = total
+    for idx in range(n):
+        if rem <= 0:
+            break
+        cap = as_10dp(max(Decimal("0"), caps[idx]))
+        take = as_10dp(min(rem, cap))
+        out[idx] = take
+        rem = as_10dp(rem - take)
+    if rem > 0:
+        out[0] = as_10dp(out[0] + rem)
+    return out
+
+
+def bucket_arrears_for_loan(
+    as_of: date,
+    *,
+    principal_arrears: Decimal,
+    interest_arrears: Decimal,
+    fees_charges: Decimal,
+    penalty: Decimal,
+    default_int: Decimal,
+    schedule_lines: list[dict[str, Any]],
+    daily_series: dict[str, list[tuple[date, Decimal] | tuple[date, Decimal, Decimal]]] | None = None,
+) -> dict[str, Decimal]:
+    """Return bucket key -> amount (10dp): P/I newest past-due first; penalty/default/fees from daily LDS when given."""
+    buckets = _zero_arrears_buckets()
+
+    entries: list[tuple[date, int, Decimal, Decimal]] = []
+    for row in sorted(schedule_lines, key=_row_period):
+        due = _row_schedule_date(row)
+        if due is None or due >= as_of:
+            continue
+        p, i = _line_principal_interest(row)
+        entries.append((due, _row_period(row), p, i))
+
+    # Newest due date first (closest to as-of), then higher period — matches “most recent past-due instalment” first.
+    entries.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+    total_arrears = as_10dp(
+        principal_arrears + interest_arrears + fees_charges + penalty + default_int
+    )
+    if not entries:
+        if total_arrears > 0:
+            raise ValueError(
+                "No past-due schedule instalments (due date < as-of with parseable dates); "
+                "cannot bucket arrears without at least one such line."
+            )
+        return buckets
+
+    caps_p = [as_10dp(e[2]) for e in entries]
+    caps_i = [as_10dp(e[3]) for e in entries]
+    alloc_p = _fifo_allocate_to_lines(principal_arrears, caps_p)
+    alloc_i = _fifo_allocate_to_lines(interest_arrears, caps_i)
+
+    for j, (due, _per, _, _) in enumerate(entries):
+        part = as_10dp(alloc_p[j] + alloc_i[j])
+        if part <= 0:
+            continue
+        bk = ARREARS_BUCKET_KEYS[_arrears_bucket_index((as_of - due).days)]
+        buckets[bk] = as_10dp(buckets[bk] + part)
+
+    ds = daily_series or {}
+
+    def _component_buckets(key: str, balance: Decimal) -> dict[str, Decimal]:
+        bal = as_10dp(balance)
+        if bal <= 0:
+            return _zero_arrears_buckets()
+        series = ds.get(key) or []
+        if series:
+            rows = _normalize_ancillary_daily_rows(series)
+            return buckets_from_daily_flow_or_balance(as_of, rows, bal)
+        return _ancillary_to_buckets_by_pi_weights(as_of, bal, entries, alloc_p, alloc_i)
+
+    for k, part in _component_buckets("penalty", penalty).items():
+        buckets[k] = as_10dp(buckets[k] + part)
+    for k, part in _component_buckets("default", default_int).items():
+        buckets[k] = as_10dp(buckets[k] + part)
+    for k, part in _component_buckets("fees", fees_charges).items():
+        buckets[k] = as_10dp(buckets[k] + part)
+
+    return buckets
+
+
+def bucket_maturity_for_loan(
+    as_of: date,
+    *,
+    principal_not_due: Decimal,
+    schedule_lines: list[dict[str, Any]],
+    view_type: str = "principal",
+) -> dict[str, Decimal]:
+    buckets = _zero_maturity_buckets()
+    pnd = as_10dp(principal_not_due)
+    if pnd <= 0 and view_type == "principal":
+        return buckets
+
+    sorted_lines = sorted(schedule_lines, key=_row_period)
+    future: list[tuple[date, Decimal, Decimal]] = []
+    for row in sorted_lines:
+        due = _row_schedule_date(row)
+        if due is None:
+            continue
+        if due > as_of:
+            pr, int_amt = _line_principal_interest(row)
+            if pr > 0 or int_amt > 0:
+                future.append((due, pr, int_amt))
+
+    if view_type == "principal":
+        wf = as_10dp(sum(x[1] for x in future))
+        if wf <= 0:
+            buckets["bkt_unallocated"] = pnd
+            return buckets
+
+        weights = [x[1] for x in future]
+        parts = _allocate_proportional(pnd, weights)
+        for (due, _, _), part in zip(future, parts, strict=True):
+            days_to = (due - as_of).days
+            idx = _maturity_bucket_index(days_to)
+            key = MATURITY_BUCKET_KEYS[idx]
+            buckets[key] = as_10dp(buckets[key] + part)
+    else:
+        wf = as_10dp(sum(x[1] for x in future))
+        weights = [x[1] for x in future]
+        parts_pr = _allocate_proportional(pnd, weights) if wf > 0 else [Decimal("0")] * len(future)
+        if wf <= 0 and pnd > 0:
+            buckets["bkt_unallocated"] = pnd
+            
+        for (due, _, int_amt), part_pr in zip(future, parts_pr, strict=True):
+            days_to = (due - as_of).days
+            idx = _maturity_bucket_index(days_to)
+            key = MATURITY_BUCKET_KEYS[idx]
+            buckets[key] = as_10dp(buckets[key] + part_pr + int_amt)
+
+    return buckets
+
+
+def fetch_latest_schedule_lines_batch(loan_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    """Latest schedule version per loan; lines ordered by Period."""
+    out: dict[int, list[dict[str, Any]]] = {lid: [] for lid in loan_ids}
+    if not loan_ids:
+        return out
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                WITH latest AS (
+                    SELECT DISTINCT ON (loan_id)
+                        id AS schedule_id,
+                        loan_id
+                    FROM loan_schedules
+                    WHERE loan_id = ANY(%s)
+                    ORDER BY loan_id, version DESC
+                )
+                SELECT l.loan_id, sl.*
+                FROM latest l
+                JOIN schedule_lines sl ON sl.loan_schedule_id = l.schedule_id
+                ORDER BY l.loan_id, sl."Period"
+                """,
+                (loan_ids,),
+            )
+            for row in cur.fetchall() or []:
+                lid = int(row["loan_id"])
+                if lid in out:
+                    line = dict(row)
+                    line.pop("loan_id", None)
+                    out[lid].append(line)
+    return out
+
+
+def fetch_loan_daily_ancillary_series_batch(
+    loan_ids: list[int], as_of: date
+) -> dict[int, dict[str, list[tuple[date, Decimal, Decimal]]]]:
+    """
+    Daily `loan_daily_state` for penalty, default, and fees (on or before `as_of`), ascending by date.
+    Each list entry is ``(as_of_date, balance, daily_accrual)``; fees use ``daily_accrual = 0`` (no LDS daily column).
+    Penalty/default use ``buckets_from_daily_flow_or_balance`` (flow first, else balance deltas).
+    """
+    if not loan_ids:
+        return {}
+    out: dict[int, dict[str, list[tuple[date, Decimal, Decimal]]]] = {
+        lid: {"penalty": [], "default": [], "fees": []} for lid in loan_ids
+    }
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT loan_id, as_of_date,
+                       penalty_interest_balance,
+                       COALESCE(penalty_interest_daily, 0) AS penalty_interest_daily,
+                       default_interest_balance,
+                       COALESCE(default_interest_daily, 0) AS default_interest_daily,
+                       fees_charges_balance
+                FROM loan_daily_state
+                WHERE loan_id = ANY(%s) AND as_of_date <= %s
+                ORDER BY loan_id, as_of_date
+                """,
+                (loan_ids, as_of),
+            )
+            for row in cur.fetchall() or []:
+                lid = int(row["loan_id"])
+                if lid not in out:
+                    continue
+                d = row["as_of_date"]
+                if isinstance(d, datetime):
+                    d = d.date()
+                p = as_10dp(row.get("penalty_interest_balance") or 0)
+                p_d = as_10dp(row.get("penalty_interest_daily") or 0)
+                di = as_10dp(row.get("default_interest_balance") or 0)
+                di_d = as_10dp(row.get("default_interest_daily") or 0)
+                f = as_10dp(row.get("fees_charges_balance") or 0)
+                out[lid]["penalty"].append((d, p, p_d))
+                out[lid]["default"].append((d, di, di_d))
+                out[lid]["fees"].append((d, f, Decimal("0")))
+    return out
+
+
+def fetch_loans_arrears_base_rows(as_of: date, *, active_only: bool) -> list[dict[str, Any]]:
+    status_clause = "AND l.status = 'active'" if active_only else ""
+    sql = f"""
+        SELECT
+            l.id AS loan_id,
+            l.product_code,
+            l.scheme,
+            COALESCE(ind.name, corp.trading_name, corp.legal_name, '') AS customer_name,
+            lds.as_of_date AS state_as_of,
+            lds.days_overdue,
+            lds.principal_arrears,
+            lds.interest_arrears_balance,
+            lds.fees_charges_balance,
+            lds.penalty_interest_balance,
+            lds.default_interest_balance,
+            COALESCE(lds.total_delinquency_arrears,
+                lds.principal_arrears + lds.interest_arrears_balance
+                + lds.default_interest_balance + lds.penalty_interest_balance + lds.fees_charges_balance
+            ) AS total_delinquency_arrears,
+            COALESCE(lds.total_exposure, 0) AS total_exposure
+        FROM loans l
+        LEFT JOIN customers c ON c.id = l.customer_id
+        LEFT JOIN individuals ind ON ind.customer_id = c.id
+        LEFT JOIN corporates corp ON corp.customer_id = c.id
+        INNER JOIN LATERAL (
+            SELECT *
+            FROM loan_daily_state x
+            WHERE x.loan_id = l.id AND x.as_of_date <= %s
+            ORDER BY x.as_of_date DESC
+            LIMIT 1
+        ) lds ON TRUE
+        WHERE lds.days_overdue > 0
+        {status_clause}
+        ORDER BY l.id
+    """
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (as_of,))
+            return [dict(r) for r in cur.fetchall() or []]
+
+
+def fetch_loans_maturity_base_rows(as_of: date, *, active_only: bool) -> list[dict[str, Any]]:
+    status_clause = "AND l.status = 'active'" if active_only else ""
+    sql = f"""
+        SELECT
+            l.id AS loan_id,
+            l.product_code,
+            l.loan_type,
+            l.scheme,
+            COALESCE(ind.name, corp.trading_name, corp.legal_name, '') AS customer_name,
+            lds.as_of_date AS state_as_of,
+            lds.principal_not_due
+        FROM loans l
+        LEFT JOIN customers c ON c.id = l.customer_id
+        LEFT JOIN individuals ind ON ind.customer_id = c.id
+        LEFT JOIN corporates corp ON corp.customer_id = c.id
+        INNER JOIN LATERAL (
+            SELECT principal_not_due, as_of_date
+            FROM loan_daily_state x
+            WHERE x.loan_id = l.id AND x.as_of_date <= %s
+            ORDER BY x.as_of_date DESC
+            LIMIT 1
+        ) lds ON TRUE
+        WHERE lds.principal_not_due > 0
+        {status_clause}
+        ORDER BY l.id
+    """
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (as_of,))
+            return [dict(r) for r in cur.fetchall() or []]
+
+
+def build_arrears_aging_report(as_of: date, *, active_only: bool) -> pd.DataFrame:
+    base = fetch_loans_arrears_base_rows(as_of, active_only=active_only)
+    if not base:
+        return pd.DataFrame()
+    lids = [int(r["loan_id"]) for r in base]
+    sched_map = fetch_latest_schedule_lines_batch(lids)
+    daily_map = fetch_loan_daily_ancillary_series_batch(lids, as_of)
+
+    rows_out: list[dict[str, Any]] = []
+    for r in base:
+        lid = int(r["loan_id"])
+        lines = sched_map.get(lid) or []
+        try:
+            buckets = bucket_arrears_for_loan(
+                as_of,
+                principal_arrears=as_10dp(r.get("principal_arrears") or 0),
+                interest_arrears=as_10dp(r.get("interest_arrears_balance") or 0),
+                fees_charges=as_10dp(r.get("fees_charges_balance") or 0),
+                penalty=as_10dp(r.get("penalty_interest_balance") or 0),
+                default_int=as_10dp(r.get("default_interest_balance") or 0),
+                schedule_lines=lines,
+                daily_series=daily_map.get(lid),
+            )
+        except ValueError as ex:
+            raise ValueError(f"Arrears ageing failed for loan_id={lid}: {ex}") from ex
+        row = {
+            "loan_id": lid,
+            "customer_name": r.get("customer_name"),
+            "product_code": r.get("product_code"),
+            "scheme": r.get("scheme"),
+            "state_as_of": r.get("state_as_of"),
+            "days_overdue": r.get("days_overdue"),
+            "total_outstanding_balance": float(as_10dp(r.get("total_exposure") or 0)),
+            "total_delinquency_arrears": float(as_10dp(r.get("total_delinquency_arrears") or 0)),
+        }
+        for k in ARREARS_BUCKET_KEYS:
+            row[k] = float(buckets[k])
+        rows_out.append(row)
+
+    return pd.DataFrame(rows_out)
+
+
+def build_maturity_profile_report(as_of: date, *, active_only: bool, view_type: str = "principal") -> pd.DataFrame:
+    base = fetch_loans_maturity_base_rows(as_of, active_only=active_only)
+    if not base:
+        return pd.DataFrame()
+    lids = [int(r["loan_id"]) for r in base]
+    sched_map = fetch_latest_schedule_lines_batch(lids)
+
+    rows_out: list[dict[str, Any]] = []
+    for r in base:
+        lid = int(r["loan_id"])
+        lines = sched_map.get(lid) or []
+        pnd = as_10dp(r.get("principal_not_due") or 0)
+        buckets = bucket_maturity_for_loan(as_of, principal_not_due=pnd, schedule_lines=lines, view_type=view_type)
+        bucket_sum = as_10dp(sum(buckets[k] for k in MATURITY_BUCKET_KEYS))
+        
+        # Recon diff only applies to principal view. For cash flow, the bucket sum naturally exceeds PND.
+        recon_diff = float(as_10dp(bucket_sum - pnd)) if view_type == "principal" else None
+
+        row = {
+            "loan_id": lid,
+            "customer_name": r.get("customer_name"),
+            "product_code": r.get("product_code"),
+            "loan_type": r.get("loan_type"),
+            "scheme": r.get("scheme"),
+            "state_as_of": r.get("state_as_of"),
+            "principal_not_due": float(pnd),
+            "bucket_sum": float(bucket_sum),
+            "recon_diff": recon_diff,
+        }
+        for k in MATURITY_BUCKET_KEYS:
+            row[k] = float(buckets[k])
+        rows_out.append(row)
+
+    return pd.DataFrame(rows_out)

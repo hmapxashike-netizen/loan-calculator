@@ -1,6 +1,7 @@
 """
 Portfolio reporting: credit risk, listings, IIS movement, concentration, ECL (provisions).
-Shell placeholders: maturity profile, creditor mirror, roll rates, collection efficiency.
+Shell placeholders: creditor mirror, roll rates, collection efficiency.
+Debtor maturity + bucketed arrears ageing: see portfolio_reporting.py (read-only).
 """
 from __future__ import annotations
 
@@ -13,6 +14,14 @@ import streamlit as st
 from psycopg2.extras import RealDictCursor
 
 from loan_management import _connection
+from portfolio_reporting import (
+    ARREARS_BUCKET_KEYS,
+    ARREARS_BUCKET_LABELS,
+    MATURITY_BUCKET_KEYS,
+    MATURITY_BUCKET_LABELS,
+    build_arrears_aging_report,
+    build_maturity_profile_report,
+)
 from provision_engine import compute_security_provision_breakdown
 
 try:
@@ -51,52 +60,92 @@ def _shell_report(title: str, planned: list[str]) -> None:
         st.markdown(f"- {line}")
 
 
+def _bucket_summary_grid(
+    keys: tuple[str, ...],
+    labels: tuple[str, ...],
+    sums: pd.Series,
+    *,
+    max_cols: int = 4,
+) -> None:
+    """Show portfolio bucket totals in rows of up to `max_cols` metrics."""
+    n = len(keys)
+    i = 0
+    while i < n:
+        chunk_end = min(i + max_cols, n)
+        cols = st.columns(chunk_end - i)
+        for j, idx in enumerate(range(i, chunk_end)):
+            k, lbl = keys[idx], labels[idx]
+            with cols[j]:
+                st.caption(lbl)
+                st.markdown(f"**{float(sums[k]):,.2f}**")
+        i = chunk_end
+
+
 def _report_arrears_aging(as_of: date, active_only: bool) -> None:
     st.subheader("Debtor loans arrears (aging)")
-    st.caption("Snapshot: loans with `days_overdue > 0` using latest `loan_daily_state` on or before as-of date.")
-    status_clause = "AND l.status = 'active'" if active_only else ""
-    sql = f"""
-        SELECT
-            l.id AS loan_id,
-            l.product_code,
-            l.loan_type,
-            l.scheme,
-            COALESCE(ind.name, corp.trading_name, corp.legal_name, '') AS customer_name,
-            lds.as_of_date AS state_as_of,
-            lds.days_overdue,
-            lds.principal_arrears,
-            lds.interest_arrears_balance,
-            lds.fees_charges_balance,
-            COALESCE(lds.total_delinquency_arrears,
-                lds.principal_arrears + lds.interest_arrears_balance
-                + lds.default_interest_balance + lds.penalty_interest_balance + lds.fees_charges_balance
-            ) AS total_delinquency_arrears
-        FROM loans l
-        LEFT JOIN customers c ON c.id = l.customer_id
-        LEFT JOIN individuals ind ON ind.customer_id = c.id
-        LEFT JOIN corporates corp ON corp.customer_id = c.id
-        INNER JOIN LATERAL (
-            SELECT *
-            FROM loan_daily_state x
-            WHERE x.loan_id = l.id AND x.as_of_date <= %s
-            ORDER BY x.as_of_date DESC
-            LIMIT 1
-        ) lds ON TRUE
-        WHERE lds.days_overdue > 0
-        {status_clause}
-        ORDER BY lds.days_overdue DESC, l.id
-    """
-    with _connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(sql, (as_of,))
-            rows = cur.fetchall() or []
-    df = pd.DataFrame(rows)
-    st.metric("Loans in arrears", len(df))
-    if df.empty:
-        st.success("No loans with positive days overdue at this as-of date.")
+    try:
+        df = build_arrears_aging_report(as_of, active_only=active_only)
+    except Exception as ex:
+        st.error(f"Could not build arrears ageing report: {ex}")
         return
-    st.dataframe(df, hide_index=True, width="stretch", height=360)
-    _df_download(df, "debtor_arrears_aging.csv", button_key="port_r21_csv")
+    if df.empty:
+        st.info("No rows at this as-of date.")
+        return
+    rename = {k: lbl for k, lbl in zip(ARREARS_BUCKET_KEYS, ARREARS_BUCKET_LABELS, strict=True)}
+    rename.update(
+        {
+            "loan_id": "Loan ID",
+            "customer_name": "Customer",
+            "product_code": "Product",
+            "scheme": "Scheme",
+            "state_as_of": "State as-of",
+            "days_overdue": "Days overdue",
+            "total_outstanding_balance": "Total outstanding balance",
+            "total_delinquency_arrears": "Total delinquency arrears",
+        }
+    )
+    df_view = df.rename(columns=rename)
+    st.dataframe(df_view, hide_index=True, width="stretch", height=360)
+    _df_download(df_view, "debtor_arrears_aging_buckets.csv", button_key="port_r21_csv")
+
+
+def _report_debtor_maturity(as_of: date, active_only: bool) -> None:
+    st.subheader("Debtor maturity profile")
+    st.caption("Principal-Only: Principal not due is spread across future instalments in proportion to scheduled principal. "
+               "Full Cash Flow: Scheduled principal + interest are spread across future instalments. "
+               "Buckets use days from as-of to due date. Unparseable dates go to Unallocated.")
+    
+    view_type_label = st.radio(
+        "Maturity View",
+        [
+            "The Principal-Only View (The Standard)",
+            "The Full Cash Flow View (Principal + Interest)"
+        ],
+        horizontal=True,
+    )
+    view_type = "principal" if "Principal-Only" in view_type_label else "cash_flow"
+
+    try:
+        df = build_maturity_profile_report(as_of, active_only=active_only, view_type=view_type)
+    except Exception as ex:
+        st.error(f"Could not build maturity profile: {ex}")
+        return
+        
+    if df.empty:
+        st.info("No loans with future profile found at this as-of date.")
+        return
+        
+    rename = {k: lbl for k, lbl in zip(MATURITY_BUCKET_KEYS, MATURITY_BUCKET_LABELS, strict=True)}
+    df_view = df.rename(columns=rename)
+    
+    if view_type == "principal" and "recon_diff" in df.columns and df["recon_diff"].abs().max() > 0.02:
+        st.warning(
+            "Some rows have **recon_diff** ≠ 0 (`bucket_sum` vs `principal_not_due`). "
+            "Inspect the export for rounding or schedule gaps."
+        )
+        
+    st.dataframe(df_view, hide_index=True, width="stretch", height=360)
+    _df_download(df, f"debtor_maturity_profile_{view_type}.csv", button_key="port_mat11_csv")
 
 
 def _report_par(as_of: date, active_only: bool, par_threshold_days: int) -> None:
@@ -217,9 +266,14 @@ def _report_disbursed(period_start: date, period_end: date) -> None:
             l.loan_type,
             l.product_code,
             l.agent_id,
-            ag.name AS agent_name
+            ag.name AS agent_name,
+            sec.name AS sector_name,
+            sub.name AS subsector_name
         FROM loans l
         LEFT JOIN agents ag ON ag.id = l.agent_id
+        LEFT JOIN customers c ON c.id = l.customer_id
+        LEFT JOIN sectors sec ON sec.id = c.sector_id
+        LEFT JOIN subsectors sub ON sub.id = c.subsector_id
         WHERE l.disbursement_date IS NOT NULL
           AND l.disbursement_date >= %s
           AND l.disbursement_date <= %s
@@ -443,7 +497,7 @@ def render_portfolio_reports_ui() -> None:
     )
     report_keys = [
         ("IFRS Provisions (single loan)", "ifrs"),
-        ("Debtor maturity profile (shell)", "shell_11"),
+        ("Debtor maturity profile", "mat_11"),
         ("Creditor maturity profile (shell)", "shell_12"),
         ("Debtor arrears (aging)", "r21"),
         ("Portfolio at risk (PAR)", "r22"),
@@ -473,7 +527,7 @@ def render_portfolio_reports_ui() -> None:
             label_visibility="collapsed",
         )
     rk = key_by_label[choice]
-    _no_snap = rk in ("ifrs", "r32", "r42", "shell_11", "shell_12", "shell_23", "shell_41")
+    _no_snap = rk in ("ifrs", "r32", "r42", "shell_12", "shell_23", "shell_41")
     with c2:
         if not _no_snap:
             st.caption("As-of")
@@ -509,15 +563,8 @@ def render_portfolio_reports_ui() -> None:
         from provisions_ui import render_ifrs_provision_calculator
 
         render_ifrs_provision_calculator()
-    elif rk == "shell_11":
-        _shell_report(
-            "Debtor loans maturity profile",
-            [
-                "Allocate **`principal_not_due`** into calendar buckets from **`schedule_lines`** (current schedule version, parse **`Date`**).",
-                "Buckets: 1–7, 8–30, 31–60, 61–90, 91–360, 360+ days from as-of.",
-                "Requires agreed allocation rule (e.g. schedule principal weights vs. outstanding).",
-            ],
-        )
+    elif rk == "mat_11":
+        _report_debtor_maturity(as_of, active_only)
     elif rk == "shell_12":
         _shell_report(
             "Creditor loans maturity profile",

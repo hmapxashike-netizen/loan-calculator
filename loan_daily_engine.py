@@ -11,6 +11,11 @@ from datetime import date, timedelta
 from decimal import Decimal, getcontext, ROUND_HALF_UP
 from typing import Dict, List, Optional
 
+from accrual_convention import (
+    ACCRUAL_START_EFFECTIVE_DAY,
+    ACCRUAL_START_NEXT_DAY,
+    normalize_accrual_start_convention,
+)
 from decimal_utils import as_10dp
 
 
@@ -59,14 +64,20 @@ class LoanConfig:
     # - reducing_balance = on outstanding principal (principal_not_due + principal_arrears)
     flat_interest: bool = False
 
+    # Regular scheduled interest: which calendar days fall in the accrual window per period.
+    # NEXT_DAY: period_start < d <= due_date (legacy). EFFECTIVE_DAY: period_start <= d < due_date.
+    accrual_start_convention: str = ACCRUAL_START_NEXT_DAY
+
 
 @dataclass
 class ScheduleEntry:
     """
     Represents a single scheduled instalment.
 
-    period_start: first day the interest for this instalment starts accruing
-    due_date: instalment due date (exclusive upper bound of accrual period)
+    period_start: start of the interest period (disbursement or previous due date).
+    due_date: instalment due date. Accrual calendar days depend on accrual_start_convention
+    on LoanConfig (NEXT_DAY vs EFFECTIVE_DAY); the period length for daily splitting is always
+    (due_date - period_start).days.
     """
 
     period_start: date
@@ -209,13 +220,16 @@ class Loan:
         """
         Daily regular interest for date d. Single source of truth: the saved schedule.
 
-        - Find the schedule period where period_start < d <= due_date.
-          The period start date itself does not accrue (e.g. disbursement day),
-          and the due date is the last accrual day of the period.
+        Accrual window depends on ``config.accrual_start_convention`` (system / product config):
+
+        - NEXT_DAY: period_start < d <= due_date — first accrual is the calendar day after
+          period_start; due_date is the last accrual day (legacy).
+        - EFFECTIVE_DAY: period_start <= d < due_date — first accrual is period_start;
+          due_date is not an accrual day (billing/settlement only), so total accrual days in
+          the period still equals (due_date - period_start).days.
+
         - daily = scheduled interest for that period / days in that period.
-          E.g. first period 29 days, scheduled interest 154.79 => 154.79/29 = 5.34 per day.
-          Second period starts 30.11.2025, ends 31.12.2025 (31 days) => daily = interest/31.
-        - No calendar month, no recomputation. If no schedule period covers d, return 0.
+        - If no schedule period covers d, return 0.
         """
         entry = self._find_schedule_entry_for_day(d)
         if entry is None:
@@ -226,10 +240,15 @@ class Loan:
         return entry.interest_component / Decimal(total_days)
 
     def _find_schedule_entry_for_day(self, d: date) -> Optional[ScheduleEntry]:
-        """Return the schedule entry where period_start < d <= due_date, or None."""
+        """Return the schedule entry whose accrual window contains ``d``, or None."""
+        conv = normalize_accrual_start_convention(self.config.accrual_start_convention)
         for entry in self.schedule:
-            if entry.period_start < d <= entry.due_date:
-                return entry
+            if conv == ACCRUAL_START_EFFECTIVE_DAY:
+                if entry.period_start <= d < entry.due_date:
+                    return entry
+            else:
+                if entry.period_start < d <= entry.due_date:
+                    return entry
         return None
 
     def _apply_due_date_transitions(self, d: date) -> None:

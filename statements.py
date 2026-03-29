@@ -819,13 +819,36 @@ def _generate_periodic_statement(
             row["Principal"] = _f3(amt)
             rows.append(row)
 
+    from eod import load_system_config_from_db
+    from accrual_convention import (
+        ACCRUAL_START_EFFECTIVE_DAY,
+        normalize_accrual_start_convention,
+    )
+    sys_cfg = load_system_config_from_db() or {}
+    try:
+        from eod import get_product_config_from_db
+        p_cfg = get_product_config_from_db(loan.get("product_code"))
+        if p_cfg:
+            sys_cfg = {**sys_cfg, **p_cfg}
+    except Exception:
+        pass
+    conv = normalize_accrual_start_convention(sys_cfg.get("accrual_start_convention"))
+
     prev_fees = 0.0
     for due_d, period_start_d, interest_c, principal_c, include_start_day in due_entries:
         state_at_due = _state_at(due_d)
-        # Accrued interest, default, penalty: from loan daily state period_to_date at due date
-        sum_regular = float(state_at_due.get("regular_interest_period_to_date") or 0) if state_at_due else 0.0
-        sum_penalty = float(state_at_due.get("penalty_interest_period_to_date") or 0) if state_at_due else 0.0
-        sum_default = float(state_at_due.get("default_interest_period_to_date") or 0) if state_at_due else 0.0
+        
+        # Accrued interest, default, penalty: from loan daily state period_to_date at due date.
+        # For EFFECTIVE_DAY, the due_date is the FIRST day of the NEW period, so the previous 
+        # period's accrual resets on due_d. We pull the accruals from the day before.
+        if conv == ACCRUAL_START_EFFECTIVE_DAY:
+            state_for_accruals = _state_at(due_d - timedelta(days=1))
+        else:
+            state_for_accruals = state_at_due
+
+        sum_regular = float(state_for_accruals.get("regular_interest_period_to_date") or 0) if state_for_accruals else 0.0
+        sum_penalty = float(state_for_accruals.get("penalty_interest_period_to_date") or 0) if state_for_accruals else 0.0
+        sum_default = float(state_for_accruals.get("default_interest_period_to_date") or 0) if state_for_accruals else 0.0
         fees_now = float(state_at_due.get("fees_charges_balance") or 0) if state_at_due else 0.0
         fees_in_period = max(0.0, fees_now - prev_fees)
         prev_fees = fees_now
@@ -880,9 +903,26 @@ def _generate_periodic_statement(
             parts.append("Default")
         due_narration = " & ".join(parts) if parts else "Due date"
 
+        # Calculate date range strings for explicit narration
+        if conv == ACCRUAL_START_EFFECTIVE_DAY:
+            end_d_for_label = due_d - timedelta(days=1)
+            if end_d_for_label < period_start_d:
+                end_d_for_label = period_start_d
+            start_str = period_start_d.strftime('%d/%m/%y')
+            end_str = end_d_for_label.strftime('%d/%m/%y')
+        else:
+            start_d_for_label = period_start_d + timedelta(days=1)
+            if start_d_for_label > due_d:
+                start_d_for_label = due_d
+            start_str = start_d_for_label.strftime('%d/%m/%y')
+            end_str = due_d.strftime('%d/%m/%y')
+            
+        period_range_sfx = f" ({start_str} to {end_str})"
+
         row = _blank_row_periodic()
         row["Due Date"] = due_d
         row["Narration"] = due_narration
+        row["_period_range_sfx"] = period_range_sfx
         row["Interest"] = _f3(sum_regular)
         row["Penalty"] = _f3(sum_penalty)
         row["Default"] = _f3(sum_default)
@@ -1162,6 +1202,7 @@ def _generate_periodic_statement(
     # Fires when:
     #   (a) there are due dates in range and end is beyond the last one, OR
     #   (b) no due dates have fallen yet (statement is entirely in the first period).
+    #   (c) end is exactly on the due date AND the accrual convention is EFFECTIVE_DAY (first day of new period).
     last_due_in_range = due_entries[-1][0] if due_entries else None
     period_boundary = last_due_in_range or disbursement
     # Only treat end-day daily_state as "exact" for current-period accrual lines if EOD ran for that date.
@@ -1171,8 +1212,15 @@ def _generate_periodic_statement(
     # Precompute unapplied balances strictly from ledger for specific statement generation points
     end_unapplied_ledger = float(_unapplied_at(end))
     accrual_cutoff_unapplied_ledger = float(_unapplied_at(today - timedelta(days=1)))
-    
-    if period_boundary is not None and end > period_boundary:
+
+    has_current_period = False
+    if period_boundary is not None:
+        if conv == ACCRUAL_START_EFFECTIVE_DAY:
+            has_current_period = (end >= period_boundary)
+        else:
+            has_current_period = (end > period_boundary)
+
+    if has_current_period:
         # Use period_to_date columns only when we have an exact daily-state row
         # for statement end date. If end-day EOD has not run yet, the fallback
         # from _state_at(end) may return prior-day period totals (e.g. due date),
@@ -1181,12 +1229,26 @@ def _generate_periodic_statement(
         # last persisted date. Any "period to date" lines should be labelled
         # with that last persisted daily-state date (not the requested `end`).
         as_of_for_state = end if end_bal_exact else last_persisted_ds_date
+        
         # Policy guard:
-        # Do NOT show accruals for system date (or later). Accrual for system date
-        # becomes valid only after date rollover/proper EOD push.
-        accrual_cutoff = today - timedelta(days=1)
+        # Do NOT show accruals for system date (or later) unless it is EFFECTIVE_DAY.
+        # For EFFECTIVE_DAY, the current day's accrual belongs to the current period 
+        # starting on the due date.
+        if conv == ACCRUAL_START_EFFECTIVE_DAY:
+            accrual_cutoff = today
+        else:
+            accrual_cutoff = today - timedelta(days=1)
+            
         accrual_as_of = as_of_for_state if as_of_for_state <= accrual_cutoff else accrual_cutoff
-        if accrual_as_of <= period_boundary:
+        
+        is_same_day = (accrual_as_of == period_boundary)
+        skip_accrual = False
+        if accrual_as_of < period_boundary:
+            skip_accrual = True
+        elif is_same_day and conv != ACCRUAL_START_EFFECTIVE_DAY:
+            skip_accrual = True
+            
+        if skip_accrual:
             cur_regular = cur_penalty = cur_default = 0.0
             cur_fees = 0.0
             current_period_total = 0.0
@@ -1201,10 +1263,21 @@ def _generate_periodic_statement(
                     ad = _date_conv(ds.get("as_of_date"))
                     if not ad or ad > accrual_as_of:
                         continue
-                    if last_due_in_range and ad <= last_due_in_range:
-                        continue
-                    if not last_due_in_range and disbursement and ad <= disbursement:
-                        continue
+                    
+                    if conv == ACCRUAL_START_EFFECTIVE_DAY:
+                        # EFFECTIVE_DAY: new period includes the boundary day (last_due or disbursement).
+                        # We only skip days STRICTLY BEFORE the boundary.
+                        if last_due_in_range and ad < last_due_in_range:
+                            continue
+                        if not last_due_in_range and disbursement and ad < disbursement:
+                            continue
+                    else:
+                        # NEXT_DAY (legacy): new period strictly AFTER the boundary day.
+                        if last_due_in_range and ad <= last_due_in_range:
+                            continue
+                        if not last_due_in_range and disbursement and ad <= disbursement:
+                            continue
+
                     cur_regular += float(ds.get("regular_interest_daily") or 0)
                     cur_penalty += float(ds.get("penalty_interest_daily") or 0)
                     cur_default += float(ds.get("default_interest_daily") or 0)
@@ -1227,7 +1300,26 @@ def _generate_periodic_statement(
             row = _blank_row_periodic()
             row["Due Date"] = accrual_as_of
             _narr_sfx = "since last due date" if last_due_in_range else "since disbursement"
+            
+            # Formulate explicit date range
+            if conv == ACCRUAL_START_EFFECTIVE_DAY:
+                curr_start = period_boundary if not last_due_in_range else last_due_in_range
+                if not last_due_in_range and disbursement and period_boundary < disbursement:
+                    curr_start = disbursement
+            else:
+                curr_start = (period_boundary + timedelta(days=1)) if not last_due_in_range else (last_due_in_range + timedelta(days=1))
+                if not last_due_in_range and disbursement and period_boundary < disbursement:
+                    curr_start = disbursement + timedelta(days=1)
+            
+            if curr_start > accrual_as_of:
+                curr_start = accrual_as_of
+                
+            curr_start_str = curr_start.strftime('%d/%m/%y')
+            curr_end_str = accrual_as_of.strftime('%d/%m/%y')
+            period_range_sfx = f" ({curr_start_str} to {curr_end_str})"
+            
             row["Narration"] = f"Current period interest ({_narr_sfx})"
+            row["_period_range_sfx"] = period_range_sfx
             row["Interest"] = _f3(cur_regular)
             row["Penalty"] = _f3(cur_penalty)
             row["Default"] = _f3(cur_default)
@@ -1454,9 +1546,11 @@ def generate_customer_facing_statement(
             penalty = _to_dec(r.get("Penalty") or 0)
             default = _to_dec(r.get("Default") or 0)
             fees = _to_dec(r.get("Fees") or 0)
-            # Incomplete current period: suffix each component with "(period to date)"
+            # Use explicit date range if available, otherwise fallback
+            sfx = r.get("_period_range_sfx") or ""
             is_current_period = narration.startswith("Current period interest (")
-            sfx = " (period to date)" if is_current_period else ""
+            if is_current_period and not sfx:
+                sfx = " (period to date)"
             raw_components = [
                 (f"Accrued interest{sfx}", interest),
                 (f"Penalty interest{sfx}", penalty),

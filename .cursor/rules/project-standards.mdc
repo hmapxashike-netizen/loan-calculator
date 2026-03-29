@@ -27,3 +27,7 @@ All tables that amounts must store it to 10 decimal places. All engines that do 
 - **loan_repayment_allocation**: exactly one row per repayment_id. Reallocate overrides the existing row in place; never insert correction pairs (unallocation + reallocation).
 - **loan_repayments**: id is unique (PRIMARY KEY); each row = one receipt.
 - **unapplied_funds**: ledger-style; multiple rows per repayment_id are expected (credits, debits).
+
+## 5. User Interface
+Always avoid too big controls that cover the whole page, prioritise compant presentation which is clear for teh eye but compact trying to put as many controls in one line horizontally, up to 3.
+##In User Interface, in collumns always align header and data to centerfor a clean look, only the First collumn is a table should be align to teh Left. Controls should be align uniformly, preferably to teh left.

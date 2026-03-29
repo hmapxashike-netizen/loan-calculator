@@ -1,6 +1,1 @@
 id,created_at,event_type,loan_id,as_of_date,repayment_id,original_repayment_id,narration,details
-2,2026-03-27T14:09:09.860578+02:00,reversal_add_back,1,2025-07-24,,2,Reversal of receipt allocation,"{'alloc_interest_arrears': 0.0, 'alloc_penalty_interest': 0.0, 'alloc_principal_arrears': 0.0}"
-3,2026-03-28T07:26:25.820205+02:00,reversal_add_back,1,2025-09-11,,17,Reversal of receipt allocation,"{'alloc_interest_arrears': 0.0, 'alloc_penalty_interest': 0.0, 'alloc_principal_arrears': 0.0}"
-4,2026-03-28T07:26:43.075852+02:00,reversal_add_back,1,2025-09-11,,18,Reversal of receipt allocation,"{'alloc_interest_arrears': 0.0, 'alloc_penalty_interest': 0.0, 'alloc_principal_arrears': 0.0}"
-5,2026-03-28T07:26:58.493160+02:00,reversal_add_back,1,2025-09-11,,19,Reversal of receipt allocation,"{'alloc_interest_arrears': 0.0, 'alloc_penalty_interest': 0.0, 'alloc_principal_arrears': 0.0}"
-6,2026-03-28T15:28:08.612480+02:00,reversal_add_back,1,2025-09-24,,24,Reversal of receipt allocation,"{'alloc_interest_arrears': 0.0, 'alloc_penalty_interest': 0.0, 'alloc_principal_arrears': 0.0}"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 from pathlib import Path
+import importlib.util
 
 import streamlit as st
 import pandas as pd
@@ -12,7 +13,23 @@ from auth_ui import auth_page
 from dal import get_conn, UserRepository, SecurityAuditLogRepository
 from auth_service import AuthService
 
-import app as loan_app  # reuse existing Streamlit loan UI
+
+def _load_loan_ui_module():
+    """
+    Load app.py by file path so the module name is not the bare string ``app``.
+    That avoids clashes with another installed/local package named ``app`` (can
+    surface as KeyError: 'app' during import on some environments).
+    """
+    path = Path(__file__).resolve().parent / "app.py"
+    spec = importlib.util.spec_from_file_location("farnda_cred_loan_ui", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load loan UI module from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+loan_app = _load_loan_ui_module()
 
 
 def render_footer() -> None:

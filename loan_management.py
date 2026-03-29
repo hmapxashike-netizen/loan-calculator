@@ -1005,6 +1005,87 @@ def build_loan_approval_journal_payload(details: dict[str, Any]) -> dict[str, De
     }
 
 
+def _ensure_loans_schema_for_save_loan(conn: Any) -> None:
+    """
+    Idempotent DDL so save_loan()'s INSERT matches the database when formal
+    migrations have not been applied yet (same intent as schema 50, 51, and
+    collateral columns from 53).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS disbursement_bank_options (
+                id SERIAL PRIMARY KEY,
+                label VARCHAR(255) NOT NULL,
+                gl_account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_disbursement_bank_options_active
+            ON disbursement_bank_options (is_active, sort_order);
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE loans
+            ADD COLUMN IF NOT EXISTS disbursement_bank_option_id INTEGER
+            REFERENCES disbursement_bank_options(id);
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_loans_disbursement_bank_option
+            ON loans (disbursement_bank_option_id);
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE loans
+            ADD COLUMN IF NOT EXISTS cash_gl_account_id UUID REFERENCES accounts(id);
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_loans_cash_gl_account
+            ON loans (cash_gl_account_id);
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS provision_security_subtypes (
+                id SERIAL PRIMARY KEY,
+                security_type VARCHAR(128) NOT NULL,
+                subtype_name VARCHAR(255) NOT NULL,
+                typical_haircut_pct NUMERIC(22, 10) NOT NULL DEFAULT 0,
+                system_notes TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (security_type, subtype_name)
+            );
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE loans
+            ADD COLUMN IF NOT EXISTS collateral_security_subtype_id INTEGER
+                REFERENCES provision_security_subtypes(id) ON DELETE SET NULL;
+            """
+        )
+        cur.execute(
+            "ALTER TABLE loans ADD COLUMN IF NOT EXISTS collateral_charge_amount NUMERIC(22, 10);"
+        )
+        cur.execute(
+            "ALTER TABLE loans ADD COLUMN IF NOT EXISTS collateral_valuation_amount NUMERIC(22, 10);"
+        )
+
+
 def save_loan(
     customer_id: int,
     loan_type: str,
@@ -1087,6 +1168,7 @@ def save_loan(
         )
 
     with _connection() as conn:
+        _ensure_loans_schema_for_save_loan(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -1251,12 +1333,13 @@ def save_loan_approval_draft(
     customer_id: int,
     loan_type: str,
     details: dict[str, Any],
-    schedule_df: pd.DataFrame,
+    schedule_df: pd.DataFrame | None,
     *,
     product_code: str | None = None,
     assigned_approver_id: str | None = None,
     created_by: str | None = None,
     status: str = "PENDING",
+    loan_id: int | None = None,
 ) -> int:
     """Persist a loan draft for approval queue (no loan tables/GL posting)."""
     st_val = (status or "PENDING").strip().upper() or "PENDING"
@@ -1267,8 +1350,8 @@ def save_loan_approval_draft(
                 """
                 INSERT INTO loan_approval_drafts (
                     customer_id, loan_type, product_code, details_json, schedule_json,
-                    assigned_approver_id, status, created_by, submitted_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    assigned_approver_id, status, created_by, submitted_at, updated_at, loan_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
                 RETURNING id
                 """,
                 (
@@ -1276,10 +1359,11 @@ def save_loan_approval_draft(
                     str(loan_type),
                     product_code,
                     Json(_json_safe(details or {})),
-                    Json(_json_safe(schedule_df.to_dict(orient="records"))),
+                    Json(_json_safe(schedule_df.to_dict(orient="records") if schedule_df is not None else [])),
                     str(assigned_approver_id) if assigned_approver_id is not None else None,
                     st_val,
                     created_by,
+                    int(loan_id) if loan_id is not None else None,
                 ),
             )
             return int(cur.fetchone()[0])
@@ -1438,6 +1522,38 @@ def get_loan_approval_draft(draft_id: int) -> dict[str, Any] | None:
             return dict(row) if row else None
 
 
+def terminate_loan(loan_id: int, terminated_by: str | None = None) -> None:
+    """Soft-deletes a loan and inactivates its related GL journals."""
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE loans SET status = 'terminated', updated_at = NOW() WHERE id = %s", (loan_id,))
+            
+            # Find all repayment ids
+            cur.execute("SELECT id FROM loan_repayments WHERE loan_id = %s", (loan_id,))
+            rep_ids = [r[0] for r in cur.fetchall()]
+            
+            # Inactivate Loan Approval
+            cur.execute("UPDATE journal_entries SET is_active = FALSE WHERE event_id = %s AND event_type = 'LOAN_APPROVAL'", (str(loan_id),))
+            
+            # Inactivate EOD accruals
+            cur.execute("UPDATE journal_entries SET is_active = FALSE WHERE event_id LIKE 'EOD-%%-' || %s || '-%%'", (str(loan_id),))
+            cur.execute("UPDATE journal_entries SET is_active = FALSE WHERE event_id LIKE 'EOM-%%-LOAN-' || %s || '-%%'", (str(loan_id),))
+            
+            # Inactivate Repayment journals
+            for rid in rep_ids:
+                s_rid = str(rid)
+                cur.execute("""
+                    UPDATE journal_entries 
+                    SET is_active = FALSE 
+                    WHERE event_id LIKE 'REPAY-' || %s || '-%%' 
+                       OR event_id LIKE 'REV-REPAY-' || %s || '-%%' 
+                       OR event_id = 'OP-' || %s 
+                       OR event_id LIKE 'LIQ-' || %s || '-%%' 
+                       OR event_id LIKE 'REV-LIQ-' || %s || '-%%' 
+                       OR event_id LIKE 'REV-RCPT-' || %s || '-%%'
+                """, (s_rid, s_rid, s_rid, s_rid, s_rid, s_rid))
+
+
 def approve_loan_approval_draft(
     draft_id: int,
     *,
@@ -1451,17 +1567,25 @@ def approve_loan_approval_draft(
         raise ValueError(f"Draft #{draft_id} is not pending (status={draft.get('status')}).")
 
     details = dict(draft.get("details_json") or {})
-    # Approval creates a live loan record; ensure EOD will pick it up.
-    details["status"] = "active"
-    schedule_rows = draft.get("schedule_json") or []
-    schedule_df = pd.DataFrame(schedule_rows)
-    loan_id = save_loan(
-        int(draft["customer_id"]),
-        str(draft["loan_type"]),
-        details,
-        schedule_df,
-        product_code=draft.get("product_code"),
-    )
+    
+    if details.get("approval_action") == "TERMINATE":
+        existing_loan_id = draft.get("loan_id")
+        if not existing_loan_id:
+            raise ValueError("Termination draft missing loan_id.")
+        terminate_loan(existing_loan_id, terminated_by=approved_by)
+        loan_id = existing_loan_id
+    else:
+        # Approval creates a live loan record; ensure EOD will pick it up.
+        details["status"] = "active"
+        schedule_rows = draft.get("schedule_json") or []
+        schedule_df = pd.DataFrame(schedule_rows)
+        loan_id = save_loan(
+            int(draft["customer_id"]),
+            str(draft["loan_type"]),
+            details,
+            schedule_df,
+            product_code=draft.get("product_code"),
+        )
 
     with _connection() as conn:
         _ensure_loan_approval_drafts_table(conn)
@@ -5488,3 +5612,53 @@ def save_system_config_to_db(config: dict) -> bool:
         return True
     except Exception:
         return False
+
+
+def update_loan_safe_details(
+    loan_id: int,
+    updates: dict[str, Any],
+) -> None:
+    """Update safe fields on an active loan without changing schedules or financials."""
+    allowed_keys = {
+        "collateral_security_subtype_id",
+        "collateral_charge_amount",
+        "collateral_valuation_amount",
+        "metadata",
+    }
+    set_clauses = []
+    params = []
+    
+    has_meta = False
+    meta_val = None
+    for k, v in updates.items():
+        if k not in allowed_keys:
+            continue
+        if k == "metadata":
+            has_meta = True
+            meta_val = v
+            continue
+        set_clauses.append(f"{k} = %s")
+        params.append(v)
+        
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            if has_meta:
+                cur.execute("SELECT metadata FROM loans WHERE id = %s", (loan_id,))
+                row = cur.fetchone()
+                existing_meta = row[0] if row and row[0] else {}
+                if isinstance(existing_meta, str):
+                    import json
+                    try:
+                        existing_meta = json.loads(existing_meta)
+                    except Exception:
+                        existing_meta = {}
+                if isinstance(meta_val, dict):
+                    existing_meta.update(meta_val)
+                set_clauses.append("metadata = %s")
+                params.append(Json(existing_meta))
+                
+            if set_clauses:
+                set_clauses.append("updated_at = NOW()")
+                query = f"UPDATE loans SET {', '.join(set_clauses)} WHERE id = %s"
+                params.append(loan_id)
+                cur.execute(query, tuple(params))

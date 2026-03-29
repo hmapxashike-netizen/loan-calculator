@@ -7,7 +7,8 @@ unless optional flags are passed.
 
 Examples:
   python scripts/reset_test_environment.py --dry-run
-  python scripts/reset_test_environment.py --confirm --system-date 2025-11-02
+  python scripts/reset_test_environment.py --confirm
+  python scripts/reset_test_environment.py --confirm --system-date 2025-06-01
   python scripts/reset_test_environment.py --confirm --include-customers
 """
 
@@ -28,6 +29,8 @@ from config import get_database_url
 
 
 BASE_TRANSACTION_TABLES = [
+    "eod_stage_events",
+    "eod_runs",
     "financial_statement_snapshot_lines",
     "financial_statement_snapshots",
     "allocation_audit_log",
@@ -60,8 +63,8 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reset FarndaCred transactional test data.")
     parser.add_argument(
         "--system-date",
-        default="2025-11-02",
-        help="System business date to set after reset (YYYY-MM-DD). Default: 2025-11-02",
+        default="2025-01-01",
+        help="System business date to set after reset (YYYY-MM-DD). Default: 2025-01-01",
     )
     parser.add_argument(
         "--include-customers",

@@ -115,13 +115,19 @@ SCHEDULE_AMOUNT_COLUMNS = [
 ]
 
 
-def format_schedule_display(df: pd.DataFrame):
-    """Format amount columns to 2 decimal places for schedule display."""
+def format_schedule_display(df: pd.DataFrame, *, system_config: dict | None = None):
+    """Format schedule amount columns using system **display_format** (grouping + decimals)."""
     cols = [c for c in SCHEDULE_AMOUNT_COLUMNS if c in df.columns]
     if not cols:
         return df.style
-    # Use digit grouping for readability (e.g., 1,234.56).
-    return df.style.format({c: "{:,.2f}" for c in cols})
+    from display_formatting import format_display_amount, get_display_format_settings
+
+    s = get_display_format_settings(system_config=system_config)
+    formatter = {
+        c: (lambda v, _s=s: format_display_amount(v, settings=_s))
+        for c in cols
+    }
+    return df.style.format(formatter=formatter, na_rep="")
 
 
 def prepare_schedule_export_dataframe(df: pd.DataFrame, *, amount_decimals: int = 2) -> pd.DataFrame:

@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 from decimal_utils import as_10dp
+from display_formatting import format_display_amount
 from loan_management import get_loan, get_loan_daily_state_balances
 from provision_engine import compute_security_provision_breakdown
 
@@ -21,6 +22,10 @@ except ImportError:
 
     def get_effective_date() -> date:
         return date.today()
+
+
+def _fmt_num(v: Decimal | float | int) -> str:
+    return format_display_amount(v)
 
 
 def _provisions_import_ok() -> tuple[bool, str]:
@@ -287,25 +292,28 @@ def render_ifrs_provision_calculator() -> None:
                     haircut_pct=hc,
                     pd_bands=bands,
                 )
-                st.markdown("### Inputs (from loan + daily state)")
-                st.write(
-                    {
-                        "DPD (days_overdue)": dpd,
-                        "Status / PD band": br["status_label"],
-                        "PD %": float(br["pd_rate_pct"]),
-                        "Total balance (total_exposure)": float(total_bal),
-                        "Interest in suspense": float(iis),
-                        "Collateral subtype": f"{stype['security_type']} — {stype['subtype_name']}" if stype else "(not set on loan)",
-                        "Haircut %": float(hc),
-                        "Charge amount": float(ch_d),
-                        "Valuation amount": float(va_d),
-                    }
+                st.markdown("**Inputs** (loan + daily state)")
+                subtype_lbl = (
+                    f"{stype['security_type']} — {stype['subtype_name']}" if stype else "(not set on loan)"
                 )
-                st.markdown("### Results")
-                st.write(
-                    {
-                        "Collateral value (after haircut)": float(br["collateral_value"]),
-                        "Unsecured exposure": float(br["unsecured_exposure"]),
-                        "Provision": float(br["provision"]),
-                    }
+                inputs_df = pd.DataFrame(
+                    [
+                        ("DPD (days overdue)", str(dpd)),
+                        ("Status / PD band", str(br["status_label"])),
+                        ("PD %", _fmt_num(br["pd_rate_pct"])),
+                        ("Total balance (total_exposure)", _fmt_num(total_bal)),
+                        ("Interest in suspense", _fmt_num(iis)),
+                        ("Collateral subtype", subtype_lbl),
+                        ("Haircut %", _fmt_num(hc)),
+                        ("Charge amount", _fmt_num(ch_d)),
+                        ("Valuation amount", _fmt_num(va_d)),
+                    ],
+                    columns=["Field", "Value"],
                 )
+                st.dataframe(inputs_df, hide_index=True, width="stretch", height=340)
+
+                st.markdown("**Results**")
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Collateral (after haircut)", _fmt_num(br["collateral_value"]))
+                m2.metric("Unsecured exposure", _fmt_num(br["unsecured_exposure"]))
+                m3.metric("Provision", _fmt_num(br["provision"]))

@@ -35,6 +35,7 @@ from psycopg2.extras import RealDictCursor
 
 from config import get_database_url
 from decimal_utils import as_10dp
+from accrual_convention import accrual_start_convention_from_config
 from loan_daily_engine import LoanConfig, ScheduleEntry, Loan
 from accounting_periods import normalize_accounting_period_config, is_eom, is_eoy
 from eod_audit import (
@@ -429,6 +430,8 @@ def _loan_config_from_row(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> 
 
     flat_interest = (sys_cfg.get("interest_method") or "Reducing balance") == "Flat rate"
 
+    accrual_conv = accrual_start_convention_from_config(sys_cfg)
+
     return LoanConfig(
         regular_rate_per_month=monthly_rate,
         default_interest_absolute_rate_per_month=default_abs_monthly,
@@ -437,6 +440,7 @@ def _loan_config_from_row(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> 
         penalty_on_principal_arrears_only=penalty_on_principal_arrears_only,
         waterfall_bucket_order=waterfall_bucket_order,
         flat_interest=flat_interest,
+        accrual_start_convention=accrual_conv,
     )
 
 
@@ -477,7 +481,7 @@ def _build_schedule_entries(
         interest_component = Decimal(str(row.get("interest") or row.get("Interest") or 0))
 
         # Skip zero-length periods (e.g. Period 0 at disbursement from term-loan generator).
-        # Those rows have due_date == period_start and break "period_start < d <= due_date" accrual math.
+        # Those rows have due_date == period_start and break accrual window math for both conventions.
         if due_date <= period_start:
             continue
 

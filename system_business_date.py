@@ -69,7 +69,7 @@ def get_system_business_config() -> dict[str, Any]:
     except Exception as e:
         logger.warning("get_system_business_config failed: %s", e)
     return {
-        "current_system_date": date(2025, 11, 2),
+        "current_system_date": date(2025, 1, 1),
         "eod_auto_run_time": time(23, 0, 0),
         "is_auto_eod_enabled": False,
         "updated_at": None,
@@ -261,12 +261,14 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
                         SELECT COUNT(*)::int AS n
                         FROM loans l
                         WHERE l.status = 'active'
+                          AND COALESCE(l.disbursement_date, l.start_date, %s) <= %s
                           AND EXISTS (
                               SELECT 1
                               FROM loan_schedules ls
                               WHERE ls.loan_id = l.id
                           )
-                        """
+                        """,
+                        (as_of, as_of),
                     )
                     eligible_active = int((cur.fetchone() or {}).get("n") or 0)
 
