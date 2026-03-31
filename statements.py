@@ -10,6 +10,8 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
+from decimal_utils import as_10dp
+
 from loan_management import (
     get_loan,
     get_loan_daily_state_range,
@@ -170,6 +172,14 @@ def _q3(v: Any) -> Decimal:
 
 def _f3(v: Any) -> float:
     return float(_q3(v))
+
+
+def _f10(v: Any) -> float:
+    """Money on statements: align with ledger / COA 10dp policy."""
+    try:
+        return float(as_10dp(Decimal(str(v if v is not None else 0))))
+    except Exception:
+        return float(Decimal(str(v or 0)))
 
 
 def _liq_rev_interleave_sort(narr: str) -> tuple[int, int, str]:
@@ -846,7 +856,15 @@ def _generate_periodic_statement(
         else:
             state_for_accruals = state_at_due
 
-        sum_regular = float(state_for_accruals.get("regular_interest_period_to_date") or 0) if state_for_accruals else 0.0
+        sum_regular_from_state = (
+            float(state_for_accruals.get("regular_interest_period_to_date") or 0) if state_for_accruals else 0.0
+        )
+        # Customer policy: contractual schedule interest for the period (10dp) is authoritative
+        # when present; avoids statement/EOD drift (e.g. 101.75 vs 105.2631578947).
+        if interest_c and float(interest_c) > 1e-12:
+            sum_regular = float(as_10dp(Decimal(str(interest_c))))
+        else:
+            sum_regular = float(as_10dp(Decimal(str(sum_regular_from_state))))
         sum_penalty = float(state_for_accruals.get("penalty_interest_period_to_date") or 0) if state_for_accruals else 0.0
         sum_default = float(state_for_accruals.get("default_interest_period_to_date") or 0) if state_for_accruals else 0.0
         fees_now = float(state_at_due.get("fees_charges_balance") or 0) if state_at_due else 0.0
@@ -923,11 +941,11 @@ def _generate_periodic_statement(
         row["Due Date"] = due_d
         row["Narration"] = due_narration
         row["_period_range_sfx"] = period_range_sfx
-        row["Interest"] = _f3(sum_regular)
-        row["Penalty"] = _f3(sum_penalty)
-        row["Default"] = _f3(sum_default)
+        row["Interest"] = _f10(sum_regular)
+        row["Penalty"] = _f10(sum_penalty)
+        row["Default"] = _f10(sum_default)
         row["Principal"] = _f3(principal_c)
-        row["Fees"] = _f3(fees_in_period) if fees_in_period else 0.0
+        row["Fees"] = _f10(fees_in_period) if fees_in_period else 0.0
         row["Total Outstanding Balance"] = _f3(tot_out) if tot_out is not None else 0.0
         row["Arrears"] = _f3(_total_delinquency_arrears(state_at_due))
         row["Unapplied funds"] = _unapplied_at(due_d, include_same_day_liquidations=False)
@@ -1145,10 +1163,10 @@ def _generate_periodic_statement(
             src_amt = u.get("source_receipt_amount")
             if src_amt is not None:
                 row["Narration"] = (
-                    f"OP-{rid_disp} From Repayment id {rid_disp} (Receipt {_f2(float(src_amt))})"
+                    f"Overpayment from Repayment id {rid_disp} (Receipt {_f2(float(src_amt))})"
                 )
             else:
-                row["Narration"] = f"OP-{rid_disp} From Repayment id {rid_disp}"
+                row["Narration"] = f"Overpayment from Repayment id {rid_disp}"
         elif kind == "reversal":
             if delta > 0:
                 # Reversal of liquidation
@@ -1158,19 +1176,31 @@ def _generate_periodic_statement(
                     row["Narration"] = f"REV-LIQ-{reversal_of_id}"
             else:
                 # Reversal of credit (receipt)
-                row["Narration"] = f"REV-RCPT-{reversal_of_id} (Voiding OP-{reversal_of_id})"
+                row["Narration"] = f"REV-Overpayment-{reversal_of_id} (Voiding OP-{reversal_of_id})"
         else:
             continue
 
-        # Internal movement only: no cash debit/credit impact on statement totals.
+        # Internal movement only: no cash debit/credit impact on periodic "Credits" column;
+        # customer-facing statement derives **Credits** from allocation buckets (and falls back
+        # to |unapplied_delta| when the view leaves splits at zero so Balance reduces correctly).
         row["Credits"] = 0.0
-        row["Portion of Credit Allocated to Interest"] = _f3(
+        _liq_alloc_int = (
             float(u.get("alloc_int_arrears") or 0)
             + float(u.get("alloc_penalty_int") or 0)
-            + float(u.get("alloc_default_int") or 0),
+            + float(u.get("alloc_default_int") or 0)
         )
-        row["Credit Allocated to Fees"] = _f3(float(u.get("alloc_fees_charges") or 0))
-        row["Credit Allocated to Capital"] = _f3(float(u.get("alloc_prin_arrears") or 0))
+        _liq_alloc_fees = float(u.get("alloc_fees_charges") or 0)
+        _liq_alloc_cap = float(u.get("alloc_prin_arrears") or 0)
+        _liq_alloc_sum = _liq_alloc_int + _liq_alloc_fees + _liq_alloc_cap
+        if kind == "liquidation" and delta < 0 and _liq_alloc_sum < 1e-9:
+            # unapplied_delta is negative when funds leave unapplied into loan buckets.
+            row["Portion of Credit Allocated to Interest"] = _f10(abs(delta))
+            row["Credit Allocated to Fees"] = 0.0
+            row["Credit Allocated to Capital"] = 0.0
+        else:
+            row["Portion of Credit Allocated to Interest"] = _f10(_liq_alloc_int)
+            row["Credit Allocated to Fees"] = _f10(_liq_alloc_fees)
+            row["Credit Allocated to Capital"] = _f10(_liq_alloc_cap)
         bal = _state_at(vd)
         if bal:
             row["Total Outstanding Balance"] = _f3(_total_outstanding(bal))
@@ -1188,13 +1218,10 @@ def _generate_periodic_statement(
         # We will set a marker to help the post-processing engine sequence it properly.
         row["Unapplied funds"] = _f3(float(u.get("unapplied_running_balance") or 0))
         row["_unapplied_delta"] = delta
-        row["_arrears_credit_impact"] = _f3(
-            float(u.get("alloc_prin_arrears") or 0)
-            + float(u.get("alloc_int_arrears") or 0)
-            + float(u.get("alloc_penalty_int") or 0)
-            + float(u.get("alloc_default_int") or 0)
-            + float(u.get("alloc_fees_charges") or 0)
-        )
+        _acr_imp = _liq_alloc_sum
+        if kind == "liquidation" and delta < 0 and _acr_imp < 1e-9:
+            _acr_imp = abs(delta)
+        row["_arrears_credit_impact"] = _f10(_acr_imp)
         rows.append(row)
 
     # Current (incomplete) period interest -- emitted BEFORE the non-cash residual
@@ -1211,7 +1238,6 @@ def _generate_periodic_statement(
     
     # Precompute unapplied balances strictly from ledger for specific statement generation points
     end_unapplied_ledger = float(_unapplied_at(end))
-    accrual_cutoff_unapplied_ledger = float(_unapplied_at(today - timedelta(days=1)))
 
     has_current_period = False
     if period_boundary is not None:
@@ -1221,58 +1247,48 @@ def _generate_periodic_statement(
             has_current_period = (end > period_boundary)
 
     if has_current_period:
-        # Use period_to_date columns only when we have an exact daily-state row
-        # for statement end date. If end-day EOD has not run yet, the fallback
-        # from _state_at(end) may return prior-day period totals (e.g. due date),
-        # which would incorrectly duplicate prior period accrual in the statement.
-        # If EOD for `end` has not run yet, daily-state only exists up to the
-        # last persisted date. Any "period to date" lines should be labelled
-        # with that last persisted daily-state date (not the requested `end`).
-        as_of_for_state = end if end_bal_exact else last_persisted_ds_date
-        
-        # Policy guard:
-        # Do NOT show accruals for system date (or later) unless it is EFFECTIVE_DAY.
-        # For EFFECTIVE_DAY, the current day's accrual belongs to the current period 
-        # starting on the due date.
-        if conv == ACCRUAL_START_EFFECTIVE_DAY:
-            accrual_cutoff = today
-        else:
-            accrual_cutoff = today - timedelta(days=1)
-            
-        accrual_as_of = as_of_for_state if as_of_for_state <= accrual_cutoff else accrual_cutoff
-        
-        is_same_day = (accrual_as_of == period_boundary)
+        # Period-to-date stub: row date = **statement end** (`end`, capped to system date).
+        # Label window = **most recent due (inclusive)** through **end − 1 day (inclusive)**.
+        stub_row_date = end
+        stub_period_end = end - timedelta(days=1)
         skip_accrual = False
-        if accrual_as_of < period_boundary:
+        if disbursement is None:
+            if stub_period_end < stub_row_date:
+                skip_accrual = True
+        elif stub_period_end < disbursement:
             skip_accrual = True
-        elif is_same_day and conv != ACCRUAL_START_EFFECTIVE_DAY:
-            skip_accrual = True
-            
+        elif conv == ACCRUAL_START_EFFECTIVE_DAY:
+            if last_due_in_range and stub_period_end < last_due_in_range:
+                skip_accrual = True
+        else:
+            if last_due_in_range and stub_period_end <= last_due_in_range:
+                skip_accrual = True
+            if disbursement and stub_period_end <= disbursement and not last_due_in_range:
+                skip_accrual = True
+
+        stub_ds_exact = ds_by_date.get(stub_period_end) if _has_completed_eod_for_date(stub_period_end) else None
+
         if skip_accrual:
             cur_regular = cur_penalty = cur_default = 0.0
             cur_fees = 0.0
             current_period_total = 0.0
         else:
-            if end_bal_exact and as_of_for_state <= accrual_cutoff:
-                cur_regular = float(end_bal_exact.get("regular_interest_period_to_date") or 0)
-                cur_penalty = float(end_bal_exact.get("penalty_interest_period_to_date") or 0)
-                cur_default = float(end_bal_exact.get("default_interest_period_to_date") or 0)
+            if stub_ds_exact:
+                cur_regular = float(stub_ds_exact.get("regular_interest_period_to_date") or 0)
+                cur_penalty = float(stub_ds_exact.get("penalty_interest_period_to_date") or 0)
+                cur_default = float(stub_ds_exact.get("default_interest_period_to_date") or 0)
             else:
                 cur_regular = cur_penalty = cur_default = 0.0
                 for ds in daily_states:
                     ad = _date_conv(ds.get("as_of_date"))
-                    if not ad or ad > accrual_as_of:
+                    if not ad or ad > stub_period_end:
                         continue
-                    
                     if conv == ACCRUAL_START_EFFECTIVE_DAY:
-                        # EFFECTIVE_DAY: new period includes the boundary day (last_due or disbursement).
-                        # We only skip days STRICTLY BEFORE the boundary.
                         if last_due_in_range and ad < last_due_in_range:
                             continue
                         if not last_due_in_range and disbursement and ad < disbursement:
                             continue
                     else:
-                        # NEXT_DAY (legacy): new period strictly AFTER the boundary day.
                         if last_due_in_range and ad <= last_due_in_range:
                             continue
                         if not last_due_in_range and disbursement and ad <= disbursement:
@@ -1281,8 +1297,7 @@ def _generate_periodic_statement(
                     cur_regular += float(ds.get("regular_interest_daily") or 0)
                     cur_penalty += float(ds.get("penalty_interest_daily") or 0)
                     cur_default += float(ds.get("default_interest_daily") or 0)
-            # Fees: no period_to_date column — use balance delta since last period boundary (daily state).
-            st_as_of = _state_at(accrual_as_of)
+            st_as_of = _state_at(stub_period_end)
             cur_fees = 0.0
             if st_as_of:
                 fe_now = float(st_as_of.get("fees_charges_balance") or 0)
@@ -1295,40 +1310,41 @@ def _generate_periodic_statement(
                 else:
                     fe_ld = 0.0
                 cur_fees = max(0.0, fe_now - fe_ld)
+            cur_regular = float(as_10dp(Decimal(str(cur_regular))))
+            cur_penalty = float(as_10dp(Decimal(str(cur_penalty))))
+            cur_default = float(as_10dp(Decimal(str(cur_default))))
+            cur_fees = float(as_10dp(Decimal(str(cur_fees))))
             current_period_total = cur_regular + cur_penalty + cur_default + cur_fees
         if abs(current_period_total) > 0.005:
             row = _blank_row_periodic()
-            row["Due Date"] = accrual_as_of
-            _narr_sfx = "since last due date" if last_due_in_range else "since disbursement"
-            
-            # Formulate explicit date range
+            row["Due Date"] = stub_row_date
             if conv == ACCRUAL_START_EFFECTIVE_DAY:
-                curr_start = period_boundary if not last_due_in_range else last_due_in_range
-                if not last_due_in_range and disbursement and period_boundary < disbursement:
+                curr_start = last_due_in_range or disbursement or stub_period_end
+                if disbursement and (not last_due_in_range) and curr_start < disbursement:
                     curr_start = disbursement
             else:
-                curr_start = (period_boundary + timedelta(days=1)) if not last_due_in_range else (last_due_in_range + timedelta(days=1))
-                if not last_due_in_range and disbursement and period_boundary < disbursement:
-                    curr_start = disbursement + timedelta(days=1)
-            
-            if curr_start > accrual_as_of:
-                curr_start = accrual_as_of
-                
-            curr_start_str = curr_start.strftime('%d/%m/%y')
-            curr_end_str = accrual_as_of.strftime('%d/%m/%y')
+                curr_start = (
+                    (last_due_in_range + timedelta(days=1))
+                    if last_due_in_range
+                    else ((disbursement + timedelta(days=1)) if disbursement else stub_period_end)
+                )
+            if curr_start > stub_period_end:
+                curr_start = stub_period_end
+            curr_start_str = curr_start.strftime("%d/%m/%y")
+            curr_end_str = stub_period_end.strftime("%d/%m/%y")
             period_range_sfx = f" ({curr_start_str} to {curr_end_str})"
-            
-            row["Narration"] = f"Current period interest ({_narr_sfx})"
+
+            row["Narration"] = f"Accrued interest{period_range_sfx}"
             row["_period_range_sfx"] = period_range_sfx
-            row["Interest"] = _f3(cur_regular)
-            row["Penalty"] = _f3(cur_penalty)
-            row["Default"] = _f3(cur_default)
-            row["Fees"] = _f3(cur_fees) if cur_fees else 0.0
-            end_bal = _state_at(accrual_as_of)
+            row["Interest"] = _f10(cur_regular)
+            row["Penalty"] = _f10(cur_penalty)
+            row["Default"] = _f10(cur_default)
+            row["Fees"] = _f10(cur_fees) if cur_fees else 0.0
+            end_bal = _state_at(stub_period_end)
             if end_bal:
                 row["Total Outstanding Balance"] = _f3(_total_outstanding(end_bal))
                 row["Arrears"] = _f3(_total_delinquency_arrears(end_bal))
-            row["Unapplied funds"] = _f3(accrual_cutoff_unapplied_ledger)
+            row["Unapplied funds"] = _f3(float(_unapplied_at(stub_row_date)))
             rows.append(row)
 
     row = _blank_row_periodic()
@@ -1599,8 +1615,8 @@ def generate_customer_facing_statement(
                     # Bucket payment lines are informational allocation breakdown.
                     # Cash movement is already represented by "Repayment id ..." rows.
                     # Guard: never let these rows contribute additional statement credits/debits.
-                    component_debits = _f3(rv) if rv > 0 else 0.0
-                    component_credits = _f3(abs(rv)) if rv < 0 else 0.0
+                    component_debits = _f10(rv) if rv > 0 else 0.0
+                    component_credits = _f10(abs(rv)) if rv < 0 else 0.0
                     comp_row = {
                         "Due Date": r.get("Due Date"),
                         "Narration": n,
@@ -1734,7 +1750,9 @@ def generate_customer_facing_statement(
         u_delta = _to_dec(_ar_row.get("_unapplied_delta", 0))
         if u_delta != 0:
             running_unapplied_d += u_delta
-            
+        if running_unapplied_d < Decimal("0"):
+            running_unapplied_d = Decimal("0")
+
         _ar_row["Unapplied funds"] = _f3(running_unapplied_d)
             
         # Clean up markers
