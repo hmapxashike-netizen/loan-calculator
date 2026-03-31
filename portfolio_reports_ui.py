@@ -642,3 +642,35 @@ def render_portfolio_reports_ui() -> None:
         _report_concentration(as_of, active_only)
     elif rk == "r52":
         _report_ecl_provision(as_of, active_only)
+
+    st.divider()
+    st.subheader("Data Export")
+    st.caption("Export low-level database tables to CSV for external analysis or auditing.")
+    
+    ex_c1, ex_c2, ex_c3 = st.columns([1, 1, 2], vertical_alignment="bottom")
+    with ex_c1:
+        exp_start = st.date_input("Start Date", value=date(date.today().year, 1, 1), key="export_start")
+    with ex_c2:
+        exp_end = st.date_input("End Date", value=date.today(), key="export_end")
+    with ex_c3:
+        if st.button("Run Data Export Script", type="primary", key="btn_run_export"):
+            import subprocess
+            import sys
+            
+            with st.spinner("Running export script..."):
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "scripts/export_loan_tables.py", "--start-date", exp_start.strftime("%Y-%m-%d"), "--end-date", exp_end.strftime("%Y-%m-%d")],
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                    st.success("Export successful!")
+                    with st.expander("View Output"):
+                        st.code(result.stdout)
+                except subprocess.CalledProcessError as e:
+                    st.error("Export failed!")
+                    with st.expander("View Error"):
+                        st.code(e.stderr or e.stdout)
+                except Exception as e:
+                    st.error(f"Error executing script: {e}")

@@ -8,6 +8,12 @@ from psycopg2.extras import RealDictCursor
 
 from config import get_database_url
 from decimal_utils import amounts_equal_at_2dp, as_10dp, as_2dp
+from accounting_core import (
+    assert_coa_grandchild_matches_parent,
+    build_coa_path_label,
+    coa_grandchild_prefix_matches_immediate_parent,
+    split_account_code,
+)
 
 
 def journal_lines_balance_totals(lines: list[dict]) -> tuple[Decimal, Decimal]:
@@ -406,6 +412,23 @@ class AccountingRepository:
             if not leaf:
                 raise ValueError("Product GL map points to a missing or inactive account.")
             self.assert_account_is_posting_leaf(leaf)
+            try:
+                self._require_gl_row_code_matches_immediate_parent(leaf["id"])
+            except ValueError as _vc:
+                raise ValueError(
+                    f"Product GL map for product_code={pc!r}, system_tag={system_tag!r} uses account "
+                    f"{leaf.get('code')!r} whose code does not match its **immediate parent** in the COA "
+                    f"(for codes like BASE-NN, the parent row must have code BASE — e.g. A100001-02 belongs "
+                    f"under A100001, not under an interest leaf). Remap under Accounting → Chart of Accounts "
+                    f"→ Advanced product → leaf map, or fix parent_id / code in the database. Detail: {_vc}"
+                ) from _vc
+            try:
+                self._require_gl_row_not_ambiguous_duplicate_under_parent(leaf["id"])
+            except ValueError as _vd:
+                raise ValueError(
+                    f"Product GL map for product_code={pc!r}, system_tag={system_tag!r} points to an ambiguous leaf "
+                    f"{leaf.get('code')!r}: {_vd}. Fix duplicate sibling codes/suffixes under the same parent."
+                ) from _vd
             return leaf
 
         raise ValueError(
@@ -420,6 +443,130 @@ class AccountingRepository:
             )
             return [r["code"] for r in cur.fetchall()]
 
+    def list_codes_for_base_and_grandchildren(self, base_code: str) -> list[str]:
+        """
+        Return all codes that would collide with grandchild allocation for ``base_code``:
+        - the base itself (BASE)
+        - any grandchild codes (BASE-NN) anywhere in the chart (even if mis-parented).
+
+        This is used by code suggestion so we never propose a code that already exists
+        elsewhere due to legacy / incorrect parent_id links.
+        """
+        b = (base_code or "").strip().upper()
+        if not b:
+            return []
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT code
+                FROM accounts
+                WHERE UPPER(TRIM(code)) = %s
+                   OR UPPER(TRIM(code)) LIKE %s
+                """,
+                (b, f"{b}-%"),
+            )
+            return [r["code"] for r in (cur.fetchall() or [])]
+
+    def _account_ids_passing_grandchild_parent_code_rule(self, account_ids: set[str]) -> set[str]:
+        """Keep only accounts whose stored code matches the COA grandchild↔parent rule."""
+        if not account_ids:
+            return set()
+        rows = self.list_accounts()
+        by_id = {str(a["id"]): dict(a) for a in rows}
+        good: set[str] = set()
+        for aid in account_ids:
+            a = by_id.get(str(aid))
+            if not a:
+                continue
+            pid = a.get("parent_id")
+            par = by_id.get(str(pid)) if pid is not None else None
+            pcode = par.get("code") if par else None
+            ok, _ = coa_grandchild_prefix_matches_immediate_parent(
+                child_code=str(a.get("code") or ""),
+                parent_code=str(pcode) if pcode else None,
+            )
+            if ok:
+                good.add(str(aid))
+        return good
+
+    def _require_gl_row_code_matches_immediate_parent(self, gl_account_id) -> None:
+        rows = self.list_accounts()
+        by_id = {str(a["id"]): dict(a) for a in rows}
+        acc = by_id.get(str(gl_account_id).strip())
+        if not acc:
+            raise ValueError("GL account not found.")
+        pid = acc.get("parent_id")
+        par = by_id.get(str(pid)) if pid is not None else None
+        pcode = par.get("code") if par else None
+        assert_coa_grandchild_matches_parent(
+            child_code=str(acc.get("code") or ""),
+            parent_code=str(pcode) if pcode else None,
+        )
+
+    def _require_gl_row_not_ambiguous_duplicate_under_parent(self, gl_account_id) -> None:
+        """
+        Guard against legacy / bad COA data where two active siblings share either:
+        - the same normalized code (case/whitespace-insensitive), or
+        - the same grandchild suffix under the same parent (e.g. two siblings both ending in -02).
+
+        If duplicates exist, UI pickers must not offer them and mapping/posting must fail fast.
+        """
+        rows = self.list_accounts()
+        by_id = {str(a["id"]): dict(a) for a in rows}
+        acc = by_id.get(str(gl_account_id).strip())
+        if not acc:
+            raise ValueError("GL account not found.")
+
+        pid = acc.get("parent_id")
+        if pid is None:
+            return
+
+        # Only consider active siblings under the same immediate parent.
+        siblings = [
+            a
+            for a in by_id.values()
+            if a.get("is_active") is not False and str(a.get("parent_id")) == str(pid)
+        ]
+        if len(siblings) <= 1:
+            return
+
+        def _norm(code: str) -> str:
+            return (code or "").strip().upper()
+
+        # 1) Duplicate code under same parent (case/whitespace-insensitive).
+        wanted = _norm(str(acc.get("code") or ""))
+        if wanted:
+            same_code = [a for a in siblings if _norm(str(a.get("code") or "")) == wanted]
+            if len(same_code) > 1:
+                raise ValueError(
+                    f"Duplicate sibling account code under the same parent_id={pid}: {wanted!r} appears {len(same_code)} times."
+                )
+
+        # 2) Duplicate grandchild suffix under same parent (ambiguous -NN).
+        try:
+            _base, wanted_suffix = split_account_code(wanted)
+        except Exception:
+            wanted_suffix = None
+        if wanted_suffix is None:
+            return
+
+        same_suffix: list[str] = []
+        for a in siblings:
+            c = _norm(str(a.get("code") or ""))
+            try:
+                _b, s = split_account_code(c)
+            except Exception:
+                continue
+            if s is not None and s == wanted_suffix:
+                same_suffix.append(c)
+        if len(same_suffix) > 1:
+            same_suffix.sort()
+            raise ValueError(
+                f"Duplicate sibling grandchild suffix -{wanted_suffix:02d} under the same parent_id={pid}. "
+                f"Found: {', '.join(same_suffix[:6])}{' …' if len(same_suffix) > 6 else ''}. "
+                "Fix the COA so each parent has unique -NN suffixes."
+            )
+
     def update_account_subaccount_resolution(self, account_id, subaccount_resolution) -> None:
         with self.conn.cursor() as cur:
             cur.execute("SELECT id FROM accounts WHERE id = %s", (account_id,))
@@ -428,6 +575,185 @@ class AccountingRepository:
             cur.execute(
                 "UPDATE accounts SET subaccount_resolution = %s WHERE id = %s",
                 (subaccount_resolution, account_id),
+            )
+        self.conn.commit()
+
+    def _upsert_product_gl_subaccount_map_with_cursor(self, cur, product_code: str, system_tag: str, gl_account_id) -> None:
+        pc = (product_code or "").strip()
+        st = (system_tag or "").strip()
+        if not pc or not st:
+            raise ValueError("product_code and system_tag are required.")
+        cur.execute(
+            """
+            INSERT INTO product_gl_subaccount_map (product_code, system_tag, gl_account_id)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (product_code, system_tag)
+            DO UPDATE SET gl_account_id = EXCLUDED.gl_account_id
+            """,
+            (pc, st, gl_account_id),
+        )
+
+    def create_child_accounts_batch(
+        self,
+        parent_id: str,
+        children: list[tuple[str, str]],
+        *,
+        parent_subaccount_resolution: str | None,
+        product_assignments: list[tuple[str, int]] | None = None,
+        parent_system_tag: str | None = None,
+    ) -> list[str]:
+        """
+        Insert N child GL rows (code, name), inherit parent category, system_tag NULL on children.
+        Set parent's subaccount_resolution. Optionally upsert product_gl_subaccount_map per (product, child index).
+        Single transaction.
+        """
+        if not children:
+            raise ValueError("At least one subaccount row is required.")
+        mode = (parent_subaccount_resolution or "").strip().upper() or None
+        if not mode:
+            raise ValueError("Posting rule (subaccount resolution) is required when creating subaccounts.")
+        new_ids: list[str] = []
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, code, category FROM accounts WHERE id = %s FOR UPDATE",
+                    (parent_id,),
+                )
+                par = cur.fetchone()
+                if not par:
+                    raise ValueError("Parent account not found.")
+                category = par["category"]
+                parent_code_for_rule = str(par["code"] or "").strip()
+                for code, name in children:
+                    code = (code or "").strip()
+                    name = (name or "").strip()
+                    if not code or not name:
+                        raise ValueError("Each subaccount requires a non-empty code and name.")
+                    assert_coa_grandchild_matches_parent(
+                        child_code=code,
+                        parent_code=parent_code_for_rule,
+                    )
+                    cur.execute("SELECT 1 FROM accounts WHERE code = %s", (code,))
+                    if cur.fetchone():
+                        raise ValueError(f"Account code {code!r} already exists.")
+                    cur.execute(
+                        """
+                        INSERT INTO accounts (code, name, category, system_tag, parent_id, is_active, subaccount_resolution)
+                        VALUES (%s, %s, %s, NULL, %s, TRUE, NULL)
+                        RETURNING id
+                        """,
+                        (code, name, category, parent_id),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        raise ValueError("Insert failed.")
+                    new_ids.append(str(row["id"]))
+                cur.execute(
+                    "UPDATE accounts SET subaccount_resolution = %s WHERE id = %s",
+                    (mode, parent_id),
+                )
+                if product_assignments:
+                    pst = (parent_system_tag or "").strip()
+                    if not pst:
+                        raise ValueError("Parent system tag is required for product mappings.")
+                    for pc, idx in product_assignments:
+                        if idx < 0 or idx >= len(new_ids):
+                            raise ValueError("Invalid product map index.")
+                        self._upsert_product_gl_subaccount_map_with_cursor(cur, pc, pst, new_ids[idx])
+        except Exception:
+            self.conn.rollback()
+            raise
+        self.conn.commit()
+        return new_ids
+
+    def update_account_name(self, account_id: str, name: str) -> None:
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("Account name is required.")
+        with self.conn.cursor() as cur:
+            cur.execute("UPDATE accounts SET name = %s WHERE id = %s", (name, account_id))
+            if cur.rowcount == 0:
+                raise ValueError("Account not found.")
+        self.conn.commit()
+
+    def update_account_code(self, account_id: str, new_code: str) -> None:
+        """
+        Update an account's code (admin-only operation).
+
+        Safe because postings reference account_id, not code — but we must enforce:
+        - account exists
+        - account has no active children (can't rename internal nodes)
+        - new code is unique (case/whitespace-insensitive)
+        - grandchild codes BASE-NN match immediate parent code BASE
+        """
+        nc = (new_code or "").strip().upper()
+        if not nc:
+            raise ValueError("New code is required.")
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, code, parent_id FROM accounts WHERE id = %s FOR UPDATE",
+                (account_id,),
+            )
+            acc = cur.fetchone()
+            if not acc:
+                raise ValueError("Account not found.")
+
+            cur.execute(
+                "SELECT 1 FROM accounts WHERE parent_id = %s AND is_active = TRUE LIMIT 1",
+                (account_id,),
+            )
+            if cur.fetchone():
+                raise ValueError("Cannot change code of an account that still has active children.")
+
+            # Uniqueness (ignore case/whitespace).
+            cur.execute(
+                """
+                SELECT 1 FROM accounts
+                WHERE UPPER(TRIM(code)) = %s
+                  AND id <> %s
+                LIMIT 1
+                """,
+                (nc, account_id),
+            )
+            if cur.fetchone():
+                raise ValueError(f"Account code {nc!r} already exists.")
+
+            # Enforce grandchild↔parent rule (if applicable).
+            pid = acc.get("parent_id")
+            parent_code = None
+            if pid is not None:
+                cur.execute("SELECT code FROM accounts WHERE id = %s", (pid,))
+                pr = cur.fetchone()
+                parent_code = (pr.get("code") or "").strip().upper() if pr else None
+            assert_coa_grandchild_matches_parent(child_code=nc, parent_code=parent_code)
+
+            cur.execute("UPDATE accounts SET code = %s WHERE id = %s", (nc, account_id))
+            if cur.rowcount == 0:
+                raise ValueError("Update failed.")
+        self.conn.commit()
+
+    def set_account_is_active(self, account_id: str, is_active: bool) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT id FROM accounts WHERE id = %s", (account_id,))
+            if not cur.fetchone():
+                raise ValueError("Account not found.")
+            if not is_active:
+                cur.execute(
+                    "SELECT 1 FROM accounts WHERE parent_id = %s AND is_active = TRUE LIMIT 1",
+                    (account_id,),
+                )
+                if cur.fetchone():
+                    raise ValueError(
+                        "Cannot deactivate an account that still has active subaccounts. "
+                        "Deactivate or reassign children first."
+                    )
+                cur.execute(
+                    "DELETE FROM product_gl_subaccount_map WHERE gl_account_id = %s",
+                    (account_id,),
+                )
+            cur.execute(
+                "UPDATE accounts SET is_active = %s WHERE id = %s",
+                (is_active, account_id),
             )
         self.conn.commit()
 
@@ -501,20 +827,23 @@ class AccountingRepository:
             return cur.fetchall()
 
     def upsert_product_gl_subaccount_map(self, product_code: str, system_tag: str, gl_account_id) -> None:
-        pc = (product_code or "").strip()
-        st = (system_tag or "").strip()
-        if not pc or not st:
-            raise ValueError("product_code and system_tag are required.")
-        with self.conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO product_gl_subaccount_map (product_code, system_tag, gl_account_id)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (product_code, system_tag)
-                DO UPDATE SET gl_account_id = EXCLUDED.gl_account_id
-                """,
-                (pc, st, gl_account_id),
+        allowed = {str(x["id"]) for x in self.list_posting_leaves_under_system_tag(system_tag)}
+        gid = str(gl_account_id).strip()
+        if not allowed:
+            raise ValueError(
+                f"No posting leaves under COA system_tag={system_tag!r}. "
+                "Ensure one active tagged parent exists and (if needed) create subaccounts under it."
             )
+        if gid not in allowed:
+            raise ValueError(
+                f"GL account id {gid!r} is not a posting leaf under the COA branch for system_tag={system_tag!r}. "
+                "Pick a leaf under the same tagged parent (e.g. regular_interest_accrued under the interest "
+                "accrued asset tree, not cash_operating / bank operating)."
+            )
+        self._require_gl_row_code_matches_immediate_parent(gl_account_id)
+        self._require_gl_row_not_ambiguous_duplicate_under_parent(gl_account_id)
+        with self.conn.cursor() as cur:
+            self._upsert_product_gl_subaccount_map_with_cursor(cur, product_code, system_tag, gl_account_id)
         self.conn.commit()
 
     def delete_product_gl_subaccount_map(self, map_id: int) -> None:
@@ -558,20 +887,6 @@ class AccountingRepository:
 
         leaves = [a for a in active if str(a.get("id")) not in ids_that_are_parent]
 
-        def code_path_for(account_id) -> str:
-            parts: list[str] = []
-            cur_a = by_id.get(str(account_id))
-            guard = 0
-            while cur_a is not None and guard < 64:
-                parts.append(str(cur_a.get("code") or "").strip() or "?")
-                pid = cur_a.get("parent_id")
-                if pid is None:
-                    break
-                cur_a = by_id.get(str(pid))
-                guard += 1
-            parts.reverse()
-            return " › ".join(parts) if parts else ""
-
         out: list[dict] = []
         for a in sorted(leaves, key=lambda x: str(x.get("code") or "")):
             aid = a.get("id")
@@ -579,9 +894,119 @@ class AccountingRepository:
                 continue
             code = str(a.get("code") or "").strip()
             name = str(a.get("name") or "").strip()
-            trail = code_path_for(aid)
-            label = f"{trail} — {name}" if trail else f"{code} — {name}"
+            label, _ok = build_coa_path_label(leaf_account_id=str(aid), by_id=by_id)
             out.append({"id": str(aid), "code": code, "name": name, "display_label": label})
+        return out
+
+    def list_posting_leaves_under_system_tag(self, system_tag: str) -> list[dict]:
+        """
+        Posting leaves that sit under the **single** active COA row carrying ``system_tag``.
+
+        Used for ``product_gl_subaccount_map`` and admin pickers so a tag like
+        ``regular_interest_accrued`` cannot be mapped to a leaf from another branch
+        (e.g. ``cash_operating`` / bank operating grandchild codes).
+        """
+        st = (system_tag or "").strip()
+        if not st:
+            return []
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, code FROM accounts
+                WHERE system_tag = %s AND is_active = TRUE
+                ORDER BY code
+                """,
+                (st,),
+            )
+            roots = cur.fetchall() or []
+        if len(roots) > 1:
+            codes = ", ".join(str(r["code"]) for r in roots[:6])
+            more = f" (+{len(roots) - 6} more)" if len(roots) > 6 else ""
+            raise ValueError(
+                f"COA must have exactly one active account with system_tag={st!r}; "
+                f"found {len(roots)} ({codes}{more}). Fix duplicates before mapping products."
+            )
+        if not roots:
+            return []
+        root_id = roots[0]["id"]
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH RECURSIVE sub AS (
+                    SELECT id FROM accounts WHERE id = %s
+                    UNION ALL
+                    SELECT c.id FROM accounts c
+                    INNER JOIN sub ON c.parent_id = sub.id
+                )
+                SELECT a.id, a.code, a.name
+                FROM accounts a
+                INNER JOIN sub s ON a.id = s.id
+                WHERE a.is_active = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM accounts c
+                      WHERE c.parent_id = a.id AND c.is_active = TRUE
+                  )
+                ORDER BY a.code
+                """,
+                (root_id,),
+            )
+            rows = cur.fetchall() or []
+        if not rows:
+            return []
+        full_leaves = self.list_posting_leaf_accounts()
+        allowed_ids = {str(r["id"]) for r in rows}
+        allowed_ids = self._account_ids_passing_grandchild_parent_code_rule(allowed_ids)
+        out = [x for x in full_leaves if x["id"] in allowed_ids]
+
+        # Guard: do not offer ambiguous duplicate siblings (legacy/bad COA data).
+        # If a parent has duplicate normalized codes or duplicate -NN suffixes, hide those leaves from pickers.
+        all_rows = self.list_accounts()
+        by_id = {str(a["id"]): dict(a) for a in all_rows}
+
+        def _norm(code: str) -> str:
+            return (code or "").strip().upper()
+
+        # Build duplicates under same parent among active children.
+        active_children_by_parent: dict[str, list[dict]] = {}
+        for a in by_id.values():
+            if a.get("is_active") is False:
+                continue
+            pid = a.get("parent_id")
+            if pid is None:
+                continue
+            active_children_by_parent.setdefault(str(pid), []).append(a)
+
+        dup_ids: set[str] = set()
+        for pid, kids in active_children_by_parent.items():
+            if len(kids) <= 1:
+                continue
+            # (a) duplicate normalized code
+            code_to_ids: dict[str, list[str]] = {}
+            for k in kids:
+                cid = str(k.get("id"))
+                code_to_ids.setdefault(_norm(str(k.get("code") or "")), []).append(cid)
+            for c, ids in code_to_ids.items():
+                if c and len(ids) > 1:
+                    dup_ids.update(ids)
+
+            # (b) duplicate grandchild suffix -NN under same parent (regardless of base)
+            suffix_to_ids: dict[int, list[str]] = {}
+            for k in kids:
+                cid = str(k.get("id"))
+                c = _norm(str(k.get("code") or ""))
+                try:
+                    _b, s = split_account_code(c)
+                except Exception:
+                    continue
+                if s is not None:
+                    suffix_to_ids.setdefault(int(s), []).append(cid)
+            for sfx, ids in suffix_to_ids.items():
+                if len(ids) > 1:
+                    dup_ids.update(ids)
+
+        if dup_ids:
+            out = [x for x in out if x["id"] not in dup_ids]
+        out.sort(key=lambda x: str(x.get("code") or ""))
         return out
 
     def compute_source_cash_leaf_accounts(self, *, root_code: str = "A100000") -> list[dict]:
@@ -690,27 +1115,53 @@ class AccountingRepository:
         """
         For a parent account code, return net movement per child in the date range.
         Each row: child code/name + total debit/credit for that child.
+        Rolls up all postings from descendant leaves up to the immediate child level.
+        Returns: code, name, ob_debit, ob_credit, period_debit, period_credit
         """
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT c.code, c.name,
-                       COALESCE(SUM(ji.debit), 0) AS debit,
-                       COALESCE(SUM(ji.credit), 0) AS credit
-                FROM accounts p
-                JOIN accounts c ON c.parent_id = p.id AND c.is_active = TRUE
-                LEFT JOIN journal_items ji ON ji.account_id = c.id
+                WITH RECURSIVE tree AS (
+                    -- Base: immediate active children of the specified parent code
+                    SELECT 
+                        c.id AS top_child_id, 
+                        c.code AS top_child_code, 
+                        c.name AS top_child_name, 
+                        c.id AS desc_id
+                    FROM accounts p
+                    JOIN accounts c ON c.parent_id = p.id
+                    WHERE p.code = %s AND c.is_active = TRUE
+
+                    UNION ALL
+
+                    -- Recursive: any active child of an already-found descendant
+                    SELECT 
+                        t.top_child_id, 
+                        t.top_child_code, 
+                        t.top_child_name, 
+                        a.id AS desc_id
+                    FROM tree t
+                    JOIN accounts a ON a.parent_id = t.desc_id
+                    WHERE a.is_active = TRUE
+                )
+                SELECT 
+                    t.top_child_code AS code, 
+                    t.top_child_name AS name,
+                    COALESCE(SUM(ji.debit) FILTER (WHERE je.entry_date < %s), 0) AS ob_debit,
+                    COALESCE(SUM(ji.credit) FILTER (WHERE je.entry_date < %s), 0) AS ob_credit,
+                    COALESCE(SUM(ji.debit) FILTER (WHERE je.entry_date >= %s AND je.entry_date <= %s), 0) AS period_debit,
+                    COALESCE(SUM(ji.credit) FILTER (WHERE je.entry_date >= %s AND je.entry_date <= %s), 0) AS period_credit
+                FROM tree t
+                -- We join all descendants to journal items.
+                LEFT JOIN journal_items ji ON ji.account_id = t.desc_id
                 LEFT JOIN journal_entries je
                     ON ji.entry_id = je.id
                    AND je.status = 'POSTED'
                    AND COALESCE(je.is_active, TRUE) = TRUE
-                   AND je.entry_date >= %s
-                   AND je.entry_date <= %s
-                WHERE p.code = %s
-                GROUP BY c.code, c.name
-                ORDER BY c.code
+                GROUP BY t.top_child_code, t.top_child_name
+                ORDER BY t.top_child_code
                 """,
-                (start_date, end_date, parent_code),
+                (parent_code, start_date, start_date, start_date, end_date, start_date, end_date),
             )
             return cur.fetchall()
 

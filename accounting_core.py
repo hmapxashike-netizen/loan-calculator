@@ -145,6 +145,116 @@ def split_account_code(code: str) -> Tuple[str, int | None]:
     return base, g
 
 
+def coa_grandchild_prefix_matches_immediate_parent(
+    *, child_code: str, parent_code: str | None
+) -> Tuple[bool, str | None]:
+    """
+    For grandchild codes ``BASE-NN``, **BASE** must equal the **immediate parent's** 7-character
+    account code. Otherwise the code lies about which COA branch the row belongs to (e.g.
+    ``A100001-02`` under parent ``A120001`` — ``A100001`` is the bank operating stem, not interest accrued).
+
+    Plain 7-character child codes are not checked here (separate rollup rules apply).
+    """
+    cc = (child_code or "").strip().upper()
+    if not cc:
+        return False, "Account code is empty."
+    try:
+        base, suff = split_account_code(cc)
+    except ValueError as exc:
+        return False, str(exc)
+    if suff is None:
+        return True, None
+    if not parent_code or not str(parent_code).strip():
+        return False, (
+            f"Grandchild code {cc!r} requires an immediate parent row whose code is the 7-character base {base!r}."
+        )
+    pc = str(parent_code).strip().upper()
+    try:
+        _pb, ps = split_account_code(pc)
+    except ValueError:
+        return False, f"Invalid parent code {parent_code!r} for child {cc!r}."
+    if ps is not None:
+        return (
+            False,
+            f"Grandchild {cc!r} must sit under a 7-character parent, not under another grandchild {pc!r}.",
+        )
+    if _pb != base:
+        return (
+            False,
+            f"COA mismatch: code {cc!r} implies parent {base!r}, but immediate parent code is {pc!r}. "
+            f"Rename to {pc}-{{NN:02d}} or move the row under account {base!r}.",
+        )
+    return True, None
+
+
+def assert_coa_grandchild_matches_parent(*, child_code: str, parent_code: str | None) -> None:
+    ok, msg = coa_grandchild_prefix_matches_immediate_parent(
+        child_code=child_code, parent_code=parent_code
+    )
+    if not ok:
+        raise ValueError(msg or "Grandchild account code does not match immediate parent in COA.")
+
+
+def account_chain_code_parent_consistent(
+    *, leaf_account_id: str, by_id: dict[str, dict]
+) -> Tuple[bool, str | None]:
+    """
+    Walk from leaf to root via ``parent_id`` and ensure every step satisfies
+    ``coa_grandchild_prefix_matches_immediate_parent`` (so ``A100001-02`` cannot hang under ``A120001``).
+    """
+    cur: dict | None = by_id.get(str(leaf_account_id))
+    guard = 0
+    while cur is not None and guard < 64:
+        pid = cur.get("parent_id")
+        if pid is None:
+            return True, None
+        parent = by_id.get(str(pid))
+        if not parent:
+            return False, f"missing parent row for account {cur.get('code')!r}"
+        ok, msg = coa_grandchild_prefix_matches_immediate_parent(
+            child_code=str(cur.get("code") or ""),
+            parent_code=str(parent.get("code") or "").strip() or None,
+        )
+        if not ok:
+            return False, msg
+        cur = parent
+        guard += 1
+    return True, None
+
+
+def build_coa_path_label(*, leaf_account_id: str, by_id: dict[str, dict]) -> Tuple[str, bool]:
+    """
+    Human-readable path for UI. If any parent/child code link is inconsistent, returns
+    ``"{code} — {name} [COA: …]"`` instead of a misleading ``A120001 › A100001-02`` trail.
+    """
+    leaf = by_id.get(str(leaf_account_id))
+    if not leaf:
+        return "?", False
+    lc = str(leaf.get("code") or "").strip()
+    ln = str(leaf.get("name") or "").strip()
+    base = f"{lc} — {ln}" if ln else lc
+    ok, msg = account_chain_code_parent_consistent(leaf_account_id=str(leaf_account_id), by_id=by_id)
+    if not ok:
+        hint = (msg or "code/parent mismatch").replace("\n", " ")
+        return f"{base} [COA: {hint}]", False
+    parts: list[str] = []
+    cur: dict | None = leaf
+    guard = 0
+    while cur is not None and guard < 64:
+        parts.append(str(cur.get("code") or "").strip() or "?")
+        pid = cur.get("parent_id")
+        if pid is None:
+            break
+        parent = by_id.get(str(pid))
+        if not parent:
+            return f"{base} [COA: broken hierarchy]", False
+        cur = parent
+        guard += 1
+    parts.reverse()
+    trail = " › ".join(parts)
+    return (f"{trail} — {ln}" if ln else trail), True
+
+
 def parse_seven_char_account_code(seven: str) -> Tuple[str, int, int]:
     """
     Parse a strict 7-character account code into (prefix, stem, suffix_two_digit_int).
@@ -823,6 +933,10 @@ __all__ = [
     "ACCOUNT_PREFIX_BY_CATEGORY",
     "ACCOUNT_STEM_RANGE_BY_CATEGORY",
     "split_account_code",
+    "coa_grandchild_prefix_matches_immediate_parent",
+    "assert_coa_grandchild_matches_parent",
+    "account_chain_code_parent_consistent",
+    "build_coa_path_label",
     "parse_seven_char_account_code",
     "parse_account_code",
     "validate_account_code",

@@ -97,6 +97,80 @@ class AccountingService:
         finally:
             conn.close()
 
+    def peek_next_grandchild_codes_for_parent(self, parent_account_id: str, count: int) -> list[str]:
+        """Preview next N grandchild codes (BASE-NN) under parent; does not persist."""
+        from accounting_core import suggest_next_grandchild_account_code
+
+        if count < 1:
+            return []
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            with conn.cursor() as cur:
+                cur.execute("SELECT code FROM accounts WHERE id = %s", (parent_account_id,))
+                row = cur.fetchone()
+            if not row:
+                raise ValueError("Parent account not found.")
+            parent_code = (row["code"] or "").strip().upper()
+            # Important: collisions must be checked globally, not only under the stored parent_id,
+            # because legacy/bad COA data can mis-parent a code (e.g. BASE-02 under a different parent).
+            existing_list = repo.list_codes_for_base_and_grandchildren(parent_code)
+            sim = set(str(x).strip().upper() for x in existing_list)
+            out: list[str] = []
+            for _ in range(count):
+                nxt = suggest_next_grandchild_account_code(parent_code, sim)
+                out.append(nxt)
+                sim.add(nxt)
+            return out
+        finally:
+            conn.close()
+
+    def create_subaccounts_under_tagged_parent(
+        self,
+        parent_id: str,
+        children: list[tuple[str, str]],
+        *,
+        resolution_mode: str,
+        product_assignments: list[tuple[str, int]] | None = None,
+        parent_system_tag: str | None = None,
+    ) -> list[str]:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.create_child_accounts_batch(
+                parent_id,
+                children,
+                parent_subaccount_resolution=(resolution_mode or "").strip().upper(),
+                product_assignments=product_assignments,
+                parent_system_tag=parent_system_tag,
+            )
+        finally:
+            conn.close()
+
+    def update_gl_account_name(self, account_id: str, name: str) -> None:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.update_account_name(account_id, name)
+        finally:
+            conn.close()
+
+    def update_gl_account_code(self, account_id: str, new_code: str) -> None:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.update_account_code(account_id, new_code)
+        finally:
+            conn.close()
+
+    def set_gl_account_active(self, account_id: str, is_active: bool) -> None:
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            repo.set_account_is_active(account_id, is_active)
+        finally:
+            conn.close()
+
     def list_posting_leaf_accounts(self) -> list[dict]:
         """Active accounts with no active children (posting leaves), with display_label path."""
         conn = get_conn()
@@ -276,8 +350,8 @@ class AccountingService:
                 row = cur.fetchone()
                 if not row:
                     raise ValueError("Parent account not found.")
-                parent_code = row["code"]
-            existing = repo.list_child_codes_for_parent(parent_account_id)
+                parent_code = (row["code"] or "").strip().upper()
+            existing = [str(x).strip().upper() for x in repo.list_codes_for_base_and_grandchildren(parent_code)]
             return suggest_next_grandchild_account_code(parent_code, existing)
         finally:
             conn.close()
@@ -319,6 +393,15 @@ class AccountingService:
         try:
             repo = AccountingRepository(conn)
             return repo.list_product_gl_subaccount_map(product_code=product_code)
+        finally:
+            conn.close()
+
+    def list_leaf_accounts_for_system_tag(self, system_tag: str) -> list[dict]:
+        """Posting leaves under the COA row that carries this system_tag (for product map UI and validation)."""
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            return repo.list_posting_leaves_under_system_tag(system_tag)
         finally:
             conn.close()
 

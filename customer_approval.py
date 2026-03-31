@@ -1,5 +1,8 @@
 """
-Customer & Agent Approval Module: Handle Maker-Checker for name changes, etc.
+Customer and agent approval drafts (e.g. regulated name changes with supporting document).
+
+Requires schema migration:
+    python scripts/run_migration_61.py
 """
 
 from __future__ import annotations
@@ -7,196 +10,235 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from config import get_database_url
+from psycopg2 import ProgrammingError
+from psycopg2.extras import Json, RealDictCursor
+
+from agents import get_agent, update_agent
+from customers import _connection, get_customer, update_corporate, update_individual
 
 
-def _get_conn():
-    return psycopg2.connect(get_database_url())
+def _row_details(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
 
 def save_approval_draft(
+    *,
     entity_type: str,
     entity_id: int,
     action_type: str,
-    old_details: dict[str, Any] | None,
+    old_details: dict[str, Any],
     new_details: dict[str, Any],
-    requested_by: str | None = None,
+    requested_by: str,
     supporting_document: str | None = None,
 ) -> int:
-    """Save a draft for an entity (customer/agent) update needing approval."""
-    with _get_conn() as conn:
+    """Insert a PENDING draft. Returns new draft id."""
+    et = (entity_type or "").strip().lower()
+    if et not in {"customer", "agent"}:
+        raise ValueError("entity_type must be 'customer' or 'agent'.")
+    act = (action_type or "").strip().upper()
+    if not act:
+        raise ValueError("action_type is required.")
+    with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO customer_approval_drafts 
-                (entity_type, entity_id, action_type, old_details, new_details, requested_by, supporting_document)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO customer_agent_approval_drafts (
+                    entity_type, entity_id, action_type, status,
+                    old_details, new_details, supporting_document, requested_by
+                )
+                VALUES (%s, %s, %s, 'PENDING', %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
-                    entity_type,
-                    entity_id,
-                    action_type,
-                    json.dumps(old_details) if old_details else None,
-                    json.dumps(new_details),
-                    requested_by,
-                    supporting_document
-                )
+                    et,
+                    int(entity_id),
+                    act,
+                    Json(old_details or {}),
+                    Json(new_details or {}),
+                    (supporting_document or "").strip() or None,
+                    (requested_by or "").strip() or None,
+                ),
             )
-            draft_id = cur.fetchone()[0]
-            conn.commit()
-            return draft_id
+            rid = cur.fetchone()
+            return int(rid[0])
 
-def list_pending_drafts() -> list[dict]:
-    """List all pending drafts for customers and agents."""
-    with _get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM customer_approval_drafts WHERE status = 'PENDING' ORDER BY submitted_at DESC")
-            return [dict(r) for r in cur.fetchall()]
 
-def get_draft(draft_id: int) -> dict | None:
-    with _get_conn() as conn:
+def _fetch_draft_row(cur, draft_id: int) -> dict[str, Any] | None:
+    cur.execute(
+        """
+        SELECT id, entity_type, entity_id, action_type, status,
+               old_details, new_details, supporting_document, requested_by,
+               reviewer_note, reviewed_by, submitted_at, reviewed_at
+        FROM customer_agent_approval_drafts
+        WHERE id = %s
+        """,
+        (int(draft_id),),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def get_draft(draft_id: int) -> dict[str, Any] | None:
+    with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM customer_approval_drafts WHERE id = %s", (draft_id,))
+            cur.execute(
+                """
+                SELECT id, entity_type, entity_id, action_type, status,
+                       old_details, new_details, supporting_document, requested_by,
+                       reviewer_note, reviewed_by, submitted_at, reviewed_at
+                FROM customer_agent_approval_drafts
+                WHERE id = %s
+                """,
+                (int(draft_id),),
+            )
             row = cur.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            d = dict(row)
+            d["old_details"] = _row_details(d.get("old_details"))
+            d["new_details"] = _row_details(d.get("new_details"))
+            return d
 
-def approve_draft(draft_id: int, approved_by: str | None = None) -> None:
-    """Approve a draft. If it's a name change, update the main table and log history."""
-    draft = get_draft(draft_id)
-    if not draft:
-        raise ValueError(f"Draft {draft_id} not found")
-    if draft["status"] != "PENDING":
-        raise ValueError(f"Draft {draft_id} is not PENDING")
 
-    entity_type = draft["entity_type"]
-    entity_id = draft["entity_id"]
-    action_type = draft["action_type"]
-    new_details = draft["new_details"]
-    old_details = draft.get("old_details") or {}
-    
-    with _get_conn() as conn:
-        with conn.cursor() as cur:
-            if action_type == "NAME_CHANGE":
-                old_name = old_details.get("name", "")
-                new_name = new_details.get("name", "")
-                
-                # Update main table
-                if entity_type == "customer":
-                    # For customer, we have to find if it's individual or corporate
-                    cur.execute("SELECT type FROM customers WHERE id = %s", (entity_id,))
-                    c_type_row = cur.fetchone()
-                    if not c_type_row:
-                        raise ValueError("Customer not found")
-                    c_type = c_type_row[0]
-                    
-                    if c_type == "individual":
-                        cur.execute("UPDATE individuals SET name = %s WHERE customer_id = %s", (new_name, entity_id))
-                    elif c_type == "corporate":
-                        cur.execute("UPDATE corporates SET legal_name = %s WHERE customer_id = %s", (new_name, entity_id))
-                elif entity_type == "agent":
-                    cur.execute("UPDATE agents SET name = %s WHERE id = %s", (new_name, entity_id))
-                else:
-                    raise ValueError("Unknown entity_type")
-
-                # Insert into history
-                customer_id = entity_id if entity_type == "customer" else None
-                agent_id = entity_id if entity_type == "agent" else None
-                
+def list_pending_drafts() -> list[dict[str, Any]]:
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            try:
                 cur.execute(
                     """
-                    INSERT INTO customer_name_history
-                    (customer_id, agent_id, old_name, new_name, requested_by, approved_by, supporting_document)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        customer_id,
-                        agent_id,
-                        old_name,
-                        new_name,
-                        draft["requested_by"],
-                        approved_by,
-                        draft["supporting_document"]
-                    )
+                    SELECT id, entity_type, entity_id, action_type, status,
+                           old_details, new_details, supporting_document, requested_by,
+                           submitted_at
+                    FROM customer_agent_approval_drafts
+                    WHERE status = 'PENDING'
+                    ORDER BY submitted_at ASC, id ASC
+                    """
                 )
+                rows = cur.fetchall() or []
+            except ProgrammingError as e:
+                raise RuntimeError(
+                    "customer_agent_approval_drafts table missing. Run: python scripts/run_migration_61.py"
+                ) from e
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d["old_details"] = _row_details(d.get("old_details"))
+        d["new_details"] = _row_details(d.get("new_details"))
+        out.append(d)
+    return out
 
-            # Mark draft as approved
-            cur.execute(
-                """
-                UPDATE customer_approval_drafts 
-                SET status = 'APPROVED', approved_by = %s, approved_at = NOW(), updated_at = NOW()
-                WHERE id = %s
-                """,
-                (approved_by, draft_id)
-            )
-            conn.commit()
 
-def dismiss_draft(draft_id: int, note: str, dismissed_by: str | None = None) -> None:
-    with _get_conn() as conn:
+def _apply_name_change(draft: dict[str, Any]) -> None:
+    nd = draft.get("new_details") or {}
+    name = (nd.get("name") or "").strip()
+    if not name:
+        raise ValueError("Approved draft has no new name in new_details.")
+    et = (draft.get("entity_type") or "").strip().lower()
+    eid = int(draft["entity_id"])
+    action = (draft.get("action_type") or "").strip().upper()
+    if action != "NAME_CHANGE":
+        raise ValueError(f"Unsupported action_type for apply: {action!r}")
+
+    if et == "agent":
+        ag = get_agent(eid)
+        if not ag:
+            raise ValueError(f"Agent {eid} not found.")
+        update_agent(eid, name=name)
+        return
+
+    if et == "customer":
+        cust = get_customer(eid)
+        if not cust:
+            raise ValueError(f"Customer {eid} not found.")
+        ctype = (cust.get("type") or "").strip().lower()
+        if ctype == "individual":
+            update_individual(eid, name=name)
+            return
+        if ctype == "corporate":
+            update_corporate(eid, legal_name=name)
+            return
+        raise ValueError(f"Unknown customer type {ctype!r}.")
+
+    raise ValueError(f"Unknown entity_type {et!r}.")
+
+
+def approve_draft(draft_id: int, *, approved_by: str) -> None:
+    actor = (approved_by or "").strip() or "system"
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            draft = _fetch_draft_row(cur, draft_id)
+            if not draft:
+                raise ValueError(f"Draft {draft_id} not found.")
+            if (draft.get("status") or "").upper() != "PENDING":
+                raise ValueError(f"Draft {draft_id} is not pending (status={draft.get('status')!r}).")
+            draft["old_details"] = _row_details(draft.get("old_details"))
+            draft["new_details"] = _row_details(draft.get("new_details"))
+    _apply_name_change(draft)
+    with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                UPDATE customer_approval_drafts 
-                SET status = 'DISMISSED', dismissed_note = %s, dismissed_at = NOW(), updated_at = NOW()
-                WHERE id = %s
+                UPDATE customer_agent_approval_drafts
+                SET status = 'APPROVED',
+                    reviewed_by = %s,
+                    reviewer_note = NULL,
+                    reviewed_at = NOW()
+                WHERE id = %s AND status = 'PENDING'
                 """,
-                (note, draft_id)
+                (actor, int(draft_id)),
             )
-            conn.commit()
+            if cur.rowcount == 0:
+                raise ValueError(f"Draft {draft_id} could not be finalized (concurrent update?).")
 
-def rework_draft(draft_id: int, note: str, reworked_by: str | None = None) -> None:
-    with _get_conn() as conn:
+
+def rework_draft(draft_id: int, note: str, *, reworked_by: str) -> None:
+    actor = (reworked_by or "").strip() or "system"
+    note = (note or "").strip()
+    if not note:
+        raise ValueError("Note is required for rework.")
+    with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                UPDATE customer_approval_drafts 
-                SET status = 'REWORK', rework_note = %s, updated_at = NOW()
-                WHERE id = %s
+                UPDATE customer_agent_approval_drafts
+                SET status = 'REWORK',
+                    reviewer_note = %s,
+                    reviewed_by = %s,
+                    reviewed_at = NOW()
+                WHERE id = %s AND status = 'PENDING'
                 """,
-                (note, draft_id)
+                (note, actor, int(draft_id)),
             )
-            conn.commit()
+            if cur.rowcount == 0:
+                raise ValueError(f"Draft {draft_id} not found or not pending.")
 
-def init_approval_schema():
-    with _get_conn() as conn:
+
+def dismiss_draft(draft_id: int, note: str, *, dismissed_by: str) -> None:
+    actor = (dismissed_by or "").strip() or "system"
+    note = (note or "").strip()
+    if not note:
+        raise ValueError("Note is required for dismiss.")
+    with _connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS customer_approval_drafts (
-                id SERIAL PRIMARY KEY,
-                entity_type VARCHAR(50) NOT NULL,
-                entity_id INTEGER NOT NULL,
-                action_type VARCHAR(50) NOT NULL,
-                old_details JSONB,
-                new_details JSONB NOT NULL,
-                requested_by VARCHAR(100),
-                approved_by VARCHAR(100),
-                supporting_document TEXT,
-                status VARCHAR(50) DEFAULT 'PENDING',
-                submitted_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                approved_at TIMESTAMP WITH TIME ZONE,
-                dismissed_note TEXT,
-                dismissed_at TIMESTAMP WITH TIME ZONE,
-                rework_note TEXT,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-            );
-            """)
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS customer_name_history (
-                id SERIAL PRIMARY KEY,
-                customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE,
-                agent_id INTEGER REFERENCES agents(id) ON DELETE CASCADE,
-                old_name VARCHAR(255) NOT NULL,
-                new_name VARCHAR(255) NOT NULL,
-                requested_by VARCHAR(100),
-                approved_by VARCHAR(100),
-                supporting_document TEXT,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                CHECK (customer_id IS NOT NULL OR agent_id IS NOT NULL)
-            );
-            """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_customer_name_history_customer_id ON customer_name_history(customer_id);")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_customer_name_history_agent_id ON customer_name_history(agent_id);")
-        conn.commit()
-
-init_approval_schema()
+            cur.execute(
+                """
+                UPDATE customer_agent_approval_drafts
+                SET status = 'DISMISSED',
+                    reviewer_note = %s,
+                    reviewed_by = %s,
+                    reviewed_at = NOW()
+                WHERE id = %s AND status = 'PENDING'
+                """,
+                (note, actor, int(draft_id)),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(f"Draft {draft_id} not found or not pending.")
