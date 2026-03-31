@@ -106,8 +106,6 @@ def update_individual(
     phone2: str | None = None,
     email1: str | None = None,
     email2: str | None = None,
-    sector_id: int | None = None,
-    subsector_id: int | None = None,
 ) -> None:
     """Update individual details. Pass only fields to change."""
     with _connection() as conn:
@@ -121,27 +119,13 @@ def update_individual(
                 if val is not None:
                     updates.append(f"{key} = %s")
                     vals.append(val)
-            if updates:
-                vals.append(customer_id)
-                cur.execute(
-                    f"UPDATE individuals SET {', '.join(updates)}, updated_at = NOW() WHERE customer_id = %s",
-                    vals,
-                )
-            
-            cust_updates = []
-            cust_vals = []
-            if sector_id is not None:
-                cust_updates.append("sector_id = %s")
-                cust_vals.append(sector_id)
-            if subsector_id is not None:
-                cust_updates.append("subsector_id = %s")
-                cust_vals.append(subsector_id)
-            if cust_updates:
-                cust_vals.append(customer_id)
-                cur.execute(
-                    f"UPDATE customers SET {', '.join(cust_updates)}, updated_at = NOW() WHERE id = %s",
-                    cust_vals,
-                )
+            if not updates:
+                return
+            vals.append(customer_id)
+            cur.execute(
+                f"UPDATE individuals SET {', '.join(updates)}, updated_at = NOW() WHERE customer_id = %s",
+                vals,
+            )
 
 
 # ---------- Corporates ----------
@@ -325,8 +309,6 @@ def update_corporate(
     trading_name: str | None = None,
     reg_number: str | None = None,
     tin: str | None = None,
-    sector_id: int | None = None,
-    subsector_id: int | None = None,
 ) -> None:
     """Update corporate details."""
     with _connection() as conn:
@@ -340,27 +322,13 @@ def update_corporate(
                 if val is not None:
                     updates.append(f"{key} = %s")
                     vals.append(val)
-            if updates:
-                vals.append(customer_id)
-                cur.execute(
-                    f"UPDATE corporates SET {', '.join(updates)}, updated_at = NOW() WHERE customer_id = %s",
-                    vals,
-                )
-            
-            cust_updates = []
-            cust_vals = []
-            if sector_id is not None:
-                cust_updates.append("sector_id = %s")
-                cust_vals.append(sector_id)
-            if subsector_id is not None:
-                cust_updates.append("subsector_id = %s")
-                cust_vals.append(subsector_id)
-            if cust_updates:
-                cust_vals.append(customer_id)
-                cur.execute(
-                    f"UPDATE customers SET {', '.join(cust_updates)}, updated_at = NOW() WHERE id = %s",
-                    cust_vals,
-                )
+            if not updates:
+                return
+            vals.append(customer_id)
+            cur.execute(
+                f"UPDATE corporates SET {', '.join(updates)}, updated_at = NOW() WHERE customer_id = %s",
+                vals,
+            )
 
 
 # ---------- Sector / Subsector (configurable; on customers) ----------

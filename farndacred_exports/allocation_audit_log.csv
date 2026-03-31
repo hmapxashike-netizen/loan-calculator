@@ -1,1 +1,2 @@
 id,created_at,event_type,loan_id,as_of_date,repayment_id,original_repayment_id,narration,details
+1,2026-03-30T11:20:48.261466+02:00,reversal_add_back,1,2025-03-05,,2,Reversal of receipt allocation,"{'alloc_interest_arrears': 52.8614056185, 'alloc_penalty_interest': 0.9099122666, 'alloc_principal_arrears': 0.0}"
