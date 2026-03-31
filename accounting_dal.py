@@ -1116,6 +1116,8 @@ class AccountingRepository:
         For a parent account code, return net movement per child in the date range.
         Each row: child code/name + total debit/credit for that child.
         Rolls up all postings from descendant leaves up to the immediate child level.
+        Also includes a row for journals posted **directly** to the parent account ID
+        (labelled “— direct to parent”) so the sum of rows matches the subtree ledger.
         Returns: code, name, ob_debit, ob_credit, period_debit, period_credit
         """
         with self.conn.cursor() as cur:
@@ -1163,7 +1165,49 @@ class AccountingRepository:
                 """,
                 (parent_code, start_date, start_date, start_date, end_date, start_date, end_date),
             )
-            return cur.fetchall()
+            rows = list(cur.fetchall())
+
+            # Postings on the parent account itself are excluded from the recursive tree above.
+            cur.execute(
+                """
+                SELECT
+                    p.code AS code,
+                    p.name AS name,
+                    COALESCE(SUM(ji.debit) FILTER (WHERE je.entry_date < %s), 0) AS ob_debit,
+                    COALESCE(SUM(ji.credit) FILTER (WHERE je.entry_date < %s), 0) AS ob_credit,
+                    COALESCE(SUM(ji.debit) FILTER (WHERE je.entry_date >= %s AND je.entry_date <= %s), 0) AS period_debit,
+                    COALESCE(SUM(ji.credit) FILTER (WHERE je.entry_date >= %s AND je.entry_date <= %s), 0) AS period_credit
+                FROM accounts p
+                LEFT JOIN journal_items ji ON ji.account_id = p.id
+                LEFT JOIN journal_entries je
+                    ON ji.entry_id = je.id
+                   AND je.status = 'POSTED'
+                   AND COALESCE(je.is_active, TRUE) = TRUE
+                WHERE p.code = %s
+                GROUP BY p.code, p.name
+                """,
+                (start_date, start_date, start_date, end_date, start_date, end_date, parent_code),
+            )
+            prow = cur.fetchone()
+            if prow:
+                pod = float(prow.get("ob_debit") or 0)
+                poc = float(prow.get("ob_credit") or 0)
+                ppd = float(prow.get("period_debit") or 0)
+                ppc = float(prow.get("period_credit") or 0)
+                if pod or poc or ppd or ppc:
+                    rows.append(
+                        {
+                            "code": prow["code"],
+                            "name": f"{prow['name']} — direct to parent",
+                            "ob_debit": prow["ob_debit"],
+                            "ob_credit": prow["ob_credit"],
+                            "period_debit": prow["period_debit"],
+                            "period_credit": prow["period_credit"],
+                        }
+                    )
+
+            rows.sort(key=lambda r: str(r.get("code") or ""))
+            return rows
 
     def get_transaction_templates(self, event_type: str):
         with self.conn.cursor() as cur:
@@ -1712,50 +1756,82 @@ class AccountingRepository:
             """, tuple(params))
             return cur.fetchall()
 
-    def get_account_ledger(self, account_code, start_date=None, end_date=None):
+    def get_account_ledger(self, account_code, start_date=None, end_date=None, include_descendants=False):
+        """
+        Ledger for one account. If ``include_descendants`` is True, opening balance and
+        transaction lines include every **active** descendant account (and the account
+        itself), using the same date rules as ``get_child_account_summaries``.
+        """
         with self.conn.cursor() as cur:
             # Get account details
             cur.execute("SELECT id, code, name, category FROM accounts WHERE code = %s", (account_code,))
             account = cur.fetchone()
             if not account:
                 return None
-                
+
+            if include_descendants:
+                cur.execute(
+                    """
+                    WITH RECURSIVE sub AS (
+                        SELECT id FROM accounts WHERE code = %s
+                        UNION ALL
+                        SELECT a.id
+                        FROM accounts a
+                        INNER JOIN sub s ON a.parent_id = s.id
+                        WHERE COALESCE(a.is_active, TRUE) = TRUE
+                    )
+                    SELECT id FROM sub
+                    """,
+                    (account_code,),
+                )
+                id_rows = cur.fetchall()
+                account_ids = [r["id"] for r in id_rows]
+            else:
+                account_ids = [account["id"]]
+
+            if not account_ids:
+                return None
+
             # Calculate opening balance
-            ob_params = [account['id']]
+            ob_params: list = [account_ids]
             ob_date_filter = ""
             if start_date:
                 ob_date_filter = "AND je.entry_date < %s"
                 ob_params.append(start_date)
-                
-            cur.execute(f"""
+
+            cur.execute(
+                f"""
                 SELECT COALESCE(SUM(ji.debit), 0) as ob_debit, COALESCE(SUM(ji.credit), 0) as ob_credit
                 FROM journal_items ji
                 JOIN journal_entries je
                   ON ji.entry_id = je.id
                  AND je.status = 'POSTED'
                  AND COALESCE(je.is_active, TRUE) = TRUE
-                WHERE ji.account_id = %s {ob_date_filter}
-            """, tuple(ob_params))
+                WHERE ji.account_id = ANY(%s::uuid[]) {ob_date_filter}
+                """,
+                tuple(ob_params),
+            )
             ob = cur.fetchone()
-            
+
             # Fetch transactions
-            tx_params = [account['id']]
+            tx_params: list = [account_ids]
             tx_where_clauses = [
-                "ji.account_id = %s",
+                "ji.account_id = ANY(%s::uuid[])",
                 "je.status = 'POSTED'",
                 "COALESCE(je.is_active, TRUE) = TRUE",
             ]
-            
+
             if start_date:
                 tx_where_clauses.append("je.entry_date >= %s")
                 tx_params.append(start_date)
             if end_date:
                 tx_where_clauses.append("je.entry_date <= %s")
                 tx_params.append(end_date)
-                
+
             tx_where = " AND ".join(tx_where_clauses)
-            
-            cur.execute(f"""
+
+            cur.execute(
+                f"""
                 SELECT je.entry_date, je.reference, je.description, je.event_id,
                        ji.debit, ji.credit, ji.memo
                 FROM journal_items ji
@@ -1770,13 +1846,16 @@ class AccountingRepository:
                         ELSE 0
                     END ASC,
                     je.created_at ASC
-            """, tuple(tx_params))
+                """,
+                tuple(tx_params),
+            )
             transactions = cur.fetchall()
-            
+
             return {
                 "account": account,
                 "opening_balance": ob,
-                "transactions": transactions
+                "transactions": transactions,
+                "include_descendants": include_descendants,
             }
 
     def get_trial_balance(self, as_of_date=None):

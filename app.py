@@ -7193,9 +7193,10 @@ def statements_ui():
             if _is_parent:
                 _view_mode = st.radio(
                     "View Mode",
-                    ["Parent Summary (Rollup)", "Full Ledger (Direct Postings Only)"],
+                    ["Parent Summary (Rollup)", "Full Ledger (this account & subaccounts)"],
                     horizontal=True,
-                    help="Rollup shows the sum of all subaccounts. Full Ledger shows legacy journal entries posted directly to this parent account ID."
+                    help="Rollup lists each immediate child with descendants rolled up, plus any journals posted directly on the parent. "
+                    "Full Ledger lists every posted line on this account and all active subaccounts for the date range (opening/closing match the rollup total).",
                 )
 
             if _is_parent and _view_mode == "Parent Summary (Rollup)":
@@ -7213,18 +7214,22 @@ def statements_ui():
                 summary_rows = []
                 total_dr = 0.0
                 total_cr = 0.0
+                sum_ob_d = 0.0
+                sum_ob_c = 0.0
                 for ch in child_rows:
                     ob_d = float(ch.get("ob_debit") or 0)
                     ob_c = float(ch.get("ob_credit") or 0)
                     p_d = float(ch.get("period_debit") or 0)
                     p_c = float(ch.get("period_credit") or 0)
-                    
+
+                    sum_ob_d += ob_d
+                    sum_ob_c += ob_c
                     total_dr += p_d
                     total_cr += p_c
-                    
+
                     ob_val, ob_side = _fmt_bal(ob_d, ob_c)
                     cb_val, cb_side = _fmt_bal(ob_d + p_d, ob_c + p_c)
-                    
+
                     summary_rows.append(
                         {
                             "Child Account": f"{ch['code']} - {ch['name']}",
@@ -7232,6 +7237,19 @@ def statements_ui():
                             "Debit": f"{p_d:,.2f}" if p_d else "",
                             "Credit": f"{p_c:,.2f}" if p_c else "",
                             "Closing Balance": f"{cb_val} {cb_side}" if cb_side != "-" else "0.00",
+                        }
+                    )
+
+                if summary_rows:
+                    tobv, tobs = _fmt_bal(sum_ob_d, sum_ob_c)
+                    tcbv, tcbs = _fmt_bal(sum_ob_d + total_dr, sum_ob_c + total_cr)
+                    summary_rows.append(
+                        {
+                            "Child Account": "— Total (subtree) —",
+                            "Opening Balance": f"{tobv} {tobs}" if tobs != "-" else "0.00",
+                            "Debit": f"{total_dr:,.2f}" if total_dr else "",
+                            "Credit": f"{total_cr:,.2f}" if total_cr else "",
+                            "Closing Balance": f"{tcbv} {tcbs}" if tcbs != "-" else "0.00",
                         }
                     )
 
@@ -7245,9 +7263,19 @@ def statements_ui():
                     st.caption(f"Flow totals for period: Debit {total_dr:,.2f} | Credit {total_cr:,.2f}")
 
             else:
-                ledger = svc.get_account_ledger(account_filter, start_date=gl_start, end_date=gl_end)
+                ledger = svc.get_account_ledger(
+                    account_filter,
+                    start_date=gl_start,
+                    end_date=gl_end,
+                    include_descendants=bool(_is_parent),
+                )
                 if ledger:
-                    st.markdown(f"#### Account Statement: {ledger['account']['code']} - {ledger['account']['name']}")
+                    _ledger_title = (
+                        f"Account Statement (subtree): {ledger['account']['code']} - {ledger['account']['name']}"
+                        if ledger.get("include_descendants")
+                        else f"Account Statement: {ledger['account']['code']} - {ledger['account']['name']}"
+                    )
+                    st.markdown(f"#### {_ledger_title}")
                 
                     rows = []
                     # 1. Opening Balance Row

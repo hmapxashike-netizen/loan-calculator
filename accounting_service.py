@@ -516,11 +516,20 @@ class AccountingService:
             loan_id=int(loan_id),
         )
 
-    def get_account_ledger(self, account_code: str, start_date: date = None, end_date: date = None):
+    def get_account_ledger(
+        self,
+        account_code: str,
+        start_date: date = None,
+        end_date: date = None,
+        *,
+        include_descendants: bool = False,
+    ):
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
-            return repo.get_account_ledger(account_code, start_date, end_date)
+            return repo.get_account_ledger(
+                account_code, start_date, end_date, include_descendants=include_descendants
+            )
         finally:
             conn.close()
 
