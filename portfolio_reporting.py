@@ -22,7 +22,11 @@ Arrears ageing methodology (credit-style vintage by obligation):
   lines are available, the report raises.
 
 Maturity: `principal_not_due` spread across **future** instalments by scheduled **principal** weights;
-buckets by **days to due**.
+buckets by **days to due**. If there is no future principal (or cash-flow basis has no principal weights)
+to spread against, the full amount is reported in the **360+ days** bucket (no separate unallocated column).
+
+Regulatory maturity profile: same allocation as maturity, re-bucketed into finer bands (0–7, 8–14, 15–30, …, 360+)
+via ``bucket_regulatory_maturity_for_loan`` / ``build_regulatory_maturity_summary_table``.
 """
 from __future__ import annotations
 
@@ -71,8 +75,33 @@ ARREARS_BUCKET_KEYS = ("bkt_1_30", "bkt_31_60", "bkt_61_90", "bkt_91_180", "bkt_
 ARREARS_BUCKET_LABELS = ("1–30 dpd", "31–60 dpd", "61–90 dpd", "91–180 dpd", "181+ dpd")
 
 # Maturity: days to due = (due_date - as_of).days
-MATURITY_BUCKET_KEYS = ("bkt_1_7", "bkt_8_30", "bkt_31_60", "bkt_61_90", "bkt_91_360", "bkt_360p", "bkt_unallocated")
-MATURITY_BUCKET_LABELS = ("0–7 days", "8–30 days", "31–60 days", "61–90 days", "91–360 days", "360+ days", "Unallocated")
+MATURITY_BUCKET_KEYS = ("bkt_1_7", "bkt_8_30", "bkt_31_60", "bkt_61_90", "bkt_91_360", "bkt_360p")
+MATURITY_BUCKET_LABELS = ("0–7 days", "8–30 days", "31–60 days", "61–90 days", "91–360 days", "360+ days")
+
+# Regulatory / AL-style maturity (finer buckets than MATURITY_BUCKET_KEYS). Same cash allocation logic as
+# bucket_maturity_for_loan; creditor (outflow) side is aggregated separately elsewhere (not in this engine).
+REGULATORY_MATURITY_BUCKET_KEYS = (
+    "rb_0_7",
+    "rb_8_14",
+    "rb_15_30",
+    "rb_31_60",
+    "rb_61_90",
+    "rb_91_120",
+    "rb_121_180",
+    "rb_181_360",
+    "rb_360p",
+)
+REGULATORY_MATURITY_BUCKET_LABELS = (
+    "i) 0-7 days",
+    "ii) 8-14 days",
+    "iii) 15-30 days",
+    "iv) 31-60 days",
+    "v) 61-90 days",
+    "vi) 91-120 days",
+    "vii) 121-180 days",
+    "viii) 181-360 days",
+    "ix) 360+ days",
+)
 
 
 def _zero_arrears_buckets() -> dict[str, Decimal]:
@@ -81,6 +110,10 @@ def _zero_arrears_buckets() -> dict[str, Decimal]:
 
 def _zero_maturity_buckets() -> dict[str, Decimal]:
     return {k: Decimal("0") for k in MATURITY_BUCKET_KEYS}
+
+
+def _zero_regulatory_maturity_buckets() -> dict[str, Decimal]:
+    return {k: Decimal("0") for k in REGULATORY_MATURITY_BUCKET_KEYS}
 
 
 def _arrears_bucket_index(days_past_due: int) -> int:
@@ -234,7 +267,7 @@ def _ancillary_to_buckets_by_pi_weights(
 
 def _maturity_bucket_index(days_to_due: int) -> int:
     if days_to_due < 0:
-        return 6
+        return 5
     if days_to_due <= 7:
         return 0
     if days_to_due <= 30:
@@ -246,6 +279,30 @@ def _maturity_bucket_index(days_to_due: int) -> int:
     if days_to_due <= 360:
         return 4
     return 5
+
+
+def _regulatory_maturity_bucket_index(days_to_due: int) -> int:
+    """Map days from as-of to instalment due date into regulatory maturity bucket index (0..8)."""
+    last = len(REGULATORY_MATURITY_BUCKET_KEYS) - 1
+    if days_to_due < 0:
+        return last
+    if days_to_due <= 7:
+        return 0
+    if days_to_due <= 14:
+        return 1
+    if days_to_due <= 30:
+        return 2
+    if days_to_due <= 60:
+        return 3
+    if days_to_due <= 90:
+        return 4
+    if days_to_due <= 120:
+        return 5
+    if days_to_due <= 180:
+        return 6
+    if days_to_due <= 360:
+        return 7
+    return last
 
 
 def _line_principal_interest(row: dict[str, Any]) -> tuple[Decimal, Decimal]:
@@ -393,7 +450,7 @@ def bucket_maturity_for_loan(
     if view_type == "principal":
         wf = as_10dp(sum(x[1] for x in future))
         if wf <= 0:
-            buckets["bkt_unallocated"] = pnd
+            buckets["bkt_360p"] = pnd
             return buckets
 
         weights = [x[1] for x in future]
@@ -408,12 +465,69 @@ def bucket_maturity_for_loan(
         weights = [x[1] for x in future]
         parts_pr = _allocate_proportional(pnd, weights) if wf > 0 else [Decimal("0")] * len(future)
         if wf <= 0 and pnd > 0:
-            buckets["bkt_unallocated"] = pnd
-            
+            buckets["bkt_360p"] = as_10dp(buckets["bkt_360p"] + pnd)
+
         for (due, _, int_amt), part_pr in zip(future, parts_pr, strict=True):
             days_to = (due - as_of).days
             idx = _maturity_bucket_index(days_to)
             key = MATURITY_BUCKET_KEYS[idx]
+            buckets[key] = as_10dp(buckets[key] + part_pr + int_amt)
+
+    return buckets
+
+
+def bucket_regulatory_maturity_for_loan(
+    as_of: date,
+    *,
+    principal_not_due: Decimal,
+    schedule_lines: list[dict[str, Any]],
+    view_type: str = "principal",
+) -> dict[str, Decimal]:
+    """
+    Same allocation methodology as ``bucket_maturity_for_loan`` (principal-not-due weighted by future
+    scheduled principal; cash-flow view adds interest to each line's bucket), but using
+    ``REGULATORY_MATURITY_BUCKET_KEYS`` band boundaries.
+    """
+    buckets = _zero_regulatory_maturity_buckets()
+    pnd = as_10dp(principal_not_due)
+    if pnd <= 0 and view_type == "principal":
+        return buckets
+
+    sorted_lines = sorted(schedule_lines, key=_row_period)
+    future: list[tuple[date, Decimal, Decimal]] = []
+    for row in sorted_lines:
+        due = _row_schedule_date(row)
+        if due is None:
+            continue
+        if due > as_of:
+            pr, int_amt = _line_principal_interest(row)
+            if pr > 0 or int_amt > 0:
+                future.append((due, pr, int_amt))
+
+    if view_type == "principal":
+        wf = as_10dp(sum(x[1] for x in future))
+        if wf <= 0:
+            buckets["rb_360p"] = pnd
+            return buckets
+
+        weights = [x[1] for x in future]
+        parts = _allocate_proportional(pnd, weights)
+        for (due, _, _), part in zip(future, parts, strict=True):
+            days_to = (due - as_of).days
+            idx = _regulatory_maturity_bucket_index(days_to)
+            key = REGULATORY_MATURITY_BUCKET_KEYS[idx]
+            buckets[key] = as_10dp(buckets[key] + part)
+    else:
+        wf = as_10dp(sum(x[1] for x in future))
+        weights = [x[1] for x in future]
+        parts_pr = _allocate_proportional(pnd, weights) if wf > 0 else [Decimal("0")] * len(future)
+        if wf <= 0 and pnd > 0:
+            buckets["rb_360p"] = as_10dp(buckets["rb_360p"] + pnd)
+
+        for (due, _, int_amt), part_pr in zip(future, parts_pr, strict=True):
+            days_to = (due - as_of).days
+            idx = _regulatory_maturity_bucket_index(days_to)
+            key = REGULATORY_MATURITY_BUCKET_KEYS[idx]
             buckets[key] = as_10dp(buckets[key] + part_pr + int_amt)
 
     return buckets
@@ -648,3 +762,107 @@ def build_maturity_profile_report(as_of: date, *, active_only: bool, view_type: 
         rows_out.append(row)
 
     return pd.DataFrame(rows_out)
+
+
+def build_regulatory_maturity_profile_report(
+    as_of: date,
+    *,
+    active_only: bool,
+    view_type: str = "principal",
+) -> pd.DataFrame:
+    """Per-loan regulatory maturity buckets (same base population as debtor maturity profile)."""
+    base = fetch_loans_maturity_base_rows(as_of, active_only=active_only)
+    if not base:
+        return pd.DataFrame()
+    lids = [int(r["loan_id"]) for r in base]
+    sched_map = fetch_latest_schedule_lines_batch(lids)
+
+    rows_out: list[dict[str, Any]] = []
+    for r in base:
+        lid = int(r["loan_id"])
+        lines = sched_map.get(lid) or []
+        pnd = as_10dp(r.get("principal_not_due") or 0)
+        buckets = bucket_regulatory_maturity_for_loan(
+            as_of, principal_not_due=pnd, schedule_lines=lines, view_type=view_type
+        )
+        bucket_sum = as_10dp(sum(buckets[k] for k in REGULATORY_MATURITY_BUCKET_KEYS))
+        recon_diff = float(as_10dp(bucket_sum - pnd)) if view_type == "principal" else None
+
+        row = {
+            "loan_id": lid,
+            "customer_name": r.get("customer_name"),
+            "product_code": r.get("product_code"),
+            "loan_type": r.get("loan_type"),
+            "scheme": r.get("scheme"),
+            "state_as_of": r.get("state_as_of"),
+            "principal_not_due": float(pnd),
+            "bucket_sum": float(bucket_sum),
+            "recon_diff": recon_diff,
+        }
+        for k in REGULATORY_MATURITY_BUCKET_KEYS:
+            row[k] = float(buckets[k])
+        rows_out.append(row)
+
+    return pd.DataFrame(rows_out)
+
+
+def build_regulatory_maturity_summary_table(
+    as_of: date,
+    *,
+    active_only: bool,
+    view_type: str = "principal",
+) -> pd.DataFrame:
+    """
+    Aggregated regulatory maturity profile: debtor **cash inflows** (principal or principal+interest per
+    ``view_type``) summed by regulatory bucket. **Cash outflows** (maturing liabilities) are zero until wired.
+
+    Rows: TOTAL, then i)–ix). ``net`` = inflow − outflow; ``cumulative`` = running sum of net down the buckets.
+    """
+    df_loans = build_regulatory_maturity_profile_report(as_of, active_only=active_only, view_type=view_type)
+    if df_loans.empty:
+        return pd.DataFrame(
+            columns=[
+                "bucket",
+                "cash_inflows",
+                "cash_outflows",
+                "net_position",
+                "cumulative_position",
+            ]
+        )
+
+    sums: dict[str, Decimal] = {k: Decimal("0") for k in REGULATORY_MATURITY_BUCKET_KEYS}
+    for k in REGULATORY_MATURITY_BUCKET_KEYS:
+        if k in df_loans.columns:
+            sums[k] = as_10dp(df_loans[k].sum())
+
+    total_in = as_10dp(sum(sums.values()))
+    total_out = Decimal("0")
+    total_net = as_10dp(total_in - total_out)
+
+    rows: list[dict[str, Any]] = [
+        {
+            "bucket": "TOTAL INFLOWS/OUTFLOWS",
+            "cash_inflows": float(total_in),
+            "cash_outflows": float(total_out),
+            "net_position": float(total_net),
+            "cumulative_position": float(total_net),
+        }
+    ]
+
+    cum = Decimal("0")
+    for k, lbl in zip(REGULATORY_MATURITY_BUCKET_KEYS, REGULATORY_MATURITY_BUCKET_LABELS, strict=True):
+        inf = sums[k]
+        outf = Decimal("0")
+        net = as_10dp(inf - outf)
+        cum = as_10dp(cum + net)
+        rows.append(
+            {
+                "bucket": lbl,
+                "cash_inflows": float(inf),
+                "cash_outflows": float(outf),
+                "net_position": float(net),
+                "cumulative_position": float(cum),
+            }
+        )
+
+    return pd.DataFrame(rows)

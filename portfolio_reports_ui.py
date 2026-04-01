@@ -19,8 +19,12 @@ from portfolio_reporting import (
     ARREARS_BUCKET_LABELS,
     MATURITY_BUCKET_KEYS,
     MATURITY_BUCKET_LABELS,
+    REGULATORY_MATURITY_BUCKET_KEYS,
+    REGULATORY_MATURITY_BUCKET_LABELS,
     build_arrears_aging_report,
     build_maturity_profile_report,
+    build_regulatory_maturity_profile_report,
+    build_regulatory_maturity_summary_table,
 )
 from provision_engine import compute_security_provision_breakdown
 
@@ -40,6 +44,8 @@ def _default_as_of() -> date:
 
 
 def _df_download(df: pd.DataFrame, filename: str, *, button_key: str) -> None:
+    if not st.session_state.get("portfolio_exports_visible", False):
+        return
     if df.empty:
         return
     buf = StringIO()
@@ -111,9 +117,11 @@ def _report_arrears_aging(as_of: date, active_only: bool) -> None:
 
 def _report_debtor_maturity(as_of: date, active_only: bool) -> None:
     st.subheader("Debtor maturity profile")
-    st.caption("Principal-Only: Principal not due is spread across future instalments in proportion to scheduled principal. "
-               "Full Cash Flow: Scheduled principal + interest are spread across future instalments. "
-               "Buckets use days from as-of to due date. Unparseable dates go to Unallocated.")
+    st.caption(
+        "Principal-only: principal not due is spread across future instalments in proportion to scheduled principal. "
+        "Full cash flow: scheduled principal and interest are spread across future instalments. "
+        "Buckets use days from as-of to due date. Residual not mapped from the schedule is included in **360+ days**."
+    )
     
     view_type_label = st.radio(
         "Maturity View",
@@ -146,6 +154,95 @@ def _report_debtor_maturity(as_of: date, active_only: bool) -> None:
         
     st.dataframe(df_view, hide_index=True, width="stretch", height=360)
     _df_download(df, f"debtor_maturity_profile_{view_type}.csv", button_key="port_mat11_csv")
+
+
+def _report_regulatory_maturity_profile(as_of: date, active_only: bool) -> None:
+    st.subheader("Regulatory maturity profile")
+    st.caption(
+        "Debtor **cash inflows** are the same engine as **Debtor maturity profile**: `principal_not_due` from "
+        "latest `loan_daily_state` on/before as-of, spread across **future** instalments by scheduled principal "
+        "(or principal + interest in cash-flow view). Amounts are **re-bucketed** into regulatory bands "
+        "(0–7, 8–14, 15–30, …, 360+). **Cash outflows (maturing liabilities)** are **0** until creditor data is wired."
+    )
+    view_type_label = st.radio(
+        "Maturity basis",
+        [
+            "Principal-only (same as standard debtor maturity)",
+            "Full cash flow (principal + interest)",
+        ],
+        horizontal=True,
+        key="port_reg_mat_view",
+    )
+    view_type = "principal" if "Principal-only" in view_type_label else "cash_flow"
+
+    try:
+        summary_df = build_regulatory_maturity_summary_table(
+            as_of, active_only=active_only, view_type=view_type
+        )
+        detail_df = build_regulatory_maturity_profile_report(
+            as_of, active_only=active_only, view_type=view_type
+        )
+    except Exception as ex:
+        st.error(f"Could not build regulatory maturity profile: {ex}")
+        return
+
+    try:
+        from loan_management import load_system_config_from_db
+
+        _cfg = load_system_config_from_db() or {}
+    except Exception:
+        _cfg = {}
+    inst = str(_cfg.get("institution_code") or _cfg.get("regulatory_institution_id") or "").strip()
+    fy_start = date(as_of.year, 1, 1)
+    h1, h2, h3, h4 = st.columns(4)
+    with h1:
+        st.markdown(f"**Institution:** {inst or '—'}")
+    with h2:
+        st.markdown(f"**Financial year:** {as_of.year}")
+    with h3:
+        st.markdown(f"**Period start:** {fy_start.isoformat()}")
+    with h4:
+        st.markdown(f"**Period end / as-of:** {as_of.isoformat()}")
+    st.caption(
+        "Header uses calendar year for period start and **as-of** as period end. "
+        "Set **institution_code** (or **regulatory_institution_id**) in system config JSON for the institution field."
+    )
+
+    if summary_df.empty:
+        st.info("No loans with future principal-not-due at this as-of date.")
+        return
+
+    st.markdown("**Summary (regulatory buckets)**")
+    disp = summary_df.copy()
+    disp.columns = [
+        "Bucket",
+        "Cash inflows",
+        "Cash outflows (maturing liabilities)",
+        "Net position",
+        "Cumulative position",
+    ]
+    st.dataframe(disp, hide_index=True, width="stretch", height=420)
+    _df_download(
+        summary_df,
+        f"regulatory_maturity_summary_{as_of.isoformat()}_{view_type}.csv",
+        button_key="port_reg_mat_sum_csv",
+    )
+
+    if not detail_df.empty and view_type == "principal" and "recon_diff" in detail_df.columns:
+        if detail_df["recon_diff"].abs().max() > 0.02:
+            st.warning(
+                "Some loans have **recon_diff** ≠ 0 (`bucket_sum` vs `principal_not_due`). "
+                "Inspect the loan-level export."
+            )
+    st.markdown("**Loan-level buckets** (export)")
+    if not detail_df.empty:
+        ren = {k: lbl for k, lbl in zip(REGULATORY_MATURITY_BUCKET_KEYS, REGULATORY_MATURITY_BUCKET_LABELS, strict=True)}
+        st.dataframe(detail_df.rename(columns=ren), hide_index=True, width="stretch", height=280)
+    _df_download(
+        detail_df,
+        f"regulatory_maturity_by_loan_{as_of.isoformat()}_{view_type}.csv",
+        button_key="port_reg_mat_loan_csv",
+    )
 
 
 def _report_par(as_of: date, active_only: bool, par_threshold_days: int) -> None:
@@ -398,10 +495,12 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
     st.caption(
         "Same logic as **IFRS Provisions (single loan)** and **System configurations → IFRS provision config**: "
         "PD band from DPD, haircut on collateral, "
-        "provision = unsecured × PD%. One row per loan with daily state."
+        "provision = unsecured × PD%. **IFRS grade** and **IFRS performing status** use **Loan grade scales → Standard** "
+        "DPD bands; **PD %** and **PD band label** still come from the IFRS PD band table."
     )
     try:
         from provisions_config import list_pd_bands, list_security_subtypes, provision_schema_ready
+        from grade_scale_config import grade_scale_schema_ready, resolve_loan_grade
     except ImportError as e:
         st.error(f"Provisions config unavailable: {e}")
         return
@@ -416,6 +515,10 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
     if not bands:
         st.error("No active PD bands — configure under **System configurations → IFRS provision config**.")
         return
+
+    _gs_ok, _gs_msg = grade_scale_schema_ready()
+    if not _gs_ok:
+        st.warning(f"Loan grade scales: {_gs_msg}")
 
     subtypes = list_security_subtypes(active_only=False)
     sub_by_id = {int(r["id"]): r for r in subtypes}
@@ -455,8 +558,9 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
         va = r.get("collateral_valuation_amount")
         ch_d = Decimal(str(ch)) if ch is not None else Decimal(0)
         va_d = Decimal(str(va)) if va is not None else Decimal(0)
+        dpd_i = int(r.get("days_overdue") or 0)
         br = compute_security_provision_breakdown(
-            dpd=int(r.get("days_overdue") or 0),
+            dpd=dpd_i,
             total_balance=Decimal(str(r.get("total_exposure") or 0)),
             interest_in_suspense=Decimal(str(r.get("total_interest_in_suspense_balance") or 0)),
             charge=ch_d,
@@ -464,11 +568,14 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
             haircut_pct=hc,
             pd_bands=bands,
         )
+        sg = resolve_loan_grade(dpd_i, scale="standard") if _gs_ok else None
         out.append(
             {
                 "loan_id": r["loan_id"],
-                "days_overdue": int(r.get("days_overdue") or 0),
-                "status_label": br["status_label"],
+                "days_overdue": dpd_i,
+                "ifrs_grade": (sg or {}).get("grade_name") or "—",
+                "ifrs_performance_status": (sg or {}).get("performance_status") or "—",
+                "pd_band_label": br["status_label"],
                 "pd_rate_pct": float(br["pd_rate_pct"]),
                 "total_exposure": float(r.get("total_exposure") or 0),
                 "interest_in_suspense": float(r.get("total_interest_in_suspense_balance") or 0),
@@ -489,7 +596,104 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
     _df_download(df, f"ecl_provision_ifrs_{as_of.isoformat()}.csv", button_key="port_r52_csv")
 
 
+def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
+    st.subheader("Loan classification (regulatory scale)")
+    st.caption(
+        "Each loan is classified using **System configurations → Loan grade scales → Regulatory** DPD bands. "
+        "Exposure = `loan_daily_state.total_exposure` (latest on or before as-of). "
+        "This view does not change IFRS provision math."
+    )
+    try:
+        from grade_scale_config import grade_scale_schema_ready, list_loan_grade_scale_rules, resolve_loan_grade
+    except ImportError as e:
+        st.error(f"Grade scale config unavailable: {e}")
+        return
+
+    ok, msg = grade_scale_schema_ready()
+    if not ok:
+        st.warning(msg)
+        st.caption("Run **scripts/run_migration_63.py** to create the table.")
+        return
+    if not list_loan_grade_scale_rules(active_only=True):
+        st.error("No active loan grade rules — configure under **System configurations → Loan grade scales**.")
+        return
+
+    status_clause = "AND l.status = 'active'" if active_only else ""
+    sql = f"""
+        SELECT
+            l.id AS loan_id,
+            lds.days_overdue,
+            lds.total_exposure
+        FROM loans l
+        INNER JOIN LATERAL (
+            SELECT days_overdue, total_exposure
+            FROM loan_daily_state x
+            WHERE x.loan_id = l.id AND x.as_of_date <= %s
+            ORDER BY x.as_of_date DESC
+            LIMIT 1
+        ) lds ON TRUE
+        WHERE 1=1 {status_clause}
+        ORDER BY l.id
+    """
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (as_of,))
+            rows = cur.fetchall() or []
+
+    out: list[dict] = []
+    for r in rows:
+        dpd_i = int(r.get("days_overdue") or 0)
+        rg = resolve_loan_grade(dpd_i, scale="regulatory")
+        exp = float(r.get("total_exposure") or 0)
+        out.append(
+            {
+                "loan_id": r["loan_id"],
+                "days_overdue": dpd_i,
+                "regulatory_grade": (rg or {}).get("grade_name") or "—",
+                "performance_status": (rg or {}).get("performance_status") or "—",
+                "total_exposure": exp,
+            }
+        )
+
+    df = pd.DataFrame(out)
+    st.metric("Loans in scope", len(df))
+    if df.empty:
+        st.info("No loans with daily state in scope.")
+        return
+
+    grp = (
+        df.groupby(["regulatory_grade", "performance_status"], dropna=False)
+        .agg(loan_count=("loan_id", "count"), total_exposure=("total_exposure", "sum"))
+        .reset_index()
+        .sort_values(["regulatory_grade", "performance_status"])
+    )
+    tot_exp = float(grp["total_exposure"].sum())
+    tot_n = int(grp["loan_count"].sum())
+    grp = pd.concat(
+        [
+            grp,
+            pd.DataFrame(
+                [
+                    {
+                        "regulatory_grade": "TOTAL",
+                        "performance_status": "",
+                        "loan_count": tot_n,
+                        "total_exposure": tot_exp,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    st.markdown("**Summary by grade**")
+    st.dataframe(grp, hide_index=True, width="stretch", height=260)
+    st.markdown("**Loan detail**")
+    st.dataframe(df, hide_index=True, width="stretch", height=320)
+    _df_download(df, f"loan_classification_regulatory_{as_of.isoformat()}.csv", button_key="port_r53_csv")
+
+
 def render_portfolio_reports_ui() -> None:
+    st.session_state.setdefault("portfolio_exports_visible", False)
     st.markdown(
         "<div style='color:#1D4ED8; font-weight:700; font-size:1.05rem; margin:0.08rem 0 0.25rem 0;'>"
         "Portfolio reports</div>",
@@ -498,6 +702,7 @@ def render_portfolio_reports_ui() -> None:
     report_keys = [
         ("IFRS Provisions (single loan)", "ifrs"),
         ("Debtor maturity profile", "mat_11"),
+        ("Regulatory maturity profile", "reg_mat"),
         ("Creditor maturity profile (shell)", "shell_12"),
         ("Debtor arrears (aging)", "r21"),
         ("Portfolio at risk (PAR)", "r22"),
@@ -508,6 +713,7 @@ def render_portfolio_reports_ui() -> None:
         ("IIS movement", "r42"),
         ("Concentration", "r51"),
         ("ECL / provisions (IFRS view)", "r52"),
+        ("Loan classification (regulatory)", "r53"),
     ]
     labels = [x[0] for x in report_keys]
     key_by_label = {x[0]: x[1] for x in report_keys}
@@ -559,12 +765,22 @@ def render_portfolio_reports_ui() -> None:
                 help="Exposure in numerator when days_overdue is strictly greater than this.",
             )
 
+    _ex_vis = st.session_state.get("portfolio_exports_visible", False)
+    if st.button(
+        "Hide exports" if _ex_vis else "Data export",
+        key="portfolio_exports_toggle",
+        help="Show or hide CSV downloads for reports and the bulk data export panel at the bottom.",
+    ):
+        st.session_state["portfolio_exports_visible"] = not _ex_vis
+
     if rk == "ifrs":
         from provisions_ui import render_ifrs_provision_calculator
 
         render_ifrs_provision_calculator()
     elif rk == "mat_11":
         _report_debtor_maturity(as_of, active_only)
+    elif rk == "reg_mat":
+        _report_regulatory_maturity_profile(as_of, active_only)
     elif rk == "shell_12":
         _shell_report(
             "Creditor loans maturity profile",
@@ -642,35 +858,45 @@ def render_portfolio_reports_ui() -> None:
         _report_concentration(as_of, active_only)
     elif rk == "r52":
         _report_ecl_provision(as_of, active_only)
+    elif rk == "r53":
+        _report_regulatory_classification(as_of, active_only)
 
-    st.divider()
-    st.subheader("Data Export")
-    st.caption("Export low-level database tables to CSV for external analysis or auditing.")
-    
-    ex_c1, ex_c2, ex_c3 = st.columns([1, 1, 2], vertical_alignment="bottom")
-    with ex_c1:
-        exp_start = st.date_input("Start Date", value=date(date.today().year, 1, 1), key="export_start")
-    with ex_c2:
-        exp_end = st.date_input("End Date", value=date.today(), key="export_end")
-    with ex_c3:
-        if st.button("Run Data Export Script", type="primary", key="btn_run_export"):
-            import subprocess
-            import sys
-            
-            with st.spinner("Running export script..."):
-                try:
-                    result = subprocess.run(
-                        [sys.executable, "scripts/export_loan_tables.py", "--start-date", exp_start.strftime("%Y-%m-%d"), "--end-date", exp_end.strftime("%Y-%m-%d")],
-                        capture_output=True,
-                        text=True,
-                        check=True
-                    )
-                    st.success("Export successful!")
-                    with st.expander("View Output"):
-                        st.code(result.stdout)
-                except subprocess.CalledProcessError as e:
-                    st.error("Export failed!")
-                    with st.expander("View Error"):
-                        st.code(e.stderr or e.stdout)
-                except Exception as e:
-                    st.error(f"Error executing script: {e}")
+    if st.session_state.get("portfolio_exports_visible", False):
+        st.divider()
+        st.subheader("Data Export")
+        st.caption("Export low-level database tables to CSV for external analysis or auditing.")
+
+        ex_c1, ex_c2, ex_c3 = st.columns([1, 1, 2], vertical_alignment="bottom")
+        with ex_c1:
+            exp_start = st.date_input("Start Date", value=date(date.today().year, 1, 1), key="export_start")
+        with ex_c2:
+            exp_end = st.date_input("End Date", value=date.today(), key="export_end")
+        with ex_c3:
+            if st.button("Run Data Export Script", type="primary", key="btn_run_export"):
+                import subprocess
+                import sys
+
+                with st.spinner("Running export script..."):
+                    try:
+                        result = subprocess.run(
+                            [
+                                sys.executable,
+                                "scripts/export_loan_tables.py",
+                                "--start-date",
+                                exp_start.strftime("%Y-%m-%d"),
+                                "--end-date",
+                                exp_end.strftime("%Y-%m-%d"),
+                            ],
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                        )
+                        st.success("Export successful!")
+                        with st.expander("View Output"):
+                            st.code(result.stdout)
+                    except subprocess.CalledProcessError as e:
+                        st.error("Export failed!")
+                        with st.expander("View Error"):
+                            st.code(e.stderr or e.stdout)
+                    except Exception as e:
+                        st.error(f"Error executing script: {e}")

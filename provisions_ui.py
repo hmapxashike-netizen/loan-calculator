@@ -238,6 +238,12 @@ def render_ifrs_provision_calculator() -> None:
     from provisions_config import get_security_subtype, list_pd_bands
 
     try:
+        from grade_scale_config import grade_scale_schema_ready, resolve_loan_grade
+    except ImportError:
+        grade_scale_schema_ready = None
+        resolve_loan_grade = None
+
+    try:
         as_of_default = get_effective_date()
     except Exception:
         as_of_default = date.today()
@@ -292,6 +298,15 @@ def render_ifrs_provision_calculator() -> None:
                     haircut_pct=hc,
                     pd_bands=bands,
                 )
+                _ifrs_grade = "—"
+                _ifrs_perf = "—"
+                if grade_scale_schema_ready and resolve_loan_grade:
+                    _gok, _ = grade_scale_schema_ready()
+                    if _gok:
+                        _sg = resolve_loan_grade(dpd, scale="standard")
+                        if _sg:
+                            _ifrs_grade = str(_sg.get("grade_name") or "—")
+                            _ifrs_perf = str(_sg.get("performance_status") or "—")
                 st.markdown("**Inputs** (loan + daily state)")
                 subtype_lbl = (
                     f"{stype['security_type']} — {stype['subtype_name']}" if stype else "(not set on loan)"
@@ -299,7 +314,9 @@ def render_ifrs_provision_calculator() -> None:
                 inputs_df = pd.DataFrame(
                     [
                         ("DPD (days overdue)", str(dpd)),
-                        ("Status / PD band", str(br["status_label"])),
+                        ("IFRS grade (standard scale)", _ifrs_grade),
+                        ("IFRS performance status", _ifrs_perf),
+                        ("PD band (IFRS PD table)", str(br["status_label"])),
                         ("PD %", _fmt_num(br["pd_rate_pct"])),
                         ("Total balance (total_exposure)", _fmt_num(total_bal)),
                         ("Interest in suspense", _fmt_num(iis)),

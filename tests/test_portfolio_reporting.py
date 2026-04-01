@@ -146,7 +146,7 @@ def test_maturity_scales_to_principal_not_due():
     assert sum(b.values(), Decimal("0")) == Decimal("1000")
 
 
-def test_maturity_unallocated_when_no_future_principal():
+def test_maturity_residual_goes_to_360p_when_no_future_principal():
     as_of = date(2026, 6, 1)
     lines = [
         {"Period": 1, "Date": "15-May-2026", "principal": 100, "interest": 0},
@@ -154,8 +154,22 @@ def test_maturity_unallocated_when_no_future_principal():
     b = bucket_maturity_for_loan(as_of, principal_not_due=Decimal("500"), schedule_lines=lines)
     from portfolio_reporting import MATURITY_BUCKET_KEYS
 
-    assert b["bkt_unallocated"] == Decimal("500")
-    assert sum(b[k] for k in MATURITY_BUCKET_KEYS if k != "bkt_unallocated") == Decimal("0")
+    assert b["bkt_360p"] == Decimal("500")
+    assert sum(b[k] for k in MATURITY_BUCKET_KEYS if k != "bkt_360p") == Decimal("0")
+
+
+def test_regulatory_maturity_splits_8_14_vs_15_30():
+    from portfolio_reporting import REGULATORY_MATURITY_BUCKET_KEYS, bucket_regulatory_maturity_for_loan
+
+    as_of = date(2026, 1, 1)
+    lines = [
+        {"Period": 1, "Date": "10-Jan-2026", "principal": 50, "interest": 0},
+        {"Period": 2, "Date": "20-Jan-2026", "principal": 50, "interest": 0},
+    ]
+    b = bucket_regulatory_maturity_for_loan(as_of, principal_not_due=Decimal("100"), schedule_lines=lines)
+    assert b["rb_8_14"] == Decimal("50")
+    assert b["rb_15_30"] == Decimal("50")
+    assert sum(b[k] for k in REGULATORY_MATURITY_BUCKET_KEYS) == Decimal("100")
 
 
 def test_buckets_from_daily_positive_increments_scaled_to_closing():
@@ -262,7 +276,8 @@ def load_tests(loader, tests, pattern):
         test_flow_falls_back_to_balance_deltas_when_no_positive_daily,
         test_arrears_penalty_uses_daily_series_when_provided,
         test_maturity_scales_to_principal_not_due,
-        test_maturity_unallocated_when_no_future_principal,
+        test_maturity_residual_goes_to_360p_when_no_future_principal,
+        test_regulatory_maturity_splits_8_14_vs_15_30,
         test_arrears_fees_on_newest_past_due_when_no_pi_allocated,
     ):
         suite.addTest(unittest.FunctionTestCase(fn))
