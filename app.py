@@ -163,6 +163,8 @@ try:
         create_loan_purpose,
         set_loan_purpose_active,
         update_loan_purpose,
+        count_loan_purposes_rows,
+        clear_all_loan_purposes,
     )
     _loan_management_available = True
 except Exception as e:
@@ -1187,34 +1189,48 @@ def system_configurations_ui():
         st.subheader("Loan purposes")
         st.caption(
             "Single source of truth: table **`loan_purposes`** in the database (not JSON system config). "
-            "**Loan capture** reads the same table. If you already loaded purposes via **`python scripts/seed_loan_purposes.py`** "
-            "or SQL, use the table below—**do not add the same name again**; use **Activate** or **Edit** instead."
+            "**Loan capture** reads the same table. Do not add a **duplicate name** (case-insensitive); use **Activate** or **Edit** instead."
         )
-        with st.expander("Migration & seed script (link to CLI)", expanded=False):
-            st.markdown(
-                "1. **Schema:** `schema/62_loan_purposes.sql` — run **`python scripts/run_migration_62.py`** once per database.\n"
-                "2. **Defaults:** edit **`loan_purpose_seed.py`** (institution list), then run **`python scripts/seed_loan_purposes.py`** "
-                "from the project root. Re-runs **skip** names that already exist (case-insensitive).\n"
-                "3. This UI only **lists / edits** what is in the DB—there is no separate config file to sync."
-            )
-            try:
-                from loan_purpose_seed import DEFAULT_LOAN_PURPOSES
-
-                st.caption("Names defined in `loan_purpose_seed.py` (for reference; DB may already contain these or others):")
-                st.code(
-                    "\n".join(f"{so:3d}  {nm}" for nm, so in DEFAULT_LOAN_PURPOSES) or "(empty list)",
-                    language="text",
-                )
-            except ImportError:
-                st.caption("Could not import `loan_purpose_seed.py`.")
         if not _loan_management_available:
             st.error("Loan management module is required to manage loan purposes.")
         else:
-            lp_rows = list_loan_purposes(active_only=False)
+            lp_load_error: str | None = None
+            lp_rows: list = []
+            try:
+                lp_rows = list_loan_purposes(active_only=False)
+            except Exception as _lp_ex:
+                lp_load_error = str(_lp_ex)
+                st.error(f"**Could not list loan purposes** (read failed): {_lp_ex}")
+                st.caption(
+                    "Until this is fixed, the blue “empty table” message is **not reliable**. "
+                    "**Add purpose** still talks to the database, so a duplicate-name error can appear even when the list is blank."
+                )
+
+            lp_count: int | None = None
+            if lp_load_error is None:
+                try:
+                    lp_count = count_loan_purposes_rows()
+                except Exception:
+                    lp_count = None
+
+            if lp_load_error is None and lp_count is not None:
+                st.caption(f"**SQL `COUNT(*)` on `loan_purposes`:** {lp_count} row(s). Listed below: **{len(lp_rows)}** row(s).")
+
+            if (
+                lp_load_error is None
+                and lp_count is not None
+                and lp_count > 0
+                and len(lp_rows) == 0
+            ):
+                st.error(
+                    "**Mismatch:** `COUNT(*)` is greater than zero but the SELECT returned no rows. "
+                    "Check PostgreSQL **row-level security** on `loan_purposes`, **search_path**, and server logs."
+                )
+
             _lp_n_active = sum(1 for r in lp_rows if r.get("is_active", True))
             _lp_n_inactive = len(lp_rows) - _lp_n_active
             st.markdown(
-                f"**Database:** {len(lp_rows)} purpose(s) — **{_lp_n_active}** active (shown in loan capture), "
+                f"**Listed in UI:** {len(lp_rows)} purpose(s) — **{_lp_n_active}** active (loan capture), "
                 f"**{_lp_n_inactive}** inactive."
             )
             if lp_rows:
@@ -1226,11 +1242,10 @@ def system_configurations_ui():
                     width="stretch",
                     height=min(320, 56 + len(lp_rows) * 36),
                 )
-            else:
+            elif lp_load_error is None:
                 st.info(
-                    "No rows returned from `loan_purposes`. If you expected data, check the app logs for "
-                    "`list_loan_purposes` errors and confirm the database URL points at the same instance where "
-                    "purposes were created."
+                    "**List is empty:** there are no rows to show (and the list query succeeded). "
+                    "If **Add purpose** still says the name exists, compare with **SQL COUNT** above or clear the table (expandable below)."
                 )
             lp_n1, lp_n2, lp_n3 = st.columns(3)
             with lp_n1:
@@ -1248,9 +1263,19 @@ def system_configurations_ui():
                         except Exception as ex:
                             st.error(str(ex))
                             if "already exists" in str(ex).lower():
-                                _lp_refresh = list_loan_purposes(active_only=False)
+                                if len(lp_rows) == 0:
+                                    st.warning(
+                                        "**Red vs blue:** INSERT sees a duplicate name, but the list above is empty. "
+                                        "The row is still in `loan_purposes` (or a list/query issue). Use **Clear all purposes** "
+                                        "below or run `python scripts/clear_loan_purposes.py` from the project root."
+                                    )
+                                try:
+                                    _lp_refresh = list_loan_purposes(active_only=False)
+                                except Exception as _lpe:
+                                    _lp_refresh = []
+                                    st.caption(f"Refresh list failed: {_lpe}")
                                 if _lp_refresh:
-                                    st.info("Existing names in the database (case-insensitive match blocks duplicates):")
+                                    st.info("Existing names returned by the list query:")
                                     _df_ref = pd.DataFrame(_lp_refresh)
                                     _cref = [c for c in ["id", "name", "sort_order", "is_active"] if c in _df_ref.columns]
                                     st.dataframe(
@@ -1273,7 +1298,7 @@ def system_configurations_ui():
                 with h4:
                     st.caption("Actions")
                 for pr in lp_rows:
-                    pid = int(pr["id"])
+                    pid = int(pr.get("id"))
                     r1, r2, r3, r4 = st.columns([2.2, 1, 1, 1.2])
                     with r1:
                         st.text(str(pr.get("name") or ""))
@@ -1311,14 +1336,35 @@ def system_configurations_ui():
                             except Exception as ex:
                                 st.error(str(ex))
             else:
-                st.caption("Use **Add purpose** above once the table is empty, or fix DB connectivity if purposes exist elsewhere.")
+                st.caption("Use **Add purpose** when the list is empty, or **Clear all purposes** if the table should be reset.")
+
+            with st.expander("Clear all loan purposes (reset `loan_purposes`)", expanded=False):
+                st.warning(
+                    "Deletes **every** row in `loan_purposes` and sets **`loans.loan_purpose_id`** to NULL where it was set. "
+                    "CLI equivalent: **`python scripts/clear_loan_purposes.py`**."
+                )
+                _lp_clr = st.text_input(
+                    "Type **DELETE ALL PURPOSES** to enable the button",
+                    key="syscfg_lp_clear_confirm",
+                )
+                if st.button("Clear loan_purposes table", key="syscfg_lp_clear_btn", type="primary"):
+                    if (_lp_clr or "").strip() != "DELETE ALL PURPOSES":
+                        st.error("Confirmation text must match exactly.")
+                    else:
+                        try:
+                            _lu, _pd = clear_all_loan_purposes()
+                            st.success(f"Cleared: {int(_pd)} purpose row(s) deleted; {int(_lu)} loan(s) had purpose cleared.")
+                            st.rerun()
+                        except Exception as _cl_ex:
+                            st.error(str(_cl_ex))
 
     with tab_grade_scales:
         st.subheader("Loan grade scales")
         st.caption(
             "Maps **days past due** to **grade** and **performing / non-performing**. "
             "**Standard** DPD columns drive IFRS-facing labels (ECL report and single-loan IFRS tool). "
-            "**Regulatory** DPD columns drive **Portfolio reports → Loan classification (regulatory)**."
+            "**Regulatory** DPD columns drive **Portfolio reports → Loan classification (regulatory)**. "
+            "Set **supervisory** and **standard** provision **% of total exposure** per grade in the expander below."
         )
         try:
             from grade_scale_config import (
@@ -1327,6 +1373,7 @@ def system_configurations_ui():
                 grade_scale_schema_ready,
                 insert_loan_grade_scale_rule,
                 list_loan_grade_scale_rules,
+                provision_pct_from_value,
                 update_loan_grade_scale_rule,
             )
         except Exception as ex:
@@ -1337,53 +1384,158 @@ def system_configurations_ui():
                 st.warning(_gs_msg)
                 st.caption("Run **scripts/run_migration_63.py** if the table has not been created.")
             gr_rows = list_loan_grade_scale_rules(active_only=False)
-            ga1, ga2, ga3 = st.columns(3)
-            with ga1:
-                g_new_name = st.text_input("New grade name", key="syscfg_gr_new_name", placeholder="e.g. Pass")
-            with ga2:
-                g_new_perf = st.selectbox(
-                    "Performance status",
-                    ["Performing", "NonPerforming"],
-                    key="syscfg_gr_new_perf",
-                )
-            with ga3:
-                g_new_sort = st.number_input("Sort order", min_value=0, value=100, step=1, key="syscfg_gr_new_sort")
-            st.caption("DPD bands are inclusive. Leave **no upper limit** unchecked to cap the band; check it for open-ended (e.g. 91+).")
-            gr1, gr2, gr3, gr4 = st.columns(4)
-            with gr1:
-                g_rm = st.number_input("Regulatory DPD min", min_value=0, value=0, step=1, key="syscfg_gr_rm")
-                g_r_open = st.checkbox("Regulatory: no upper limit", key="syscfg_gr_r_open")
-                g_rx = st.number_input("Regulatory DPD max", min_value=0, value=30, step=1, key="syscfg_gr_rx", disabled=g_r_open)
-            with gr2:
-                g_sm = st.number_input("Standard (IFRS) DPD min", min_value=0, value=0, step=1, key="syscfg_gr_sm")
-                g_s_open = st.checkbox("Standard: no upper limit", key="syscfg_gr_s_open")
-                g_sx = st.number_input("Standard DPD max", min_value=0, value=90, step=1, key="syscfg_gr_sx", disabled=g_s_open)
-            with gr3:
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("Add rule", key="syscfg_gr_add"):
-                    if g_new_name and str(g_new_name).strip():
-                        try:
-                            insert_loan_grade_scale_rule(
-                                grade_name=str(g_new_name).strip(),
-                                performance_status=str(g_new_perf),
-                                regulatory_dpd_min=int(g_rm),
-                                regulatory_dpd_max=None if g_r_open else int(g_rx),
-                                standard_dpd_min=int(g_sm),
-                                standard_dpd_max=None if g_s_open else int(g_sx),
-                                sort_order=int(g_new_sort),
-                                is_active=True,
+            if "syscfg_gr_add_form_open" not in st.session_state:
+                st.session_state["syscfg_gr_add_form_open"] = False
+            st.session_state.setdefault("syscfg_gr_edit_id", None)
+
+            if _gs_ok and gr_rows:
+                with st.expander("Provision % by grade (regulatory vs standard)", expanded=False):
+                    st.caption(
+                        "**Regulatory %** — used on **Portfolio reports → Loan classification (regulatory)** "
+                        "(provision = total exposure × % ÷ 100). "
+                        "**Standard %** — used as **PD%** in **IFRS provision** (unsecured × PD%) for that IFRS grade; "
+                        "if no grade matches, the **PD band** table by DPD is used instead."
+                    )
+                    _ph0, _ph1, _ph2 = st.columns([2.4, 1, 1])
+                    with _ph0:
+                        st.caption("Grade")
+                    with _ph1:
+                        st.caption("Regulatory %")
+                    with _ph2:
+                        st.caption("Standard %")
+                    _pct_rows: list[tuple[int, float, float]] = []
+                    for _gr in gr_rows:
+                        _gid = int(_gr["id"])
+                        _pc0, _pc1, _pc2 = st.columns([2.4, 1, 1])
+                        with _pc0:
+                            st.markdown(
+                                f"**{_gr.get('grade_name') or ''}** · {_gr.get('performance_status') or ''}"
                             )
-                            st.success("Rule added.")
+                        with _pc1:
+                            _vr = st.number_input(
+                                f"Regulatory % rule {_gid}",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=float(provision_pct_from_value(_gr.get("regulatory_provision_pct"))),
+                                step=0.01,
+                                format="%.2f",
+                                key=f"syscfg_gr_pct_r_{_gid}",
+                                label_visibility="collapsed",
+                            )
+                        with _pc2:
+                            _vs = st.number_input(
+                                f"Standard % rule {_gid}",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=float(provision_pct_from_value(_gr.get("standard_provision_pct"))),
+                                step=0.01,
+                                format="%.2f",
+                                key=f"syscfg_gr_pct_s_{_gid}",
+                                label_visibility="collapsed",
+                            )
+                        _pct_rows.append((_gid, _vr, _vs))
+                    if st.button("Save all provision %", key="syscfg_gr_pct_save_all"):
+                        try:
+                            for _gid, _vr, _vs in _pct_rows:
+                                update_loan_grade_scale_rule(
+                                    _gid,
+                                    regulatory_provision_pct=_vr,
+                                    standard_provision_pct=_vs,
+                                )
+                            st.success("Provision percentages saved.")
                             st.rerun()
-                        except Exception as ex:
-                            st.error(str(ex))
-                    else:
-                        st.error("Grade name is required.")
-            with gr4:
-                st.caption("Order matters: first matching active rule wins. Keep Pass (0 dpd) before wider bands.")
+                        except Exception as _pex:
+                            st.error(str(_pex))
+
+            if not st.session_state["syscfg_gr_add_form_open"]:
+                if st.button("Add rule", key="syscfg_gr_open_add_form"):
+                    st.session_state["syscfg_gr_add_form_open"] = True
+                    st.rerun()
+            else:
+                _hc1, _hc2 = st.columns([1, 5])
+                with _hc1:
+                    if st.button("Cancel", key="syscfg_gr_cancel_add_form"):
+                        st.session_state["syscfg_gr_add_form_open"] = False
+                        st.rerun()
+                with _hc2:
+                    st.caption("Fill in the fields below, then click **Add rule** to save.")
+                ga1, ga2, ga3 = st.columns(3)
+                with ga1:
+                    g_new_name = st.text_input("New grade name", key="syscfg_gr_new_name", placeholder="e.g. Pass")
+                with ga2:
+                    g_new_perf = st.selectbox(
+                        "Performance status",
+                        ["Performing", "NonPerforming"],
+                        key="syscfg_gr_new_perf",
+                    )
+                with ga3:
+                    g_new_sort = st.number_input("Sort order", min_value=0, value=100, step=1, key="syscfg_gr_new_sort")
+                st.caption(
+                    "DPD bands are inclusive. Leave **no upper limit** unchecked to cap the band; check it for open-ended (e.g. 91+)."
+                )
+                _gp1, _gp2 = st.columns(2)
+                with _gp1:
+                    g_reg_pct = st.number_input(
+                        "Regulatory provision %",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=0.0,
+                        step=0.01,
+                        format="%.2f",
+                        key="syscfg_gr_new_reg_pct",
+                        help="Of total exposure, for regulatory classification reporting.",
+                    )
+                with _gp2:
+                    g_std_pct = st.number_input(
+                        "Standard provision %",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=0.0,
+                        step=0.01,
+                        format="%.2f",
+                        key="syscfg_gr_new_std_pct",
+                        help="Used as IFRS **PD%** (unsecured × this % ÷ 100) when this grade applies.",
+                    )
+                gr1, gr2, gr3, gr4 = st.columns(4)
+                with gr1:
+                    g_rm = st.number_input("Regulatory DPD min", min_value=0, value=0, step=1, key="syscfg_gr_rm")
+                    g_r_open = st.checkbox("Regulatory: no upper limit", key="syscfg_gr_r_open")
+                    g_rx = st.number_input("Regulatory DPD max", min_value=0, value=30, step=1, key="syscfg_gr_rx", disabled=g_r_open)
+                with gr2:
+                    g_sm = st.number_input("Standard (IFRS) DPD min", min_value=0, value=0, step=1, key="syscfg_gr_sm")
+                    g_s_open = st.checkbox("Standard: no upper limit", key="syscfg_gr_s_open")
+                    g_sx = st.number_input("Standard DPD max", min_value=0, value=90, step=1, key="syscfg_gr_sx", disabled=g_s_open)
+                with gr3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("Add rule", key="syscfg_gr_add"):
+                        if g_new_name and str(g_new_name).strip():
+                            try:
+                                insert_loan_grade_scale_rule(
+                                    grade_name=str(g_new_name).strip(),
+                                    performance_status=str(g_new_perf),
+                                    regulatory_dpd_min=int(g_rm),
+                                    regulatory_dpd_max=None if g_r_open else int(g_rx),
+                                    standard_dpd_min=int(g_sm),
+                                    standard_dpd_max=None if g_s_open else int(g_sx),
+                                    sort_order=int(g_new_sort),
+                                    is_active=True,
+                                    regulatory_provision_pct=g_reg_pct,
+                                    standard_provision_pct=g_std_pct,
+                                )
+                                st.session_state["syscfg_gr_add_form_open"] = False
+                                st.success("Rule added.")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(str(ex))
+                        else:
+                            st.error("Grade name is required.")
+                with gr4:
+                    st.caption("Order matters: first matching active rule wins. Keep Pass (0 dpd) before wider bands.")
             if gr_rows:
                 st.markdown("**Configured rules**")
-                gh1, gh2, gh3, gh4, gh5, gh6 = st.columns([1.4, 1.1, 1.2, 1.2, 0.9, 0.9])
+                st.caption("Click a **grade** in the first column to open the edit panel below the table.")
+                _gw = [1.35, 1.05, 1.15, 1.15, 0.65, 0.65, 0.75, 0.75]
+                gh1, gh2, gh3, gh4, gh5, gh6, gh7, gh8 = st.columns(_gw)
                 with gh1:
                     st.caption("Grade")
                 with gh2:
@@ -1393,14 +1545,27 @@ def system_configurations_ui():
                 with gh4:
                     st.caption("Standard DPD")
                 with gh5:
-                    st.caption("Sort")
+                    st.caption("Reg %")
                 with gh6:
+                    st.caption("Std %")
+                with gh7:
+                    st.caption("Sort")
+                with gh8:
                     st.caption("Active")
                 for gr in gr_rows:
                     gid = int(gr["id"])
-                    u1, u2, u3, u4, u5, u6 = st.columns([1.4, 1.1, 1.2, 1.2, 0.9, 0.9])
+                    u1, u2, u3, u4, u5, u6, u7, u8 = st.columns(_gw)
                     with u1:
-                        st.text(str(gr.get("grade_name") or ""))
+                        _gbtn = str(gr.get("grade_name") or "").strip() or f"Rule #{gid}"
+                        _sel = int(st.session_state.get("syscfg_gr_edit_id") or -1) == gid
+                        if st.button(
+                            _gbtn,
+                            key=f"syscfg_gr_pick_{gid}",
+                            help="Edit this grade",
+                            type="primary" if _sel else "secondary",
+                        ):
+                            st.session_state["syscfg_gr_edit_id"] = gid
+                            st.rerun()
                     with u2:
                         st.text(str(gr.get("performance_status") or ""))
                     with u3:
@@ -1418,107 +1583,170 @@ def system_configurations_ui():
                             )
                         )
                     with u5:
-                        st.text(str(gr.get("sort_order", 0)))
+                        st.text(f"{float(provision_pct_from_value(gr.get('regulatory_provision_pct'))):.2f}")
                     with u6:
+                        st.text(f"{float(provision_pct_from_value(gr.get('standard_provision_pct'))):.2f}")
+                    with u7:
+                        st.text(str(gr.get("sort_order", 0)))
+                    with u8:
                         st.text("Yes" if gr.get("is_active", True) else "No")
-                    with st.expander(f"Edit / delete rule #{gid}", expanded=False):
-                        en = st.text_input("Grade name", value=str(gr.get("grade_name") or ""), key=f"syscfg_gr_en_{gid}")
-                        ep = st.selectbox(
-                            "Performance status",
-                            ["Performing", "NonPerforming"],
-                            index=0 if str(gr.get("performance_status")) == "Performing" else 1,
-                            key=f"syscfg_gr_ep_{gid}",
+
+                _edit_id_raw = st.session_state.get("syscfg_gr_edit_id")
+                _known_ids = {int(r["id"]) for r in gr_rows}
+                if _edit_id_raw is not None and int(_edit_id_raw) not in _known_ids:
+                    st.session_state["syscfg_gr_edit_id"] = None
+                    _edit_id_raw = None
+
+                _ed_gr = (
+                    next((r for r in gr_rows if int(r["id"]) == int(_edit_id_raw)), None)
+                    if _edit_id_raw is not None
+                    else None
+                )
+                if _ed_gr is not None:
+                    gid = int(_ed_gr["id"])
+                    st.divider()
+                    _eh1, _eh2 = st.columns([4, 1])
+                    with _eh1:
+                        st.markdown(
+                            f"##### Edit · **{_ed_gr.get('grade_name') or ''}** "
+                            f"· {_ed_gr.get('performance_status') or ''} `(id {gid})`"
                         )
-                        e_so = st.number_input(
-                            "Sort order",
-                            min_value=0,
-                            value=int(gr.get("sort_order") or 0),
-                            step=1,
-                            key=f"syscfg_gr_eso_{gid}",
+                    with _eh2:
+                        if st.button("Close", key="syscfg_gr_edit_close", help="Hide the editor"):
+                            st.session_state["syscfg_gr_edit_id"] = None
+                            st.rerun()
+                    en = st.text_input(
+                        "Grade name",
+                        value=str(_ed_gr.get("grade_name") or ""),
+                        key=f"syscfg_gr_en_{gid}",
+                    )
+                    ep = st.selectbox(
+                        "Performance status",
+                        ["Performing", "NonPerforming"],
+                        index=0 if str(_ed_gr.get("performance_status")) == "Performing" else 1,
+                        key=f"syscfg_gr_ep_{gid}",
+                    )
+                    e_so = st.number_input(
+                        "Sort order",
+                        min_value=0,
+                        value=int(_ed_gr.get("sort_order") or 0),
+                        step=1,
+                        key=f"syscfg_gr_eso_{gid}",
+                    )
+                    e_act = st.checkbox(
+                        "Active",
+                        value=bool(_ed_gr.get("is_active", True)),
+                        key=f"syscfg_gr_eact_{gid}",
+                    )
+                    e_rm = st.number_input(
+                        "Regulatory DPD min",
+                        min_value=0,
+                        value=int(_ed_gr.get("regulatory_dpd_min") or 0),
+                        step=1,
+                        key=f"syscfg_gr_erm_{gid}",
+                    )
+                    e_r_open = st.checkbox(
+                        "Regulatory: no upper limit",
+                        value=_ed_gr.get("regulatory_dpd_max") is None,
+                        key=f"syscfg_gr_eropen_{gid}",
+                    )
+                    _rmax_def = 30
+                    if _ed_gr.get("regulatory_dpd_max") is not None:
+                        _rmax_def = int(_ed_gr["regulatory_dpd_max"])
+                    e_rx = st.number_input(
+                        "Regulatory DPD max",
+                        min_value=0,
+                        value=_rmax_def,
+                        step=1,
+                        key=f"syscfg_gr_erx_{gid}",
+                        disabled=e_r_open,
+                    )
+                    e_sm = st.number_input(
+                        "Standard DPD min",
+                        min_value=0,
+                        value=int(_ed_gr.get("standard_dpd_min") or 0),
+                        step=1,
+                        key=f"syscfg_gr_esm_{gid}",
+                    )
+                    e_s_open = st.checkbox(
+                        "Standard: no upper limit",
+                        value=_ed_gr.get("standard_dpd_max") is None,
+                        key=f"syscfg_gr_esopen_{gid}",
+                    )
+                    _smax_def = 90
+                    if _ed_gr.get("standard_dpd_max") is not None:
+                        _smax_def = int(_ed_gr["standard_dpd_max"])
+                    e_sx = st.number_input(
+                        "Standard DPD max",
+                        min_value=0,
+                        value=_smax_def,
+                        step=1,
+                        key=f"syscfg_gr_esx_{gid}",
+                        disabled=e_s_open,
+                    )
+                    _epe1, _epe2 = st.columns(2)
+                    with _epe1:
+                        e_reg_pct = st.number_input(
+                            "Regulatory provision % (of exposure)",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=float(provision_pct_from_value(_ed_gr.get("regulatory_provision_pct"))),
+                            step=0.01,
+                            format="%.2f",
+                            key=f"syscfg_gr_e_rpct_{gid}",
                         )
-                        e_act = st.checkbox("Active", value=bool(gr.get("is_active", True)), key=f"syscfg_gr_eact_{gid}")
-                        e_rm = st.number_input(
-                            "Regulatory DPD min",
-                            min_value=0,
-                            value=int(gr.get("regulatory_dpd_min") or 0),
-                            step=1,
-                            key=f"syscfg_gr_erm_{gid}",
+                    with _epe2:
+                        e_std_pct = st.number_input(
+                            "Standard provision % (IFRS PD%)",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=float(provision_pct_from_value(_ed_gr.get("standard_provision_pct"))),
+                            step=0.01,
+                            format="%.2f",
+                            key=f"syscfg_gr_e_spct_{gid}",
                         )
-                        e_r_open = st.checkbox(
-                            "Regulatory: no upper limit",
-                            value=gr.get("regulatory_dpd_max") is None,
-                            key=f"syscfg_gr_eropen_{gid}",
-                        )
-                        _rmax_def = 30
-                        if gr.get("regulatory_dpd_max") is not None:
-                            _rmax_def = int(gr["regulatory_dpd_max"])
-                        e_rx = st.number_input(
-                            "Regulatory DPD max",
-                            min_value=0,
-                            value=_rmax_def,
-                            step=1,
-                            key=f"syscfg_gr_erx_{gid}",
-                            disabled=e_r_open,
-                        )
-                        e_sm = st.number_input(
-                            "Standard DPD min",
-                            min_value=0,
-                            value=int(gr.get("standard_dpd_min") or 0),
-                            step=1,
-                            key=f"syscfg_gr_esm_{gid}",
-                        )
-                        e_s_open = st.checkbox(
-                            "Standard: no upper limit",
-                            value=gr.get("standard_dpd_max") is None,
-                            key=f"syscfg_gr_esopen_{gid}",
-                        )
-                        _smax_def = 90
-                        if gr.get("standard_dpd_max") is not None:
-                            _smax_def = int(gr["standard_dpd_max"])
-                        e_sx = st.number_input(
-                            "Standard DPD max",
-                            min_value=0,
-                            value=_smax_def,
-                            step=1,
-                            key=f"syscfg_gr_esx_{gid}",
-                            disabled=e_s_open,
-                        )
-                        c_save, c_del = st.columns(2)
-                        with c_save:
-                            if st.button("Save rule", key=f"syscfg_gr_save_{gid}"):
-                                try:
-                                    update_loan_grade_scale_rule(
-                                        gid,
-                                        grade_name=en.strip(),
-                                        performance_status=ep,
-                                        regulatory_dpd_min=int(e_rm),
-                                        regulatory_dpd_max=None if e_r_open else int(e_rx),
-                                        standard_dpd_min=int(e_sm),
-                                        standard_dpd_max=None if e_s_open else int(e_sx),
-                                        sort_order=int(e_so),
-                                        is_active=e_act,
-                                    )
-                                    st.success("Saved.")
-                                    st.rerun()
-                                except Exception as ex:
-                                    st.error(str(ex))
-                        with c_del:
-                            if st.button("Delete rule", key=f"syscfg_gr_del_{gid}"):
-                                try:
-                                    delete_loan_grade_scale_rule_hard(gid)
-                                    st.success("Deleted.")
-                                    st.rerun()
-                                except Exception as ex:
-                                    st.error(str(ex))
+                    c_save, c_del = st.columns(2)
+                    with c_save:
+                        if st.button("Save rule", key=f"syscfg_gr_save_{gid}"):
+                            try:
+                                update_loan_grade_scale_rule(
+                                    gid,
+                                    grade_name=en.strip(),
+                                    performance_status=ep,
+                                    regulatory_dpd_min=int(e_rm),
+                                    regulatory_dpd_max=None if e_r_open else int(e_rx),
+                                    standard_dpd_min=int(e_sm),
+                                    standard_dpd_max=None if e_s_open else int(e_sx),
+                                    sort_order=int(e_so),
+                                    is_active=e_act,
+                                    regulatory_provision_pct=e_reg_pct,
+                                    standard_provision_pct=e_std_pct,
+                                )
+                                st.success("Saved.")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(str(ex))
+                    with c_del:
+                        if st.button("Delete rule", key=f"syscfg_gr_del_{gid}", type="primary"):
+                            try:
+                                delete_loan_grade_scale_rule_hard(gid)
+                                st.session_state["syscfg_gr_edit_id"] = None
+                                st.success("Deleted.")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(str(ex))
+                elif _edit_id_raw is None:
+                    st.caption("No grade selected — click a grade name above to edit.")
             else:
                 st.info("No rules yet. Defaults are created on first load; refresh if empty.")
 
     with tab_ifrs_prov:
         st.subheader("IFRS provision configuration")
         st.caption(
-            "Collateral security subtypes, haircuts, and PD bands by DPD. Used by **Portfolio reports** "
-            "(ECL / IFRS view and single-loan IFRS Provisions). **IFRS grade** labels use **System configurations → "
-            "Loan grade scales → Standard** DPD bands; **PD %** still comes from the PD band table below."
+            "Collateral security subtypes, haircuts, and **PD bands by DPD** (fallback when no IFRS grade applies). "
+            "Used by **Portfolio reports** (ECL / IFRS view and single-loan IFRS Provisions). "
+            "**IFRS provision PD%** normally comes from **Loan grade scales → Standard provision %** per IFRS grade; "
+            "if no grade matches, **PD %** is taken from the **PD band** table below."
         )
         from provisions_ui import render_provisions_config_tables
 
@@ -1526,8 +1754,9 @@ def system_configurations_ui():
         st.divider()
         st.markdown("**Regulatory (RBZ / non-IFRS)**")
         st.info(
-            "Supervisory **grade** and **performing / non-performing** by DPD are configured under **Loan grade scales** "
-            "(regulatory columns). Use **Portfolio reports → Loan classification (regulatory)** for exposure by grade."
+            "Supervisory **grade**, **performing / non-performing**, and **regulatory provision %** by grade are under "
+            "**Loan grade scales**. **Portfolio reports → Loan classification (regulatory)** shows exposure and "
+            "grade-based supervisory provision using those percentages."
         )
 
     with tab_display:
@@ -3694,7 +3923,12 @@ def capture_loan_ui():
                     st.session_state["capture_cash_gl_account_id"] = None
                     _source_cash_gl_cache_empty_warning()
             with c6:
-                _purposes_all = list_loan_purposes(active_only=False) if _loan_management_available else []
+                _purposes_all: list = []
+                if _loan_management_available:
+                    try:
+                        _purposes_all = list_loan_purposes(active_only=False)
+                    except Exception as _cap_lp_ex:
+                        st.caption(f"Loan purposes list failed: {_cap_lp_ex}")
                 _purposes_active = [p for p in _purposes_all if p.get("is_active", True)]
                 _purposes_for_dropdown = list(_purposes_active)
                 _cur_lp = st.session_state.get("capture_loan_purpose_id")
@@ -3732,16 +3966,6 @@ def capture_loan_ui():
                     else:
                         st.caption(
                             "No loan purposes in the database. Add them under **System configurations → Loan purposes**."
-                        )
-                if _purposes_all:
-                    with st.expander("View all loan purposes (database)", expanded=False):
-                        _df_lp = pd.DataFrame(_purposes_all)
-                        _clp = [c for c in ["id", "name", "sort_order", "is_active"] if c in _df_lp.columns]
-                        st.dataframe(
-                            _df_lp[_clp],
-                            hide_index=True,
-                            width="stretch",
-                            height=min(220, 56 + len(_purposes_all) * 36),
                         )
                 _sel_lp_ix = st.selectbox(
                     "Loan purpose",

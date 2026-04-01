@@ -13,6 +13,8 @@ import pandas as pd
 import streamlit as st
 from psycopg2.extras import RealDictCursor
 
+from decimal_utils import as_10dp
+from grade_scale_config import provision_pct_from_value
 from loan_management import _connection
 from portfolio_reporting import (
     ARREARS_BUCKET_KEYS,
@@ -493,10 +495,9 @@ def _concentration_query(as_of: date, active_only: bool, dim_sql: str) -> pd.Dat
 def _report_ecl_provision(as_of: date, active_only: bool) -> None:
     st.subheader("Expected credit loss (ECL) — provisions view")
     st.caption(
-        "Same logic as **IFRS Provisions (single loan)** and **System configurations → IFRS provision config**: "
-        "PD band from DPD, haircut on collateral, "
-        "provision = unsecured × PD%. **IFRS grade** and **IFRS performing status** use **Loan grade scales → Standard** "
-        "DPD bands; **PD %** and **PD band label** still come from the IFRS PD band table."
+        "Same logic as **IFRS Provisions (single loan)**: haircut on collateral, **provision = unsecured × PD%**. "
+        "**PD%** is the **standard provision %** for the loan’s **IFRS grade** (**System configurations → Loan grade scales**). "
+        "If no grade matches, **PD%** falls back to the **IFRS PD band** table by DPD."
     )
     try:
         from provisions_config import list_pd_bands, list_security_subtypes, provision_schema_ready
@@ -512,13 +513,14 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
         return
 
     bands = list_pd_bands(active_only=True)
-    if not bands:
-        st.error("No active PD bands — configure under **System configurations → IFRS provision config**.")
-        return
-
     _gs_ok, _gs_msg = grade_scale_schema_ready()
     if not _gs_ok:
         st.warning(f"Loan grade scales: {_gs_msg}")
+    if not bands and not _gs_ok:
+        st.error(
+            "Configure **Loan grade scales** (standard DPD + provision %) and/or **IFRS provision config → PD bands**."
+        )
+        return
 
     subtypes = list_security_subtypes(active_only=False)
     sub_by_id = {int(r["id"]): r for r in subtypes}
@@ -559,6 +561,12 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
         ch_d = Decimal(str(ch)) if ch is not None else Decimal(0)
         va_d = Decimal(str(va)) if va is not None else Decimal(0)
         dpd_i = int(r.get("days_overdue") or 0)
+        sg = resolve_loan_grade(dpd_i, scale="standard") if _gs_ok else None
+        pd_ov = None
+        pd_lbl = None
+        if sg:
+            pd_ov = provision_pct_from_value(sg.get("standard_provision_pct"))
+            pd_lbl = f"IFRS grade · {str(sg.get('grade_name') or '—')}"
         br = compute_security_provision_breakdown(
             dpd=dpd_i,
             total_balance=Decimal(str(r.get("total_exposure") or 0)),
@@ -567,15 +575,16 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
             valuation=va_d,
             haircut_pct=hc,
             pd_bands=bands,
+            pd_rate_pct_override=pd_ov,
+            pd_status_label_override=pd_lbl,
         )
-        sg = resolve_loan_grade(dpd_i, scale="standard") if _gs_ok else None
         out.append(
             {
                 "loan_id": r["loan_id"],
                 "days_overdue": dpd_i,
                 "ifrs_grade": (sg or {}).get("grade_name") or "—",
                 "ifrs_performance_status": (sg or {}).get("performance_status") or "—",
-                "pd_band_label": br["status_label"],
+                "pd_source": br["status_label"],
                 "pd_rate_pct": float(br["pd_rate_pct"]),
                 "total_exposure": float(r.get("total_exposure") or 0),
                 "interest_in_suspense": float(r.get("total_interest_in_suspense_balance") or 0),
@@ -591,7 +600,7 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
         st.info("No loans with daily state in scope.")
         return
     total_prov = float(df["provision_amount"].sum())
-    st.metric("Sum of provision (IFRS-style)", f"{total_prov:,.2f}")
+    st.metric("Sum of provision (IFRS)", f"{total_prov:,.2f}")
     st.dataframe(df, hide_index=True, width="stretch", height=400)
     _df_download(df, f"ecl_provision_ifrs_{as_of.isoformat()}.csv", button_key="port_r52_csv")
 
@@ -601,7 +610,8 @@ def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
     st.caption(
         "Each loan is classified using **System configurations → Loan grade scales → Regulatory** DPD bands. "
         "Exposure = `loan_daily_state.total_exposure` (latest on or before as-of). "
-        "This view does not change IFRS provision math."
+        "**Supervisory provision** = exposure × **regulatory provision %** per grade (also set under Loan grade scales). "
+        "This does not change IFRS PD-based provision math."
     )
     try:
         from grade_scale_config import grade_scale_schema_ready, list_loan_grade_scale_rules, resolve_loan_grade
@@ -645,12 +655,17 @@ def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
         dpd_i = int(r.get("days_overdue") or 0)
         rg = resolve_loan_grade(dpd_i, scale="regulatory")
         exp = float(r.get("total_exposure") or 0)
+        exp_d = as_10dp(Decimal(str(r.get("total_exposure") or 0)))
+        r_pct_d = provision_pct_from_value((rg or {}).get("regulatory_provision_pct"))
+        prov_sup = as_10dp(exp_d * r_pct_d / Decimal(100))
         out.append(
             {
                 "loan_id": r["loan_id"],
                 "days_overdue": dpd_i,
                 "regulatory_grade": (rg or {}).get("grade_name") or "—",
                 "performance_status": (rg or {}).get("performance_status") or "—",
+                "regulatory_provision_pct": float(r_pct_d),
+                "supervisory_provision_on_exposure": float(prov_sup),
                 "total_exposure": exp,
             }
         )
@@ -663,12 +678,17 @@ def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
 
     grp = (
         df.groupby(["regulatory_grade", "performance_status"], dropna=False)
-        .agg(loan_count=("loan_id", "count"), total_exposure=("total_exposure", "sum"))
+        .agg(
+            loan_count=("loan_id", "count"),
+            total_exposure=("total_exposure", "sum"),
+            supervisory_provision_on_exposure=("supervisory_provision_on_exposure", "sum"),
+        )
         .reset_index()
         .sort_values(["regulatory_grade", "performance_status"])
     )
     tot_exp = float(grp["total_exposure"].sum())
     tot_n = int(grp["loan_count"].sum())
+    tot_sup = float(df["supervisory_provision_on_exposure"].sum())
     grp = pd.concat(
         [
             grp,
@@ -679,6 +699,7 @@ def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
                         "performance_status": "",
                         "loan_count": tot_n,
                         "total_exposure": tot_exp,
+                        "supervisory_provision_on_exposure": tot_sup,
                     }
                 ]
             ),

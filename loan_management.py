@@ -1021,6 +1021,13 @@ def _ensure_loan_purposes_schema(conn: Any) -> None:
             );
             """
         )
+        # Older DBs may have loan_purposes without updated_at (CREATE TABLE IF NOT EXISTS does not add columns).
+        cur.execute(
+            """
+            ALTER TABLE loan_purposes
+            ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+            """
+        )
         cur.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS uq_loan_purposes_name_lower
@@ -1146,7 +1153,8 @@ def _fetch_loan_purposes_rows(conn: Any, *, active_only: bool) -> list[dict]:
         cols = [d[0] for d in (cur.description or [])]
         out: list[dict] = []
         for row in cur.fetchall() or []:
-            out.append({cols[i]: row[i] for i in range(len(cols))})
+            # Lowercase keys so UI code using .get("name") matches PG/unquoted identifiers.
+            out.append({str(cols[i]).lower(): row[i] for i in range(len(cols))})
         return out
 
 
@@ -1154,16 +1162,38 @@ def list_loan_purposes(*, active_only: bool = True) -> list[dict]:
     """Each dict: id, name, sort_order, is_active, created_at, updated_at."""
     if psycopg2 is None:
         return []
-    log = logging.getLogger(__name__)
-    try:
-        with _connection() as conn:
-            _ensure_loan_purposes_schema(conn)
-            # Plain cursor only: reliable column mapping and avoids aborted transactions
-            # if a RealDictCursor-specific error occurred on the same connection.
-            return _fetch_loan_purposes_rows(conn, active_only=active_only)
-    except Exception as e:
-        log.exception("list_loan_purposes failed: %s", e)
-        return []
+    with _connection() as conn:
+        _ensure_loan_purposes_schema(conn)
+        return _fetch_loan_purposes_rows(conn, active_only=active_only)
+
+
+def count_loan_purposes_rows() -> int:
+    """Row count in loan_purposes (for diagnostics vs list_loan_purposes)."""
+    if psycopg2 is None:
+        return 0
+    with _connection() as conn:
+        _ensure_loan_purposes_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM loan_purposes")
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+
+
+def clear_all_loan_purposes() -> tuple[int, int]:
+    """
+    DELETE all rows from loan_purposes; set loans.loan_purpose_id to NULL first.
+    Returns (loans_updated, purposes_deleted).
+    """
+    with _connection() as conn:
+        _ensure_loan_purposes_schema(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE loans SET loan_purpose_id = NULL WHERE loan_purpose_id IS NOT NULL"
+            )
+            loans_n = cur.rowcount
+            cur.execute("DELETE FROM loan_purposes")
+            pur_n = cur.rowcount
+    return int(loans_n), int(pur_n)
 
 
 def get_loan_purpose_by_id(purpose_id: int) -> dict | None:
@@ -1184,7 +1214,7 @@ def get_loan_purpose_by_id(purpose_id: int) -> dict | None:
                 if not row:
                     return None
                 cols = [d[0] for d in (cur.description or [])]
-                return {cols[i]: row[i] for i in range(len(cols))}
+                return {str(cols[i]).lower(): row[i] for i in range(len(cols))}
     except Exception:
         return None
 

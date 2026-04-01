@@ -252,7 +252,9 @@ def render_ifrs_provision_calculator() -> None:
     st.caption(
         "**Total balance** = `loan_daily_state.total_exposure` (latest row on or before as-of date). "
         "**Interest in suspense** = `total_interest_in_suspense_balance`. "
-        "**Collateral** = min(charge, valuation) × (1 − haircut%). **Provision** = unsecured × PD%."
+        "**Collateral** = min(charge, valuation) × (1 − haircut%). **Provision** = unsecured × PD%. "
+        "**PD%** uses **standard provision %** for the IFRS grade from **System configurations → Loan grade scales** "
+        "when that grade applies; otherwise the IFRS **PD band** table by DPD."
     )
     ic1, ic2, ic3 = st.columns([1, 1, 1], gap="xxsmall", vertical_alignment="top")
     with ic1:
@@ -289,48 +291,62 @@ def render_ifrs_provision_calculator() -> None:
                 ch_d = Decimal(str(charge)) if charge is not None else Decimal(0)
                 va_d = Decimal(str(valn)) if valn is not None else Decimal(0)
 
-                br = compute_security_provision_breakdown(
-                    dpd=dpd,
-                    total_balance=total_bal,
-                    interest_in_suspense=iis,
-                    charge=ch_d,
-                    valuation=va_d,
-                    haircut_pct=hc,
-                    pd_bands=bands,
-                )
                 _ifrs_grade = "—"
                 _ifrs_perf = "—"
+                _pd_override = None
+                _pd_lbl_ov = None
                 if grade_scale_schema_ready and resolve_loan_grade:
                     _gok, _ = grade_scale_schema_ready()
                     if _gok:
+                        from grade_scale_config import provision_pct_from_value
+
                         _sg = resolve_loan_grade(dpd, scale="standard")
                         if _sg:
                             _ifrs_grade = str(_sg.get("grade_name") or "—")
                             _ifrs_perf = str(_sg.get("performance_status") or "—")
-                st.markdown("**Inputs** (loan + daily state)")
-                subtype_lbl = (
-                    f"{stype['security_type']} — {stype['subtype_name']}" if stype else "(not set on loan)"
-                )
-                inputs_df = pd.DataFrame(
-                    [
-                        ("DPD (days overdue)", str(dpd)),
-                        ("IFRS grade (standard scale)", _ifrs_grade),
-                        ("IFRS performance status", _ifrs_perf),
-                        ("PD band (IFRS PD table)", str(br["status_label"])),
-                        ("PD %", _fmt_num(br["pd_rate_pct"])),
-                        ("Total balance (total_exposure)", _fmt_num(total_bal)),
-                        ("Interest in suspense", _fmt_num(iis)),
-                        ("Collateral subtype", subtype_lbl),
-                        ("Haircut %", _fmt_num(hc)),
-                        ("Charge amount", _fmt_num(ch_d)),
-                        ("Valuation amount", _fmt_num(va_d)),
-                    ],
-                    columns=["Field", "Value"],
-                )
-                st.dataframe(inputs_df, hide_index=True, width="stretch", height=340)
+                            _pd_override = provision_pct_from_value(_sg.get("standard_provision_pct"))
+                            _pd_lbl_ov = f"IFRS grade · {_ifrs_grade}"
+                if _pd_override is None and not bands:
+                    st.error(
+                        "No **IFRS grade** match and no active **PD bands** — configure **Loan grade scales** "
+                        "(standard DPD + provision %) and/or **IFRS provision config → PD bands**."
+                    )
+                else:
+                    br = compute_security_provision_breakdown(
+                        dpd=dpd,
+                        total_balance=total_bal,
+                        interest_in_suspense=iis,
+                        charge=ch_d,
+                        valuation=va_d,
+                        haircut_pct=hc,
+                        pd_bands=bands,
+                        pd_rate_pct_override=_pd_override,
+                        pd_status_label_override=_pd_lbl_ov,
+                    )
+                    st.markdown("**Inputs** (loan + daily state)")
+                    subtype_lbl = (
+                        f"{stype['security_type']} — {stype['subtype_name']}" if stype else "(not set on loan)"
+                    )
+                    inputs_df = pd.DataFrame(
+                        [
+                            ("DPD (days overdue)", str(dpd)),
+                            ("IFRS grade (standard scale)", _ifrs_grade),
+                            ("IFRS performance status", _ifrs_perf),
+                            ("PD source", str(br["status_label"])),
+                            ("PD % (applied)", _fmt_num(br["pd_rate_pct"])),
+                            ("Total balance (total_exposure)", _fmt_num(total_bal)),
+                            ("Interest in suspense", _fmt_num(iis)),
+                            ("Collateral subtype", subtype_lbl),
+                            ("Haircut %", _fmt_num(hc)),
+                            ("Charge amount", _fmt_num(ch_d)),
+                            ("Valuation amount", _fmt_num(va_d)),
+                        ],
+                        columns=["Field", "Value"],
+                    )
+                    st.dataframe(inputs_df, hide_index=True, width="stretch", height=340)
 
-                st.markdown("**Results**")
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Collateral (after haircut)", _fmt_num(br["collateral_value"]))
-                m2.metric("Unsecured exposure", _fmt_num(br["unsecured_exposure"]))
-                m3.metric("Provision", _fmt_num(br["provision"]))
+                    st.markdown("**Results**")
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Collateral (after haircut)", _fmt_num(br["collateral_value"]))
+                    m2.metric("Unsecured exposure", _fmt_num(br["unsecured_exposure"]))
+                    m3.metric("Provision", _fmt_num(br["provision"]))

@@ -3,10 +3,12 @@ DB-backed loan grade scales: regulatory DPD bands vs standard (IFRS-facing) DPD 
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Literal
 
 from psycopg2.extras import RealDictCursor
 
+from decimal_utils import as_10dp
 from loan_management import _connection
 
 ScaleKind = Literal["standard", "regulatory"]
@@ -28,9 +30,23 @@ def _ensure_table(conn) -> None:
                 regulatory_dpd_max INTEGER,
                 standard_dpd_min INTEGER NOT NULL DEFAULT 0,
                 standard_dpd_max INTEGER,
+                regulatory_provision_pct NUMERIC(22,10) NOT NULL DEFAULT 0,
+                standard_provision_pct NUMERIC(22,10) NOT NULL DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE loan_grade_scale_rules
+            ADD COLUMN IF NOT EXISTS regulatory_provision_pct NUMERIC(22,10) NOT NULL DEFAULT 0
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE loan_grade_scale_rules
+            ADD COLUMN IF NOT EXISTS standard_provision_pct NUMERIC(22,10) NOT NULL DEFAULT 0
             """
         )
         cur.execute(
@@ -76,6 +92,13 @@ def grade_scale_schema_ready() -> tuple[bool, str]:
         return False, err
 
 
+def provision_pct_from_value(v: Any) -> Decimal:
+    """Normalize stored or API percentage to 10 decimal places."""
+    if v is None:
+        return as_10dp(0)
+    return as_10dp(Decimal(str(v)))
+
+
 def format_dpd_range(dpd_min: int, dpd_max: int | None) -> str:
     lo = int(dpd_min)
     if dpd_max is None:
@@ -93,6 +116,7 @@ def list_loan_grade_scale_rules(*, active_only: bool = False) -> list[dict[str, 
             q = """
                 SELECT id, sort_order, is_active, grade_name, performance_status,
                        regulatory_dpd_min, regulatory_dpd_max, standard_dpd_min, standard_dpd_max,
+                       regulatory_provision_pct, standard_provision_pct,
                        created_at, updated_at
                 FROM loan_grade_scale_rules
             """
@@ -111,6 +135,7 @@ def get_loan_grade_scale_rule(rule_id: int) -> dict[str, Any] | None:
                 """
                 SELECT id, sort_order, is_active, grade_name, performance_status,
                        regulatory_dpd_min, regulatory_dpd_max, standard_dpd_min, standard_dpd_max,
+                       regulatory_provision_pct, standard_provision_pct,
                        created_at, updated_at
                 FROM loan_grade_scale_rules WHERE id = %s
                 """,
@@ -148,6 +173,10 @@ def resolve_loan_grade(dpd: int, *, scale: ScaleKind) -> dict[str, Any] | None:
             out = dict(r)
             out["_scale"] = scale
             out["_dpd_range_label"] = format_dpd_range(lo, hi_i)
+            rp = provision_pct_from_value(r.get("regulatory_provision_pct"))
+            sp = provision_pct_from_value(r.get("standard_provision_pct"))
+            out["regulatory_provision_pct"] = rp
+            out["standard_provision_pct"] = sp
             return out
     return None
 
@@ -162,6 +191,8 @@ def insert_loan_grade_scale_rule(
     standard_dpd_max: int | None,
     sort_order: int = 0,
     is_active: bool = True,
+    regulatory_provision_pct: Any | None = None,
+    standard_provision_pct: Any | None = None,
 ) -> int:
     gn = (grade_name or "").strip()
     ps = (performance_status or "").strip()
@@ -169,6 +200,12 @@ def insert_loan_grade_scale_rule(
         raise ValueError("Grade name is required.")
     if not ps:
         raise ValueError("Performance status is required.")
+    r_pct = provision_pct_from_value(
+        regulatory_provision_pct if regulatory_provision_pct is not None else 0
+    )
+    s_pct = provision_pct_from_value(
+        standard_provision_pct if standard_provision_pct is not None else 0
+    )
     with _connection() as conn:
         _ensure_table(conn)
         with conn.cursor() as cur:
@@ -176,9 +213,10 @@ def insert_loan_grade_scale_rule(
                 """
                 INSERT INTO loan_grade_scale_rules (
                     sort_order, is_active, grade_name, performance_status,
-                    regulatory_dpd_min, regulatory_dpd_max, standard_dpd_min, standard_dpd_max
+                    regulatory_dpd_min, regulatory_dpd_max, standard_dpd_min, standard_dpd_max,
+                    regulatory_provision_pct, standard_provision_pct
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -190,6 +228,8 @@ def insert_loan_grade_scale_rule(
                     regulatory_dpd_max,
                     int(standard_dpd_min),
                     standard_dpd_max,
+                    r_pct,
+                    s_pct,
                 ),
             )
             return int(cur.fetchone()[0])
@@ -206,6 +246,8 @@ def update_loan_grade_scale_rule(
     standard_dpd_max: int | None | object = _UNSET,
     sort_order: int | None = None,
     is_active: bool | None = None,
+    regulatory_provision_pct: Any | None = None,
+    standard_provision_pct: Any | None = None,
 ) -> None:
     fields: list[str] = []
     params: list[Any] = []
@@ -239,6 +281,12 @@ def update_loan_grade_scale_rule(
     if is_active is not None:
         fields.append("is_active = %s")
         params.append(bool(is_active))
+    if regulatory_provision_pct is not None:
+        fields.append("regulatory_provision_pct = %s")
+        params.append(provision_pct_from_value(regulatory_provision_pct))
+    if standard_provision_pct is not None:
+        fields.append("standard_provision_pct = %s")
+        params.append(provision_pct_from_value(standard_provision_pct))
     if not fields:
         return
     fields.append("updated_at = NOW()")

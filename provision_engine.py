@@ -75,10 +75,20 @@ def compute_security_provision_breakdown(
     valuation: Decimal,
     haircut_pct: Decimal,
     pd_bands: list,
+    pd_rate_pct_override: Decimal | float | str | None = None,
+    pd_status_label_override: str | None = None,
 ) -> dict:
-    band = resolve_pd_band(dpd, pd_bands)
-    pd_rate = Decimal(str(band["pd_rate_pct"])) if band else Decimal(0)
-    status = str(band["status_label"]) if band else "—"
+    """
+    When ``pd_rate_pct_override`` is not None, it is used as PD% (e.g. **standard provision %**
+    from **System configurations → Loan grade scales**). Otherwise PD% comes from ``pd_bands`` by DPD.
+    """
+    if pd_rate_pct_override is not None:
+        pd_rate = as_10dp(pd_rate_pct_override)
+        status = pd_status_label_override or "IFRS grade (system configuration)"
+    else:
+        band = resolve_pd_band(dpd, pd_bands)
+        pd_rate = Decimal(str(band["pd_rate_pct"])) if band else Decimal(0)
+        status = str(band["status_label"]) if band else "—"
     col_val = collateral_value_after_haircut(charge, valuation, haircut_pct)
     unsec = unsecured_exposure(total_balance, interest_in_suspense, col_val)
     prov = provision_amount(unsec, pd_rate)
