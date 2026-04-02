@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from .db import Json, RealDictCursor, _connection
+from .save_loan import save_loan
 from .schema_ddl import _ensure_loan_approval_drafts_table
 from .serialization import _json_safe
 
@@ -267,9 +268,7 @@ def approve_loan_approval_draft(
         details["status"] = "active"
         schedule_rows = draft.get("schedule_json") or []
         schedule_df = pd.DataFrame(schedule_rows)
-        from . import _legacy as _lm
-
-        loan_id = _lm.save_loan(
+        loan_id = save_loan(
             int(draft["customer_id"]),
             str(draft["loan_type"]),
             details,

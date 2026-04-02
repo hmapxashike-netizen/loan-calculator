@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from .product_catalog import load_system_config_from_db
+
 
 def _parse_optional_uuid_str(val: Any) -> str | None:
     """Return canonical UUID string or None; raises ValueError if non-empty but invalid."""
@@ -25,9 +27,7 @@ SOURCE_CASH_TREE_ROOT_CODE = "A100000"
 
 def get_cached_source_cash_account_entries() -> list[dict]:
     """Snapshot rows ``{id, code, name}`` from system config; empty if cache never built."""
-    from . import _legacy as _lm
-
-    cfg = _lm.load_system_config_from_db() or {}
+    cfg = load_system_config_from_db() or {}
     block = cfg.get(SOURCE_CASH_ACCOUNT_CACHE_KEY) or {}
     entries = block.get("entries") or []
     if not isinstance(entries, list):
