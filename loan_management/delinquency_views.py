@@ -18,7 +18,7 @@ def get_total_delinquency_arrears_summary(loan_id: int, as_of: date | None = Non
     so we never show a misleading 0 just because the row is missing.
     """
     if as_of is None:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
 
         as_of = get_effective_date()
 
@@ -26,7 +26,7 @@ def get_total_delinquency_arrears_summary(loan_id: int, as_of: date | None = Non
     ds = get_loan_daily_state_balances(loan_id, as_of)
     if not ds:
         try:
-            from eod import run_single_loan_eod
+            from eod.core import run_single_loan_eod
 
             run_single_loan_eod(loan_id, as_of)
         except Exception:
@@ -66,7 +66,7 @@ def get_teller_amount_due_today(loan_id: int, as_of: date | None = None) -> dict
     for the day, while keeping persistence to the normal EOD run.
     """
     if as_of is None:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
 
         as_of = get_effective_date()
 

@@ -53,7 +53,7 @@ def allocate_repayment_waterfall(
       (apply from Unapplied tab after funds are credited).
     """
     if as_of is None:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
 
         as_of = get_effective_date()
 
@@ -88,7 +88,7 @@ def allocate_repayment_waterfall(
 
             # Always source balances from exact-date persisted state; ignore preloaded snapshots.
             _ = preloaded_balances  # backward compatibility only
-            from eod import run_single_loan_eod
+            from eod.core import run_single_loan_eod
 
             # Ensure prior calendar day state exists (closing = opening for eff_date).
             prev_cal = eff_date - timedelta(days=1)
@@ -167,7 +167,7 @@ def allocate_repayment_waterfall(
             )
 
             try:
-                from accounting_service import AccountingService
+                from accounting.service import AccountingService
 
                 svc = AccountingService()
 

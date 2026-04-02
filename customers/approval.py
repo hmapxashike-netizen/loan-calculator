@@ -14,7 +14,7 @@ from psycopg2 import ProgrammingError
 from psycopg2.extras import Json, RealDictCursor
 
 from agents import get_agent, update_agent
-from customers import _connection, get_customer, update_corporate, update_individual
+from customers.core import _connection, get_customer, update_corporate, update_individual
 
 
 def _row_details(raw: Any) -> dict[str, Any]:

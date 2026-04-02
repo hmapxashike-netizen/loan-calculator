@@ -10,7 +10,7 @@ from accrual_convention import (
     accrual_start_convention_from_config,
     normalize_accrual_start_convention,
 )
-from loan_daily_engine import Loan, LoanConfig, ScheduleEntry
+from eod.loan_daily_engine import Loan, LoanConfig, ScheduleEntry
 
 
 @pytest.mark.parametrize(

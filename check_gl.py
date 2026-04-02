@@ -1,6 +1,6 @@
 import json
 from decimal import Decimal
-from accounting_dal import get_conn
+from accounting.dal import get_conn
 
 def check_gl():
     conn = get_conn()

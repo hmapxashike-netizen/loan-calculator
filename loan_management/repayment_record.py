@@ -48,7 +48,7 @@ def record_repayment(
     sdate = system_date
     if sdate is None:
         try:
-            from system_business_date import get_effective_date
+            from eod.system_business_date import get_effective_date
 
             sdate = datetime.combine(get_effective_date(), datetime.now().time())
         except ImportError:

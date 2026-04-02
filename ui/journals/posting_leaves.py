@@ -11,7 +11,7 @@ def get_posting_leaf_accounts_for_balance_adjust() -> list:
     Posting-leaf list for balance adjustment dropdowns.
     Cached ~2m to limit DB + tree walks on Streamlit reruns; TTL keeps COA edits visible quickly.
     """
-    from accounting_service import AccountingService
+    from accounting.service import AccountingService
 
     return AccountingService().list_posting_leaf_accounts()
 

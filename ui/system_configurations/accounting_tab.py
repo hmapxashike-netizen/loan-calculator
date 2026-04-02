@@ -113,7 +113,7 @@ def render_accounting_config_tab(*, cfg: dict[str, Any]) -> AccountingPeriodsSna
                 or (_scc_type.strip().upper() != "REBUILD"),
             ):
                 try:
-                    from accounting_service import AccountingService
+                    from accounting.service import AccountingService
 
                     _scc_block = AccountingService().refresh_source_cash_account_cache()
                     st.session_state.pop("system_config", None)

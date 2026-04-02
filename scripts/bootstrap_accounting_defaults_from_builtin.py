@@ -1,7 +1,7 @@
 """
 Write `accounting_defaults/*.json` from built-in Python fallbacks.
 
-Run after clone or when you want JSON defaults to match `accounting_builtin_defaults.py`.
+Run after clone or when you want JSON defaults to match `accounting.builtin_defaults`.
 To capture your live perfected database instead, use `export_accounting_defaults.py`.
 """
 
@@ -13,12 +13,12 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from accounting_builtin_defaults import (
+from accounting.builtin_defaults import (
     CHART_ACCOUNT_TUPLES,
     TRANSACTION_TEMPLATE_TUPLES,
     build_receipt_gl_mapping_tuples,
 )
-from accounting_defaults_loader import defaults_directory
+from accounting.defaults_loader import defaults_directory
 
 
 def main() -> None:

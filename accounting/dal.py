@@ -8,7 +8,7 @@ from psycopg2.extras import RealDictCursor
 
 from config import get_database_url
 from decimal_utils import amounts_equal_at_2dp, as_10dp, as_2dp
-from accounting_core import (
+from .core import (
     assert_coa_grandchild_matches_parent,
     build_coa_path_label,
     coa_grandchild_prefix_matches_immediate_parent,
@@ -105,7 +105,7 @@ class AccountingRepository:
         self.conn.commit()
 
     def initialize_default_coa(self) -> None:
-        from accounting_defaults_loader import get_chart_account_template_tuples
+        from .defaults_loader import get_chart_account_template_tuples
 
         rows = get_chart_account_template_tuples()
         self.replace_account_template_rows(rows)

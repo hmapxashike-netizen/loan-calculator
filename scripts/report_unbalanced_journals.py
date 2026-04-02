@@ -5,7 +5,7 @@ Usage (from project root):
   python scripts/report_unbalanced_journals.py
 
 Repair a specific LOAN_APPROVAL after fixing posting logic (interactive / one-off):
-  python -c "from accounting_service import AccountingService; AccountingService().repost_loan_approval_journal(6)"
+  python -c "from accounting.service import AccountingService; AccountingService().repost_loan_approval_journal(6)"
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from accounting_service import AccountingService  # noqa: E402
+from accounting.service import AccountingService  # noqa: E402
 
 
 def main() -> int:

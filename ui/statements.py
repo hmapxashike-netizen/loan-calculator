@@ -121,7 +121,7 @@ def render_statements_ui(
             return
     
         try:
-            from statements import generate_customer_facing_statement
+            from reporting.statements import generate_customer_facing_statement
         except ImportError as e:
             st.error(f"Statements module not available: {e}")
             return
@@ -492,7 +492,7 @@ def render_statements_ui(
                 unsafe_allow_html=True,
             )
     
-            from accounting_service import AccountingService
+            from accounting.service import AccountingService
             svc = AccountingService()
     
             sys_date = get_system_date()

@@ -9,9 +9,9 @@ import streamlit as st
 import pandas as pd
 
 from middleware import get_current_user, clear_current_user, require_login
-from auth_ui import auth_page
+from auth.ui import auth_page
 from dal import get_conn, UserRepository, SecurityAuditLogRepository
-from auth_service import AuthService
+from auth.service import AuthService
 
 
 def _load_loan_ui_module():
@@ -317,7 +317,7 @@ def main():
 
     # Logged in: show role-filtered sidebar
     try:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
         system_date = get_effective_date()
     except ImportError:
         system_date = datetime.now().date()

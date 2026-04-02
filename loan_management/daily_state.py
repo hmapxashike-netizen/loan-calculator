@@ -79,7 +79,7 @@ def get_loan_daily_state_balances(loan_id: int, as_of_date: date) -> dict[str, f
 def get_loan_daily_state_range(loan_id: int, start_date: date, end_date: date) -> list[dict]:
     """All loan_daily_state rows for a loan in [start_date, end_date] ordered by as_of_date."""
     try:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
 
         eff = get_effective_date()
         if end_date > eff:

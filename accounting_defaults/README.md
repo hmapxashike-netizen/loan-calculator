@@ -6,7 +6,7 @@ JSON files in this folder are the **source of truth** for:
 - **Transaction templates** (*Reset Default Transaction Templates*).
 - **Receipt → GL mapping** (*Initialize Default Mappings* / *Reset to Defaults*).
 
-If a file is **missing**, the app falls back to `accounting_builtin_defaults.py`.
+If a file is **missing**, the app falls back to `accounting.builtin_defaults`.
 
 ## Refresh from your perfected database
 

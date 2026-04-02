@@ -37,7 +37,7 @@ def repost_gl_for_loan_date_range(
         start_date, end_date = end_date, start_date
 
     try:
-        from accounting_service import AccountingService
+        from accounting.service import AccountingService
     except Exception as exc:
         raise RuntimeError(f"gl_repost: AccountingService unavailable: {exc}") from exc
 

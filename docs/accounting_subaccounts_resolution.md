@@ -14,7 +14,7 @@ Until migration runs, new UI and `save_loan` inserts that reference the new colu
 
 - **Pattern:** `CCCCCCC-NN` where `CCCCCCC` is the normal 7-character code of the **parent** account and `NN` is `01`–`99`.
 - Example: parent `A100001` → children `A100001-01`, `A100001-02`, …
-- Helpers live in `accounting_core.py`: `split_account_code`, `suggest_next_grandchild_account_code`, `parse_seven_char_account_code`.
+- Helpers live in `accounting.core`: `split_account_code`, `suggest_next_grandchild_account_code`, `parse_seven_char_account_code`.
 
 ## Backward compatibility
 

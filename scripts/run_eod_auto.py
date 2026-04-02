@@ -11,7 +11,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from system_business_date import get_system_business_config, run_eod_process, should_trigger_auto_eod
+from eod.system_business_date import (
+    get_system_business_config,
+    run_eod_process,
+    should_trigger_auto_eod,
+)
 
 
 def main():

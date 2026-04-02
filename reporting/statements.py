@@ -26,7 +26,7 @@ from loan_management import (
 def _get_effective_date() -> date:
     """System business date for statement/amount-due logic."""
     try:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
         return get_effective_date()
     except Exception:
         return date.today()
@@ -829,14 +829,14 @@ def _generate_periodic_statement(
             row["Principal"] = _f3(amt)
             rows.append(row)
 
-    from eod import load_system_config_from_db
+    from eod.core import load_system_config_from_db
     from accrual_convention import (
         ACCRUAL_START_EFFECTIVE_DAY,
         normalize_accrual_start_convention,
     )
     sys_cfg = load_system_config_from_db() or {}
     try:
-        from eod import get_product_config_from_db
+        from eod.core import get_product_config_from_db
         p_cfg = get_product_config_from_db(loan.get("product_code"))
         if p_cfg:
             sys_cfg = {**sys_cfg, **p_cfg}

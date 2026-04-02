@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from accounting_service import AccountingService
+from accounting.service import AccountingService
 
 from .coa import CoaUi
 from .receipt_gl import ReceiptGlMappingUi

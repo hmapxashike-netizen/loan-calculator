@@ -65,7 +65,7 @@ def apply_unapplied_funds_to_arrears_eod(
     with _connection() as conn:
         # Optional GL posting: unapplied liquidation requires transaction templates.
         try:
-            from accounting_service import AccountingService
+            from accounting.service import AccountingService
 
             svc_liq = AccountingService()
         except Exception:

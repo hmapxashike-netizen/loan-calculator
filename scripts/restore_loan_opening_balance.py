@@ -140,7 +140,7 @@ def main() -> int:
             print("--run-eod-through must be on or after --target-date", file=sys.stderr)
             return 2
         try:
-            from system_business_date import get_effective_date
+            from eod.system_business_date import get_effective_date
 
             cap = get_effective_date()
             if eod_end > cap:
@@ -240,7 +240,7 @@ def main() -> int:
         if eod_end is not None:
             conn.close()
             conn = None
-            from eod import run_single_loan_eod
+            from eod.core import run_single_loan_eod
 
             d = target_date
             while d <= eod_end:

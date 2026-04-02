@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from accounting_service import AccountingService
+from accounting.service import AccountingService
 
 
 class ReceiptGlMappingUi:

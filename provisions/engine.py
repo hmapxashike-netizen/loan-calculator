@@ -2,6 +2,7 @@
 IFRS-style security-based loan provision (DPD → PD%, collateral haircut on min(charge, valuation)).
 RBZ / other regimes can be added separately (no security in formula).
 """
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -99,3 +100,4 @@ def compute_security_provision_breakdown(
         "unsecured_exposure": unsec,
         "provision": prov,
     }
+

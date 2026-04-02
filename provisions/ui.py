@@ -3,6 +3,7 @@ IFRS provisioning UI pieces:
 - Config tables (security subtypes, PD bands): System configurations → IFRS provision config.
 - Single-loan calculator: Portfolio reports → IFRS Provisions (single loan).
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -14,10 +15,10 @@ import streamlit as st
 from decimal_utils import as_10dp
 from display_formatting import format_display_amount
 from loan_management import get_loan, get_loan_daily_state_balances
-from provision_engine import compute_security_provision_breakdown
+from provisions.engine import compute_security_provision_breakdown
 
 try:
-    from system_business_date import get_effective_date
+    from eod.system_business_date import get_effective_date
 except ImportError:
 
     def get_effective_date() -> date:
@@ -30,7 +31,7 @@ def _fmt_num(v: Decimal | float | int) -> str:
 
 def _provisions_import_ok() -> tuple[bool, str]:
     try:
-        import provisions_config  # noqa: F401
+        import provisions.config  # noqa: F401
 
         return True, ""
     except Exception as e:
@@ -44,7 +45,7 @@ def _ensure_provisions_schema() -> bool:
         st.error(f"Provisions configuration is unavailable ({err}). Run **scripts/run_migration_53.py**.")
         return False
 
-    from provisions_config import provision_schema_ready
+    from provisions.config import provision_schema_ready
 
     schema_ok, schema_msg = provision_schema_ready()
     if not schema_ok:
@@ -62,7 +63,7 @@ def render_provisions_config_tables() -> None:
     if not _ensure_provisions_schema():
         return
 
-    from provisions_config import (
+    from provisions.config import (
         delete_pd_band_hard,
         delete_security_subtype_hard,
         insert_pd_band,
@@ -235,7 +236,7 @@ def render_ifrs_provision_calculator() -> None:
     if not _ensure_provisions_schema():
         return
 
-    from provisions_config import get_security_subtype, list_pd_bands
+    from provisions.config import get_security_subtype, list_pd_bands
 
     try:
         from grade_scale_config import grade_scale_schema_ready, resolve_loan_grade
@@ -350,3 +351,4 @@ def render_ifrs_provision_calculator() -> None:
                     m1.metric("Collateral (after haircut)", _fmt_num(br["collateral_value"]))
                     m2.metric("Unsecured exposure", _fmt_num(br["unsecured_exposure"]))
                     m3.metric("Provision", _fmt_num(br["provision"]))
+

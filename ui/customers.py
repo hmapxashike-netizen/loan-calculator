@@ -591,7 +591,7 @@ def render_view_manage_customers_tab(
                     
                     if show_edit_customer:
                         st.divider()
-                        from customer_approval import save_approval_draft
+                        from customers.approval import save_approval_draft
                         with st.form(f"edit_agent_manage_{real_agent_id}"):
                             ename = st.text_input("Agent name (changing requires approval)", value=arec.get("name") or "", key="eam_name")
                             eid_number = st.text_input("ID number", value=arec.get("id_number") or "", key="eam_id")
@@ -728,7 +728,7 @@ def render_view_manage_customers_tab(
                             st.write(f"- {atype}: {line or '—'}")
 
                     if show_edit_customer:
-                        from customer_approval import save_approval_draft
+                        from customers.approval import save_approval_draft
                         st.divider()
                         st.subheader("Edit customer details")
                         with st.form(f"edit_customer_form_{loaded_id}"):
@@ -1177,7 +1177,7 @@ def render_agents_tab(
                                         if not supp_doc.strip():
                                             st.error("Supporting document is required for name change.")
                                         else:
-                                            from customer_approval import save_approval_draft
+                                            from customers.approval import save_approval_draft
                                             save_approval_draft(
                                                 entity_type="agent",
                                                 entity_id=loaded_agent_id,
@@ -1315,7 +1315,7 @@ def customer_approvals_ui(is_tab=False):
     """Web UI to manage customer & agent approval drafts (e.g. name changes)."""
     import json as _json
 
-    from customer_approval import approve_draft, dismiss_draft, list_pending_drafts, rework_draft
+    from customers.approval import approve_draft, dismiss_draft, list_pending_drafts, rework_draft
 
     if not st.session_state.get("_cust_appr_panel_css"):
         st.session_state["_cust_appr_panel_css"] = True

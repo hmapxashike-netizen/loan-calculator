@@ -39,7 +39,7 @@ from psycopg2.extras import RealDictCursor
 
 from decimal_utils import as_10dp
 from loan_management import _connection
-from statements import _parse_schedule_date
+from reporting.statements import _parse_schedule_date
 
 
 def _parse_schedule_line_date(raw: Any) -> date | None:

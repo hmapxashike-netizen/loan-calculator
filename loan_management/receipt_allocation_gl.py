@@ -40,7 +40,7 @@ def post_receipt_allocation_gl_reversals(original_repayment_id: int) -> None:
                 eff_date = eff_date.date() if callable(getattr(eff_date, "date")) else eff_date
 
     try:
-        from accounting_service import AccountingService
+        from accounting.service import AccountingService
 
         svc_alloc = AccountingService()
     except Exception:

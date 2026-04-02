@@ -31,7 +31,7 @@ def render_teller_ui(
         st.error(f"Loan management module is not available. ({loan_management_error})")
         return
 
-    from accounting_service import AccountingService
+    from accounting.service import AccountingService
     from services import teller_service
 
     render_green_page_title("Teller")

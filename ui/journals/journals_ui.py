@@ -10,7 +10,7 @@ import psycopg2
 import psycopg2.extras
 import streamlit as st
 
-from accounting_service import AccountingService
+from accounting.service import AccountingService
 from config import get_database_url
 from ui.journals.helpers import (
     MANUAL_SUBACCOUNT_PLACEHOLDER,

@@ -144,7 +144,7 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
     Safety: current_system_date does NOT tick if any part of EOD fails.
     Returns dict with keys: success, as_of_date, new_system_date, real_world_time, error.
     """
-    from eod import ConcurrentEODError, run_eod_for_date
+    from eod.core import ConcurrentEODError, run_eod_for_date
 
     cfg = get_system_business_config()
     as_of = cfg["current_system_date"]

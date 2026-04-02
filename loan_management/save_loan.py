@@ -249,7 +249,7 @@ def save_loan(
                 )
 
     try:
-        from accounting_service import AccountingService
+        from accounting.service import AccountingService
 
         svc = AccountingService()
         payload = build_loan_approval_journal_payload(details)

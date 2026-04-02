@@ -36,7 +36,7 @@ def render_eod_config_tab(
     st.subheader("System business date")
     st.caption("Accruals and Amount Due use the system date, not the calendar.")
     try:
-        from system_business_date import (
+        from eod.system_business_date import (
             get_system_business_config,
             set_system_business_config,
         )

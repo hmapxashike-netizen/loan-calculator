@@ -16,7 +16,7 @@ from psycopg2.extras import RealDictCursor
 from decimal_utils import as_10dp
 from grade_scale_config import provision_pct_from_value
 from loan_management import _connection
-from portfolio_reporting import (
+from reporting.portfolio_reporting import (
     ARREARS_BUCKET_KEYS,
     ARREARS_BUCKET_LABELS,
     MATURITY_BUCKET_KEYS,
@@ -28,10 +28,10 @@ from portfolio_reporting import (
     build_regulatory_maturity_profile_report,
     build_regulatory_maturity_summary_table,
 )
-from provision_engine import compute_security_provision_breakdown
+from provisions.engine import compute_security_provision_breakdown
 
 try:
-    from system_business_date import get_effective_date
+    from eod.system_business_date import get_effective_date
 except ImportError:
 
     def get_effective_date() -> date:
@@ -500,7 +500,7 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
         "If no grade matches, **PD%** falls back to the **IFRS PD band** table by DPD."
     )
     try:
-        from provisions_config import list_pd_bands, list_security_subtypes, provision_schema_ready
+        from provisions.config import list_pd_bands, list_security_subtypes, provision_schema_ready
         from grade_scale_config import grade_scale_schema_ready, resolve_loan_grade
     except ImportError as e:
         st.error(f"Provisions config unavailable: {e}")
@@ -795,7 +795,7 @@ def render_portfolio_reports_ui() -> None:
         st.session_state["portfolio_exports_visible"] = not _ex_vis
 
     if rk == "ifrs":
-        from provisions_ui import render_ifrs_provision_calculator
+        from provisions.ui import render_ifrs_provision_calculator
 
         render_ifrs_provision_calculator()
     elif rk == "mat_11":
@@ -921,3 +921,47 @@ def render_portfolio_reports_ui() -> None:
                             st.code(e.stderr or e.stdout)
                     except Exception as e:
                         st.error(f"Error executing script: {e}")
+
+
+def render_provisions_ui() -> None:
+    """
+    Focused provisions page (shortcut) that reuses the same engines as Portfolio reports.
+
+    Includes:
+    - Single-loan IFRS provision calculator
+    - Portfolio ECL / provisions (IFRS view)
+    """
+    st.markdown(
+        "<div style='color:#1D4ED8; font-weight:700; font-size:1.05rem; margin:0.08rem 0 0.25rem 0;'>"
+        "Provisions</div>",
+        unsafe_allow_html=True,
+    )
+
+    tab_calc, tab_ecl = st.tabs(["IFRS Provisions (single loan)", "ECL / provisions (IFRS view)"])
+
+    with tab_calc:
+        from provisions.ui import render_ifrs_provision_calculator
+
+        render_ifrs_provision_calculator()
+
+    with tab_ecl:
+        as_of_default = _default_as_of()
+        c1, c2 = st.columns([1, 1], gap="xxsmall", vertical_alignment="top")
+        with c1:
+            st.caption("As-of")
+            as_of = st.date_input(
+                "As-of",
+                value=as_of_default,
+                key="prov_as_of",
+                label_visibility="collapsed",
+            )
+        with c2:
+            st.caption("Scope")
+            active_only = st.checkbox(
+                "Active loans only",
+                value=True,
+                key="prov_active",
+                help="When on, only loans with status active are included.",
+            )
+
+        _report_ecl_provision(as_of, active_only)

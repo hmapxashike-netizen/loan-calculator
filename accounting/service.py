@@ -1,26 +1,28 @@
 from dataclasses import dataclass
 
-from accounting_dal import (
-    AccountingRepository,
-    assert_journal_lines_balanced,
-    get_conn,
-    journal_lines_balance_totals,
-    journal_totals_balanced_for_posting,
-)
 from datetime import date
 from decimal import Decimal
 import json
 import psycopg2
 from decimal_utils import as_10dp, as_2dp
 from loan_management import load_system_config_from_db, _merge_cash_gl_into_payload
-from accounting_periods import (
-    normalize_accounting_period_config,
-    get_month_period_bounds,
-    get_year_period_bounds,
+
+from .core import suggest_next_grandchild_account_code
+from .dal import (
+    AccountingRepository,
+    assert_journal_lines_balanced,
+    get_conn,
+    journal_lines_balance_totals,
+    journal_totals_balanced_for_posting,
 )
-from accounting_defaults_loader import (
+from .defaults_loader import (
     get_default_receipt_gl_mapping_tuples,
     get_default_transaction_template_tuples,
+)
+from .periods import (
+    get_month_period_bounds,
+    get_year_period_bounds,
+    normalize_accounting_period_config,
 )
 
 
@@ -99,8 +101,6 @@ class AccountingService:
 
     def peek_next_grandchild_codes_for_parent(self, parent_account_id: str, count: int) -> list[str]:
         """Preview next N grandchild codes (BASE-NN) under parent; does not persist."""
-        from accounting_core import suggest_next_grandchild_account_code
-
         if count < 1:
             return []
         conn = get_conn()
@@ -340,8 +340,6 @@ class AccountingService:
 
     def suggest_next_grandchild_code_for_parent_id(self, parent_account_id: str) -> str:
         """Suggest next ``BASE-NN`` code for children of the given parent account UUID."""
-        from accounting_core import suggest_next_grandchild_account_code
-
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)

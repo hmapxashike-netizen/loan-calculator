@@ -1,6 +1,7 @@
 """
 DB-backed configuration for IFRS-style provisioning (security subtypes, PD bands).
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -212,3 +213,4 @@ def delete_pd_band_hard(band_id: int) -> None:
     with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM provision_pd_bands WHERE id = %s", (int(band_id),))
+

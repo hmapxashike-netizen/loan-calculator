@@ -36,9 +36,9 @@ from psycopg2.extras import RealDictCursor
 from config import get_database_url
 from decimal_utils import as_10dp
 from accrual_convention import accrual_start_convention_from_config
-from loan_daily_engine import LoanConfig, ScheduleEntry, Loan
-from accounting_periods import normalize_accounting_period_config, is_eom, is_eoy
-from eod_audit import (
+from eod.loan_daily_engine import LoanConfig, ScheduleEntry, Loan
+from accounting.periods import normalize_accounting_period_config, is_eom, is_eoy
+from eod.audit import (
     ConcurrentEODError,
     clear_stale_eod_audit_runs,
     eod_exclusive_session_lock,
@@ -83,7 +83,7 @@ def _persist_accrual_blocked_for_as_of(
     if allow_system_date_eod:
         return False
     try:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
 
         system_date = get_effective_date()
     except Exception:
@@ -461,7 +461,7 @@ def _build_schedule_entries(
     if hasattr(disb_date, "isoformat"):
         period_start: date = disb_date
     else:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
         period_start = get_effective_date()
 
     for row in schedule_rows:
@@ -986,7 +986,7 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     events_to_run: set[str] = set()
     svc = None
     try:
-        from accounting_service import AccountingService
+        from accounting.service import AccountingService
         from decimal import Decimal
         from datetime import timedelta
         
@@ -1260,7 +1260,7 @@ def _run_statement_batch(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     period_cfg = normalize_accounting_period_config(sys_cfg)
     if not (is_eom(as_of_date, period_cfg) or is_eoy(as_of_date, period_cfg)):
         return
-    from accounting_service import AccountingService
+    from accounting.service import AccountingService
 
     svc = AccountingService()
     svc.save_period_close_snapshots(as_of_date=as_of_date, generated_by="system")
@@ -1294,7 +1294,7 @@ def run_eod_for_date(
     - System-date accrual is only allowed in the canonical EOD flow that advances date.
     """
     try:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
         system_date = get_effective_date()
     except Exception:
         system_date = None

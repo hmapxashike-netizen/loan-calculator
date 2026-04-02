@@ -820,7 +820,7 @@ def main(argv=None) -> None:
     # Hard cap: never export future schedule/statement rows beyond system business date.
     # (User may pass a future end date; we clamp it.)
     try:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
 
         eff = get_effective_date()
     except Exception:

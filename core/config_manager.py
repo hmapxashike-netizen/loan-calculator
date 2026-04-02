@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from accounting_core import MappingRegistry
+from accounting.core import MappingRegistry
 from display_formatting import default_display_format, resolve_display_format
 
 

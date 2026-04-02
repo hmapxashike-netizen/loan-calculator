@@ -20,7 +20,7 @@ def get_amount_due_summary(loan_id: int, as_of: date | None = None) -> dict:
       }
     """
     if as_of is None:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
 
         as_of = get_effective_date()
 

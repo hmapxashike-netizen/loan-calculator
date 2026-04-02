@@ -1728,7 +1728,7 @@ def render_capture_loan_ui(
                 st.markdown(f"**Fees:** {format_display_amount(fees, system_config=get_system_config())}")
             st.markdown('<hr class="fcapture-soft"/>', unsafe_allow_html=True)
             st.markdown("**Journal preview** (on approval)")
-            from accounting_service import AccountingService
+            from accounting.service import AccountingService
             from loan_management import build_loan_approval_journal_payload
 
             try:

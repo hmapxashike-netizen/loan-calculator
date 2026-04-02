@@ -5,7 +5,7 @@ from pathlib import Path
 import streamlit as st
 
 from dal import get_conn, UserRepository
-from auth_service import AuthService
+from auth.service import AuthService
 from middleware import set_current_user, clear_current_user
 
 

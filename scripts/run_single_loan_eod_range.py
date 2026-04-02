@@ -57,7 +57,7 @@ def main() -> int:
     if start > end:
         start, end = end, start
 
-    from eod import run_single_loan_eod_date_range
+    from eod.core import run_single_loan_eod_date_range
     from loan_management import load_system_config_from_db
 
     cfg = load_system_config_from_db() or {}

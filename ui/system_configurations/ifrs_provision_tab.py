@@ -1,4 +1,4 @@
-"""IFRS provision config tab (delegates to provisions_ui)."""
+"""IFRS provision config tab (delegates to provisions.ui)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ def render_ifrs_provision_tab() -> None:
         "**IFRS provision PD%** normally comes from **Loan grade scales → Standard provision %** per IFRS grade; "
         "if no grade matches, **PD %** is taken from the **PD band** table below."
     )
-    from provisions_ui import render_provisions_config_tables
+    from provisions.ui import render_provisions_config_tables
 
     render_provisions_config_tables()
     st.divider()

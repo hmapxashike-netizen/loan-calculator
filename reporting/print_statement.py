@@ -1,6 +1,6 @@
 import json
 from datetime import date
-from statements import generate_customer_facing_statement
+from reporting.statements import generate_customer_facing_statement
 
 try:
     out, _ = generate_customer_facing_statement(1, as_of_date=date(2025, 1, 29))

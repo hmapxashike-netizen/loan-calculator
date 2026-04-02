@@ -20,7 +20,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 import config
-from accounting_defaults_loader import defaults_directory
+from accounting.defaults_loader import defaults_directory
 
 
 def main() -> None:

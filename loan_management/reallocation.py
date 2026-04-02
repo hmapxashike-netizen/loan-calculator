@@ -92,7 +92,7 @@ def reallocate_repayment(
 
             # Idempotency: skip if allocation would be unchanged (prevents duplicates from double-calls).
             conn.commit()
-            from eod import run_single_loan_eod
+            from eod.core import run_single_loan_eod
 
             prev_cal = eff_date - timedelta(days=1)
             run_single_loan_eod(loan_id, prev_cal, sys_cfg=system_config)
@@ -123,7 +123,7 @@ def reallocate_repayment(
                 # Backfill it idempotently (post_event replaces by (event_id,event_tag)).
                 if desired_unapplied > 1e-6:
                     try:
-                        from accounting_service import AccountingService
+                        from accounting.service import AccountingService
                         from decimal import Decimal
 
                         svc_unapplied = AccountingService()
@@ -168,7 +168,7 @@ def reallocate_repayment(
             # UNAPPLIED_FUNDS_OVERPAYMENT journals (only if they exist), and
             # posting a new credit journal for the new_unapplied amount.
             try:
-                from accounting_service import AccountingService
+                from accounting.service import AccountingService
 
                 svc_unapplied = AccountingService()
             except Exception:

@@ -12,7 +12,7 @@ from display_formatting import (
 from io import BytesIO
 import numpy_financial as npf
 
-from accounting_core import (
+from accounting.core import (
     MappingRegistry,
     coa_grandchild_prefix_matches_immediate_parent,
 )
@@ -45,7 +45,7 @@ from ui.components import render_green_page_title
 from ui.system_configurations import render_system_configurations_ui
 
 try:
-    from customers import (
+    from customers.core import (
         create_individual,
         create_corporate,
         create_corporate_with_entities,
@@ -97,7 +97,7 @@ except Exception:
     list_users_for_selection = lambda: []
 
 try:
-    from documents import (
+    from customers.documents import (
         list_document_classes,
         create_document_class,
         update_document_class,
@@ -162,8 +162,8 @@ except Exception:
         return []
 
 try:
-    from provisions_config import list_security_subtypes as list_provision_security_subtypes
-    from provisions_config import provision_schema_ready as _provision_schema_ready_fn
+    from provisions.config import list_security_subtypes as list_provision_security_subtypes
+    from provisions.config import provision_schema_ready as _provision_schema_ready_fn
 
     _PROVISIONS_CONFIG_OK = True
 except Exception:
@@ -195,7 +195,7 @@ def _source_cash_gl_cache_empty_warning() -> None:
 
 def _get_system_date():
     try:
-        from system_business_date import get_effective_date
+        from eod.system_business_date import get_effective_date
 
         return get_effective_date()
     except ImportError:
@@ -1053,6 +1053,7 @@ def main():
 LOAN_APP_SECTIONS = [
     "Customers",
     "Loan management",
+    "Provisions",
     "Portfolio reports",
     "Teller",
     "Reamortisation",
@@ -1080,8 +1081,12 @@ def render_loan_app_section(nav: str) -> None:
         reamortisation_ui()
     elif nav == "Statements":
         statements_ui()
+    elif nav == "Provisions":
+        from reporting.portfolio_reports_ui import render_provisions_ui
+
+        render_provisions_ui()
     elif nav == "Portfolio reports":
-        from portfolio_reports_ui import render_portfolio_reports_ui
+        from reporting.portfolio_reports_ui import render_portfolio_reports_ui
 
         render_portfolio_reports_ui()
     elif nav == "Loan management":

@@ -59,7 +59,7 @@ def main():
         start, end = end, start
 
     from datetime import timedelta
-    from eod import ConcurrentEODError, run_eod_for_date
+    from eod.core import ConcurrentEODError, run_eod_for_date
     if not args.eod_only:
         from loan_management import get_repayment_ids_for_value_date, reallocate_repayment
 

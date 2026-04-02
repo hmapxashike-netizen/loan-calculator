@@ -17,7 +17,7 @@ def render_financial_reports_tab(
 ) -> None:
     st.subheader("Financial Reports")
     try:
-        from accounting_periods import (
+        from accounting.periods import (
             normalize_accounting_period_config,
             get_month_period_bounds,
             is_eom,

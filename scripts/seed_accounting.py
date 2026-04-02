@@ -4,7 +4,7 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import config
 
-from accounting_defaults_loader import get_chart_account_template_tuples
+from accounting.defaults_loader import get_chart_account_template_tuples
 
 
 def seed_db():

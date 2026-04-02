@@ -70,7 +70,7 @@ def render_update_loans_ui(
                     subtypes = list_provision_security_subtypes()
                 except Exception:
                     pass
-            # Rows from provisions_config.list_security_subtypes: security_type, subtype_name (not "name").
+            # Rows from provisions.config.list_security_subtypes: security_type, subtype_name (not "name").
             subtype_options = [("", "None / Unsecured")] + [
                 (
                     str(s["id"]),

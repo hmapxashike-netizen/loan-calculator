@@ -1,6 +1,6 @@
 """
 Load bundled accounting defaults from `accounting_defaults/*.json` when present,
-otherwise fall back to `accounting_builtin_defaults`.
+otherwise fall back to `accounting.builtin_defaults`.
 
 Refresh JSON from your perfected database:
   python scripts/export_accounting_defaults.py
@@ -15,13 +15,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-from accounting_builtin_defaults import (
+from .builtin_defaults import (
     CHART_ACCOUNT_TUPLES,
     TRANSACTION_TEMPLATE_TUPLES,
     build_receipt_gl_mapping_tuples,
 )
 
-_DEFAULTS_DIR = Path(__file__).resolve().parent / "accounting_defaults"
+# Repo-root ``accounting_defaults/`` (JSON bundle), sibling of ``accounting/`` package.
+_DEFAULTS_DIR = Path(__file__).resolve().parent.parent / "accounting_defaults"
 
 
 def defaults_directory() -> Path:

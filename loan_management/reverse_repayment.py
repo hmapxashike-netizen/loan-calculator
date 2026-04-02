@@ -143,7 +143,7 @@ def reverse_repayment(
                 )
             # Reverse unapplied credits: insert debit rows (ledger-style, no DELETE)
             try:
-                from accounting_service import AccountingService
+                from accounting.service import AccountingService
                 svc_unapplied = AccountingService()
             except Exception:
                 svc_unapplied = None
@@ -454,7 +454,7 @@ def reverse_repayment(
             # Without this, statements can show the reversal (via updated allocation rows),
             # but the GL (journal_entries) will not be netted for CUSTOMER-facing ledger totals.
             try:
-                from accounting_service import AccountingService
+                from accounting.service import AccountingService
                 svc_alloc = AccountingService()
             except Exception:
                 svc_alloc = None
@@ -701,8 +701,8 @@ def reverse_repayment(
     eod_from = saved_value_date
     posting_cal = _reversal_posting_calendar_date(system_date)
     try:
-        from system_business_date import get_effective_date
-        from eod import run_single_loan_eod_date_range
+        from eod.system_business_date import get_effective_date
+        from eod.core import run_single_loan_eod_date_range
 
         # Replay daily state through the system date (accruals will be automatically
         # zeroed out by EOD for the system business date unless canonical EOD runs).

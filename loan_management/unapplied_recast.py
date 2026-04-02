@@ -57,7 +57,7 @@ def apply_unapplied_funds_recast(
                 raise ValueError("Recast requires source repayment_id on the unapplied credit row.")
 
             # Ensure exact-date state exists before any mutation.
-            from eod import run_single_loan_eod
+            from eod.core import run_single_loan_eod
 
             run_single_loan_eod(loan_id, eff_date)
 
@@ -93,7 +93,7 @@ def apply_unapplied_funds_recast(
                 acc_daily = (float(st_row.get("regular_interest_daily") or 0), float(st_row.get("default_interest_daily") or 0), float(st_row.get("penalty_interest_daily") or 0))
                 acc_period = (float(st_row.get("regular_interest_period_to_date") or 0), float(st_row.get("penalty_interest_period_to_date") or 0), float(st_row.get("default_interest_period_to_date") or 0))
             else:
-                from eod import get_engine_state_for_loan_date
+                from eod.core import get_engine_state_for_loan_date
 
                 _eng = get_engine_state_for_loan_date(loan_id, eff_date)
                 if _eng:
@@ -158,7 +158,7 @@ def apply_unapplied_funds_recast(
 
             # Create a deterministic system repayment representing this recast liquidation leg.
             try:
-                from accounting_service import AccountingService
+                from accounting.service import AccountingService
 
                 svc_unapplied = AccountingService()
             except Exception:

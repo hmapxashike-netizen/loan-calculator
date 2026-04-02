@@ -9,8 +9,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-from eod import run_eod_for_date, run_single_loan_eod
-from eod_audit import is_another_eod_session_active
+from eod.core import run_eod_for_date, run_single_loan_eod
+from eod.audit import is_another_eod_session_active
 from loan_management import (
     _connection,
     get_repayment_ids_for_loan_and_date,
@@ -18,7 +18,7 @@ from loan_management import (
     reallocate_repayment,
 )
 from psycopg2.extras import RealDictCursor
-from system_business_date import (
+from eod.system_business_date import (
     get_system_business_config,
     run_eod_process,
 )

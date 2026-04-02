@@ -5,7 +5,7 @@ ALTER TABLE accounts
 ALTER TABLE accounts
     ADD COLUMN IF NOT EXISTS transitioned_to_parent_at TIMESTAMP NULL;
 
--- 2) Ensure journal_entries has the columns expected by accounting_dal.save_journal_entry
+-- 2) Ensure journal_entries has the columns expected by accounting.dal.save_journal_entry
 
 -- Core columns used by the INSERT
 ALTER TABLE journal_entries
