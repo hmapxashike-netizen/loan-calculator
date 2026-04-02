@@ -22,6 +22,45 @@ def get_unapplied_repayment_ids(loan_id: int, as_of_date: date) -> set[int]:
             return {int(r[0]) for r in cur.fetchall() if r and r[0] is not None}
 
 
+def get_unapplied_balance(loan_id: int, as_of_date: date) -> float:
+    """Balance = SUM(amount) for the loan with value_date <= as_of_date (ledger-style)."""
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM unapplied_funds
+                WHERE loan_id = %s AND value_date <= %s
+                """,
+                (loan_id, as_of_date),
+            )
+            row = cur.fetchone()
+            return float(row[0] or 0)
+
+
+def get_unapplied_ledger_balance(loan_id: int, as_of_date: date) -> float:
+    """Balance = SUM(amount) for loan_id, value_date <= as_of_date (ledger-style single table)."""
+    return get_unapplied_balance(loan_id, as_of_date)
+
+
+def get_loans_with_unapplied_balance(as_of_date: date) -> list[int]:
+    """Loan IDs with unapplied balance > 0 as of the given date (ledger-style)."""
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT loan_id
+                FROM unapplied_funds
+                WHERE value_date <= %s
+                GROUP BY loan_id
+                HAVING COALESCE(SUM(amount), 0) > 0
+                ORDER BY loan_id
+                """,
+                (as_of_date,),
+            )
+            return [int(r[0]) for r in cur.fetchall()]
+
+
 def get_unapplied_entries(loan_id: int, through_date: date) -> list[tuple[date, float]]:
     """
     Unapplied entries for statement from loan_repayment_allocation.unallocated only.
