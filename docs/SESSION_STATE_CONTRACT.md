@@ -105,20 +105,20 @@ Do not rename without checking nested widgets.
 - **`corporate_form`** — Add Corporate (clear on submit).
 - **`add_agent_form`** — Add Agent.
 - **`edit_agent_form`** — Edit Agent (Agents tab).
-- **`edit_agent_manage_{id}`**, **`edit_customer_form_{id}`** — View & manage (dynamic id in form id).
+- **`edit_agent_manage_{id}`**, **`edit_customer_form_{id}`** — View & Manage (dynamic id in form id).
 
 ### Session state (non-widget)
 
 - **`ind_docs_staged`**, **`corp_docs_staged`**, **`corp_contact_docs_staged`**, **`corp_director_docs_staged`**, **`agent_docs_staged`** — staged document rows before create/submit.
-- **`cust_loaded_id`** — selected entity id for View & manage action panel; removed when no action checkbox is enabled.
-- **`agent_edit_loaded_id`** — agent id after “Load agent” on the Agents tab.
+- **`cust_loaded_id`** — selected entity id for View & Manage action panel; removed when no action checkbox is enabled.
+- **`agent_edit_loaded_id`** — agent id after “Load Agent” on the Agents tab.
 - **`_cust_appr_panel_css`** — one-shot flag so Approvals injects panel CSS once.
 
 ### Widget key prefixes (stable identities)
 
 - **Add Individual:** `ind_*` (e.g. `ind_full_name`, `ind_sector`, `ind_doc_type`, `ind_doc_file`, …).
 - **Add Corporate:** `corp_*` (company), `cp_*` / `dir_*` / `corp_sh_*` (contact person, director, shareholder fields and doc staging).
-- **View & manage:** `cust_status_filter`, `cust_type_filter`, `cust_show_status_tools_top`, `cust_show_contact_docs_tools_top`, `cust_show_edit_tools_top`, `cust_action_select`, `cust_set_status`, `cust_update_status`; embedded agent editor **`eam_*`**, **`agt_*`**; customer editor **`edit_ind_*`**, **`edit_corp_*`**, **`edit_sector`**, **`edit_subsector`**, **`edit_supp_doc`**; corporate sub-entity uploads use keys with a **dynamic suffix** `_{loaded_id}` (e.g. `cp_doc_pick_{loaded_id}`, `dir_doc_upload_{loaded_id}`).
+- **View & Manage:** `cust_status_filter`, `cust_type_filter`, `cust_show_status_tools_top`, `cust_show_contact_docs_tools_top`, `cust_show_edit_tools_top`, `cust_action_select`, `cust_set_status`, `cust_update_status`; embedded agent editor **`eam_*`**, **`agt_*`**; customer editor **`edit_ind_*`**, **`edit_corp_*`**, **`edit_sector`**, **`edit_subsector`**, **`edit_supp_doc`**; corporate sub-entity uploads use keys with a **dynamic suffix** `_{loaded_id}` (e.g. `cp_doc_pick_{loaded_id}`, `dir_doc_upload_{loaded_id}`).
 - **Agents tab:** `agent_status_filter`, `agent_show_add_toggle`, `agent_show_edit_toggle`, `agent_*` on create form, `edit_agent_*` on edit flow, `agent_load_btn`.
 - **Approvals:** `cust_appr_draft_id`, `cust_appr_action`, `cust_appr_note`, `cust_appr_submit`; read-only JSON previews **`cust_appr_old_{selected_id}`**, **`cust_appr_new_{selected_id}`**.
 

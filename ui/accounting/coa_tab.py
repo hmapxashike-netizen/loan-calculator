@@ -107,10 +107,10 @@ def render_accounting_coa_tab(
                     _wpcodes = [p["code"] for p in _wprods] if _wprods else []
     
                     st.markdown(
-                        "<div style='margin:0.2rem 0 0.45rem 0;font-size:0.92rem;'>"
+                        "<div style='margin:0.2rem 0 0.45rem 0;font-size:1.15rem;'>"
                         "<strong>Parent system tag:</strong> "
                         f"<code style='background:#f1f5f9;border-radius:4px;padding:0.12rem 0.35rem;'>{_par_tag or '—'}</code>"
-                        "<span style='color:#64748b;font-size:0.82rem;margin-left:0.5rem;'>"
+                        "<span style='color:#64748b;font-size:1.025rem;margin-left:0.5rem;'>"
                         "(updates with the parent you select above)</span></div>",
                         unsafe_allow_html=True,
                     )

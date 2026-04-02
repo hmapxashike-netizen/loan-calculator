@@ -31,7 +31,7 @@ def render_eod_ui(
         st.caption(f"Calendar date: {datetime.now().strftime('%Y-%m-%d')}")
     with d_col2:
         st.markdown(
-            f"<div style='font-size: 1.6rem; font-weight: 700; text-align: right;'>System date: {current_system_date.isoformat()}</div>",
+            f"<div style='font-size: 2rem; font-weight: 700; text-align: right;'>System date: {current_system_date.isoformat()}</div>",
             unsafe_allow_html=True,
         )
 

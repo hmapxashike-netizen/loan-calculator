@@ -119,7 +119,7 @@ main .block-container:has(.fcapture-head) {{
   --fcap-teal: {_t};
   --fcap-ink: #0a0a0a;
   color: var(--fcap-ink);
-  font-size: 1.2rem;
+  font-size: 1.5rem;
   line-height: 1.42;
   padding-top: 0.85rem !important;
   padding-bottom: 0.85rem !important;
@@ -134,7 +134,7 @@ main .block-container:has(.fcapture-head) [data-testid="stCaptionContainer"] {{
   margin-bottom: 0.15rem !important;
 }}
 main .block-container:has(.fcapture-head) [data-testid="stCaptionContainer"] p {{
-  font-size: 1.02rem !important;
+  font-size: 1.275rem !important;
   color: #1e293b !important;
   margin-bottom: 0 !important;
 }}
@@ -166,7 +166,7 @@ main .block-container:has(.fcapture-head) [data-baseweb="popover"] {{
 .fcapture-head {{
   color: {_g};
   font-weight: 700;
-  font-size: 1.35rem;
+  font-size: 1.6875rem;
   margin: 0 0 0.1rem 0;
 }}
 .fcapture-help-tip {{
@@ -195,7 +195,7 @@ main .block-container:has(.fcapture-head) [data-baseweb="popover"] {{
 .fcapture-sec {{
   color: {_g};
   font-weight: 700;
-  font-size: 1.378rem;
+  font-size: 1.7225rem;
   margin: 0.18rem 0 0.06rem 0;
   text-transform: uppercase;
   letter-spacing: 0.045em;

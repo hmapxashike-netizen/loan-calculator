@@ -35,7 +35,7 @@ loan_app = _load_loan_ui_module()
 def render_footer() -> None:
     st.markdown("---")
     st.markdown(
-        "<div style='text-align:center; color:#64748B; font-size:0.85rem; padding-bottom:0.5rem;'>"
+        "<div style='text-align:center; color:#64748B; font-size:1.0625rem; padding-bottom:0.5rem;'>"
         "Copyright Farnda Solutions 2026. All rights reserved."
         "</div>",
         unsafe_allow_html=True,
@@ -61,7 +61,7 @@ def render_sidebar_branding() -> None:
             <div style="background:#E5E7EB; border-radius:10px; padding:0.55rem; margin-bottom:0.35rem;">
                 <img src="data:{mime};base64,{logo_b64}" style="width:100%; height:auto; display:block;" />
             </div>
-            <div style="font-size:0.82rem; color:#374151; margin-top:0.15rem; text-align:center;">
+            <div style="font-size:1.025rem; color:#374151; margin-top:0.15rem; text-align:center;">
                 Calculated Value, Unmatched Trust
             </div>
             """,
@@ -69,7 +69,7 @@ def render_sidebar_branding() -> None:
         )
     else:
         st.sidebar.markdown(
-            "<div style='font-size:0.82rem; color:#374151; text-align:center;'>Calculated Value, Unmatched Trust</div>",
+            "<div style='font-size:1.025rem; color:#374151; text-align:center;'>Calculated Value, Unmatched Trust</div>",
             unsafe_allow_html=True,
         )
 
@@ -91,10 +91,10 @@ def render_sidebar_user_meta(user: dict, system_date, calendar_date) -> None:
     st.sidebar.markdown(
         f"""
         <div style="background:#F3F4F6; border:1px solid #D1D5DB; border-radius:10px; padding:0.7rem; margin-top:0.3rem;">
-            <div style="font-size:0.75rem; color:#6B7280; margin-bottom:0.2rem;">Logged in as</div>
+            <div style="font-size:0.9375rem; color:#6B7280; margin-bottom:0.2rem;">Logged in as</div>
             <div style="font-weight:600; color:#111827; margin-bottom:0.4rem;">{display_name} ({role})</div>
-            <div style="font-size:1.02rem; color:#16A34A; font-weight:700;">System date: {system_date.isoformat()}</div>
-            <div style="font-size:0.85rem; color:#374151;">Calendar date: {calendar_date.isoformat()}</div>
+            <div style="font-size:1.275rem; color:#16A34A; font-weight:700;">System date: {system_date.isoformat()}</div>
+            <div style="font-size:1.0625rem; color:#374151;">Calendar date: {calendar_date.isoformat()}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -113,10 +113,40 @@ def officer_home():
 
 def admin_home():
     st.header("Admin Dashboard")
+    st.session_state.setdefault("admin_users_panel", None)
 
     tab_users, tab_audit = st.tabs(["User Management", "Security Audit Log"])
 
     with tab_users:
+        if msg := st.session_state.pop("admin_ok_msg", None):
+            st.success(msg)
+        if msg := st.session_state.pop("admin_info_msg", None):
+            st.info(msg)
+
+        # Admin User Management: align text inputs and Role select height; keep checkboxes on same baseline.
+        st.markdown(
+            """
+            <style>
+              section[data-testid="stMain"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+              section[data-testid="stMain"] div[data-testid="stTextInput"] input {
+                min-height: 2.75rem !important;
+                box-sizing: border-box !important;
+              }
+              section[data-testid="stMain"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div {
+                padding-top: 2px !important;
+                padding-bottom: 2px !important;
+              }
+              section[data-testid="stMain"] div[data-testid="stCheckbox"] label {
+                min-height: 2.75rem !important;
+                display: flex !important;
+                align-items: center !important;
+                margin-bottom: 0 !important;
+              }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
         st.subheader("Users")
         try:
             conn = get_conn()
@@ -124,14 +154,14 @@ def admin_home():
             st.error(f"Database connection error: {e}")
             return
 
-        users_repo = UserRepository(conn)
-
         try:
+            users_repo = UserRepository(conn)
             users = users_repo.list_users()
         except Exception as e:
-            conn.close()
             st.error(f"Could not load users: {e}")
             return
+        finally:
+            conn.close()
 
         if not users:
             st.info("No users found.")
@@ -154,101 +184,152 @@ def admin_home():
             )
             st.dataframe(df.drop(columns=["password_hash"], errors="ignore"), width="stretch")
 
-            st.markdown("### Manage selected user")
+        open_m, open_c, _ = st.columns([1, 1, 4], gap="small")
+        with open_m:
+            if st.button(
+                "Manage Selected User",
+                disabled=not users,
+                key="adm_open_manage",
+                help="Open user update panel",
+            ):
+                st.session_state["admin_users_panel"] = "manage"
+                st.rerun()
+        with open_c:
+            if st.button("Create New User", key="adm_open_create", help="Open create user panel"):
+                st.session_state["admin_users_panel"] = "create"
+                st.rerun()
+
+        panel = st.session_state.get("admin_users_panel")
+
+        if panel == "manage" and users:
+            hdr_l, hdr_r = st.columns([8, 1], gap="small", vertical_alignment="center")
+            with hdr_l:
+                st.subheader("Manage Selected User")
+            with hdr_r:
+                if st.button("✕", key="adm_close_manage", help="Close"):
+                    st.session_state["admin_users_panel"] = None
+                    st.rerun()
+
             email_choices = [u.email for u in users]
-            selected_email = st.selectbox("Select user", email_choices) if email_choices else None
+            sel_col, role_col = st.columns([2, 3], gap="small", vertical_alignment="bottom")
+            with sel_col:
+                selected_email = st.selectbox("Select User", email_choices, key="adm_pick_user")
+            selected_user = next(u for u in users if u.email == selected_email)
+            with role_col:
+                new_role = st.selectbox(
+                    "Role",
+                    ["ADMIN", "LOAN_OFFICER", "BORROWER"],
+                    index=["ADMIN", "LOAN_OFFICER", "BORROWER"].index(selected_user.role),
+                    key=f"adm_role_{selected_user.id}",
+                )
 
-            if selected_email:
-                selected_user = next(u for u in users if u.email == selected_email)
-                col1, col2, col3, col4 = st.columns(4)
+            col2, col3, col4 = st.columns(3, gap="small", vertical_alignment="bottom")
+            with col2:
+                is_active = st.checkbox(
+                    "Active",
+                    value=selected_user.is_active,
+                    key=f"adm_active_{selected_user.id}",
+                )
+            with col3:
+                reset_pw = st.checkbox(
+                    "Generate Temp Password",
+                    value=False,
+                    key=f"adm_resetpw_{selected_user.id}",
+                )
+            with col4:
+                unlock = st.checkbox(
+                    "Unlock Account",
+                    value=False,
+                    key=f"adm_unlock_{selected_user.id}",
+                )
 
-                with col1:
-                    new_role = st.selectbox(
-                        "Role",
-                        ["ADMIN", "LOAN_OFFICER", "BORROWER"],
-                        index=["ADMIN", "LOAN_OFFICER", "BORROWER"].index(selected_user.role),
-                        key=f"adm_role_{selected_user.id}",
-                    )
-                with col2:
-                    is_active = st.checkbox(
-                        "Active",
-                        value=selected_user.is_active,
-                        key=f"adm_active_{selected_user.id}",
-                    )
-                with col3:
-                    reset_pw = st.checkbox(
-                        "Generate temp password",
-                        value=False,
-                        key=f"adm_resetpw_{selected_user.id}",
-                    )
-                with col4:
-                    unlock = st.checkbox(
-                        "Unlock account",
-                        value=False,
-                        key=f"adm_unlock_{selected_user.id}",
-                    )
-
-                if st.button("Apply changes", type="primary", key=f"adm_apply_{selected_user.id}"):
+            if st.button("Apply Changes", type="primary", key=f"adm_apply_{selected_user.id}"):
+                try:
+                    conn_apply = get_conn()
                     try:
+                        repo = UserRepository(conn_apply)
                         if selected_user.role != new_role:
-                            users_repo.update_role(selected_user.id, new_role)
+                            repo.update_role(selected_user.id, new_role)
                         if selected_user.is_active != is_active:
-                            users_repo.set_active(selected_user.id, is_active)
+                            repo.set_active(selected_user.id, is_active)
                         temp_password = None
                         if reset_pw:
                             import secrets
 
                             temp_password = secrets.token_urlsafe(12)
-                            auth = AuthService(conn)
+                            auth = AuthService(conn_apply)
                             pw_hash = auth.hash_password(temp_password)
-                            users_repo.update_password(selected_user.id, pw_hash)
+                            repo.update_password(selected_user.id, pw_hash)
                         if unlock:
-                            users_repo.unlock_account(selected_user.id)
-                        conn.close()
-                        st.success("Changes applied.")
-                        if temp_password:
-                            st.info(f"Temporary password for {selected_email}: `{temp_password}`")
-                        st.rerun()
-                    except Exception as e:
-                        conn.close()
-                        st.error(f"Failed to apply changes: {e}")
+                            repo.unlock_account(selected_user.id)
+                    finally:
+                        conn_apply.close()
+                    st.success("Changes applied.")
+                    if temp_password:
+                        st.info(f"Temporary password for {selected_email}: `{temp_password}`")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to apply changes: {e}")
 
-        st.markdown("---")
-        st.subheader("Create new user")
-        new_email = st.text_input("Email", key="adm_new_email")
-        new_full_name = st.text_input("Full name", key="adm_new_full_name")
-        new_role = st.selectbox(
-            "Role for new user",
-            ["BORROWER", "LOAN_OFFICER", "ADMIN"],
-            index=0,
-            key="adm_new_role",
-        )
-        new_password = st.text_input("Initial password (leave blank to auto-generate)", type="password")
+        elif panel == "create":
+            hdr_l, hdr_r = st.columns([8, 1], gap="small", vertical_alignment="center")
+            with hdr_l:
+                st.subheader("Create New User")
+            with hdr_r:
+                if st.button("✕", key="adm_close_create", help="Close"):
+                    st.session_state["admin_users_panel"] = None
+                    st.rerun()
 
-        if st.button("Create user", type="primary", key="adm_create_user"):
-            try:
-                conn = get_conn()
-                users_repo = UserRepository(conn)
-                if users_repo.get_by_email(new_email):
-                    st.error("A user with that email already exists.")
-                else:
-                    import secrets
+            r1c1, r1c2 = st.columns(2, gap="small", vertical_alignment="bottom")
+            with r1c1:
+                new_email = st.text_input("Email", key="adm_new_email")
+            with r1c2:
+                new_full_name = st.text_input("Full Name", key="adm_new_full_name")
+            r2c1, r2c2 = st.columns(2, gap="small", vertical_alignment="bottom")
+            with r2c1:
+                new_role = st.selectbox(
+                    "Role",
+                    ["BORROWER", "LOAN_OFFICER", "ADMIN"],
+                    index=0,
+                    key="adm_new_role",
+                )
+            with r2c2:
+                new_password = st.text_input(
+                    "Initial Password (Blank = Auto-Generate)",
+                    type="password",
+                    key="adm_new_password",
+                )
 
-                    raw_password = new_password or secrets.token_urlsafe(12)
-                    auth = AuthService(conn)
-                    pw_hash = auth.hash_password(raw_password)
-                    user = users_repo.create_user(
-                        email=new_email,
-                        password_hash=pw_hash,
-                        full_name=new_full_name,
-                        role=new_role,
-                    )
-                    conn.close()
-                    st.success(f"User {user.email} created.")
-                    if not new_password:
-                        st.info(f"Temporary password for {user.email}: `{raw_password}`")
-            except Exception as e:
-                st.error(f"Failed to create user: {e}")
+            if st.button("Create User", type="primary", key="adm_create_user"):
+                try:
+                    conn_c = get_conn()
+                    try:
+                        users_repo = UserRepository(conn_c)
+                        if users_repo.get_by_email(new_email):
+                            st.error("A user with that email already exists.")
+                        else:
+                            import secrets
+
+                            raw_password = new_password or secrets.token_urlsafe(12)
+                            auth = AuthService(conn_c)
+                            pw_hash = auth.hash_password(raw_password)
+                            user = users_repo.create_user(
+                                email=new_email,
+                                password_hash=pw_hash,
+                                full_name=new_full_name,
+                                role=new_role,
+                            )
+                            st.session_state["admin_ok_msg"] = f"User {user.email} created."
+                            if not new_password:
+                                st.session_state["admin_info_msg"] = (
+                                    f"Temporary password for {user.email}: `{raw_password}`"
+                                )
+                            st.session_state["admin_users_panel"] = None
+                            st.rerun()
+                    finally:
+                        conn_c.close()
+                except Exception as e:
+                    st.error(f"Failed to create user: {e}")
 
     with tab_audit:
         st.subheader("Recent login activity")

@@ -109,7 +109,7 @@ def render_statements_ui(
         import pandas as pd
         st.markdown(
             "<div style='background-color: #0F766E; color: white; padding: 4px 8px; "
-            "font-weight: 600; font-size: 0.95rem;'>Statements</div>",
+            "font-weight: 600; font-size: 1.1875rem;'>Statements</div>",
             unsafe_allow_html=True,
         )
     
@@ -171,7 +171,7 @@ def render_statements_ui(
     
             customers = list_customers() if customers_available else []
             st.markdown(
-                "<span style='font-size:0.78rem;color:#64748b;'>Search · Customer · Loan</span>",
+                "<span style='font-size:0.975rem;color:#64748b;'>Search · Customer · Loan</span>",
                 unsafe_allow_html=True,
             )
             fc0, fc1, fc2 = st.columns([1.05, 1.2, 1.2])
@@ -262,7 +262,7 @@ def render_statements_ui(
                         disbursement = datetime.fromisoformat(disbursement[:10]).date()
                     start_default = disbursement or get_system_date()
                     st.markdown(
-                        "<span style='font-size:0.78rem;color:#64748b;'>From · To · View · Generate</span>",
+                        "<span style='font-size:0.975rem;color:#64748b;'>From · To · View · Generate</span>",
                         unsafe_allow_html=True,
                     )
                     dr0, dr1, dr2, dr3, dr4, dr5 = st.columns([0.95, 0.95, 0.55, 0.55, 0.55, 1.05])
@@ -380,18 +380,18 @@ def render_statements_ui(
                                     "main .block-container { max-width: 100% !important; padding-left: 1.5rem; padding-right: 1.5rem; } "
                                     "[data-testid='stSidebar'] { width: 16rem !important; } "
                                     ".stmt-view { width: 100%; max-width: 100%; overflow-x: auto; margin-top: 1rem; } "
-                                    ".stmt-view .stmt-header { margin-bottom: 0.5rem; padding: 0.5rem 0.75rem; border: 1px solid #e2e8f0; border-radius: 4px; background: #f8fafc; font-size: 0.88rem; } "
-                                    ".stmt-view .stmt-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; background: #fff; } "
+                                    ".stmt-view .stmt-header { margin-bottom: 0.5rem; padding: 0.5rem 0.75rem; border: 1px solid #e2e8f0; border-radius: 4px; background: #f8fafc; font-size: 1.1rem; } "
+                                    ".stmt-view .stmt-table { width: 100%; border-collapse: collapse; font-size: 1.1rem; background: #fff; } "
                                     ".stmt-view .stmt-table th, .stmt-view .stmt-table td { border: 1px solid #e2e8f0; padding: 0.35rem 0.45rem; text-align: left; } "
                                     ".stmt-view .stmt-table th { background: #f1f5f9; font-weight: 600; } "
                                     ".stmt-view .stmt-table td.num, .stmt-view .stmt-table th.num { text-align: right; } "
                                     ".stmt-view .stmt-table td.center, .stmt-view .stmt-table th.center { text-align: center; } "
                                     ".stmt-view .stmt-table tbody tr:nth-child(even) { background: #f8fafc; } "
-                                    ".stmt-closing { margin-top: 0.75rem; text-align: center; font-size: 0.88rem; padding: 0.5rem; border-top: 1px solid #e2e8f0; color: #334155; } "
+                                    ".stmt-closing { margin-top: 0.75rem; text-align: center; font-size: 1.1rem; padding: 0.5rem; border-top: 1px solid #e2e8f0; color: #334155; } "
                                     "</style>"
                                     "<div class='stmt-view'>"
                                     "<div class='stmt-header'>"
-                                    f"<strong style='font-size: 1.02rem; display: block; margin-bottom: 0.25rem;'>{statement_title}</strong>"
+                                    f"<strong style='font-size: 1.275rem; display: block; margin-bottom: 0.25rem;'>{statement_title}</strong>"
                                     f"<span style='display: block;'><strong>Customer:</strong> {customer_name}</span>"
                                     f"<span style='display: block;'><strong>Customer ID:</strong> {cust_id if cust_id is not None else '—'}</span>"
                                     f"<span style='display: block;'><strong>Loan ID:</strong> {loan_id}</span>"
@@ -407,7 +407,7 @@ def render_statements_ui(
                                     st.warning(note)
     
                                 st.markdown(
-                                    "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 0.9rem;'>"
+                                    "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 1.125rem;'>"
                                     f"For the period from {start_fmt} to {end_fmt}<br>"
                                     f"<strong>Generated:</strong> {generated_fmt}"
                                     "</div>",
@@ -463,7 +463,7 @@ def render_statements_ui(
                                             try { (window.top || window.parent).print(); } catch (e) { window.print(); }
                                         }
                                         </script>
-                                        <button onclick="doPrint()" style="padding: 0.2rem 0.45rem; border-radius: 3px; border: 1px solid #ccc; background: #f0f0f0; color: #333; font-size: 0.75rem; cursor: pointer;">
+                                        <button onclick="doPrint()" style="padding: 0.2rem 0.45rem; border-radius: 3px; border: 1px solid #ccc; background: #f0f0f0; color: #333; font-size: 0.9375rem; cursor: pointer;">
                                         Print
                                         </button>
                                         """,
@@ -488,7 +488,7 @@ def render_statements_ui(
     
             st.markdown("##### General Ledger")
             st.markdown(
-                "<span style='font-size:0.78rem;color:#64748b;'>From · To · Account</span>",
+                "<span style='font-size:0.975rem;color:#64748b;'>From · To · Account</span>",
                 unsafe_allow_html=True,
             )
     

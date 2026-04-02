@@ -1,0 +1,4 @@
+# Global typography: +25% vs Streamlit default (16px → 20px).
+# Affects headers, subheaders, widget labels, dataframe text, and other themed UI.
+[theme]
+baseFontSize = 20

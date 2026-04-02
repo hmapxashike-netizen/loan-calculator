@@ -716,7 +716,7 @@ def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
 def render_portfolio_reports_ui() -> None:
     st.session_state.setdefault("portfolio_exports_visible", False)
     st.markdown(
-        "<div style='color:#1D4ED8; font-weight:700; font-size:1.05rem; margin:0.08rem 0 0.25rem 0;'>"
+        "<div style='color:#1D4ED8; font-weight:700; font-size:1.3125rem; margin:0.08rem 0 0.25rem 0;'>"
         "Portfolio reports</div>",
         unsafe_allow_html=True,
     )
@@ -932,7 +932,7 @@ def render_provisions_ui() -> None:
     - Portfolio ECL / provisions (IFRS view)
     """
     st.markdown(
-        "<div style='color:#1D4ED8; font-weight:700; font-size:1.05rem; margin:0.08rem 0 0.25rem 0;'>"
+        "<div style='color:#1D4ED8; font-weight:700; font-size:1.3125rem; margin:0.08rem 0 0.25rem 0;'>"
         "Provisions</div>",
         unsafe_allow_html=True,
     )

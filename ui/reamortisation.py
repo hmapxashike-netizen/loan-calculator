@@ -23,7 +23,7 @@ def render_reamortisation_ui(
 ) -> None:
     st.markdown(
         "<div style='background-color: #1E40AF; color: white; padding: 8px 12px; "
-        "font-weight: bold; font-size: 1.1rem;'>Reamortisation</div>",
+        "font-weight: bold; font-size: 1.375rem;'>Reamortisation</div>",
         unsafe_allow_html=True,
     )
     st.markdown("<br>", unsafe_allow_html=True)

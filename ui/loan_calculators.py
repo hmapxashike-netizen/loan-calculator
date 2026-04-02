@@ -172,14 +172,14 @@ def render_consumer_loan_ui(
 
         st.markdown(
             "<div style='background-color: #16A34A; color: white; padding: 8px 12px; "
-            "font-weight: bold; font-size: 1.1rem;'>Consumer Loan Calculator</div>",
+            "font-weight: bold; font-size: 1.375rem;'>Consumer Loan Calculator</div>",
             unsafe_allow_html=True,
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
         calc_css = """
         <style>
-        .calc-desc { font-size: 0.85rem; color: #64748B; margin-top: 2px; margin-bottom: 8px; }
+        .calc-desc { font-size: 1.0625rem; color: #64748B; margin-top: 2px; margin-bottom: 8px; }
         .calc-value-red { color: #DC2626; font-weight: bold; }
         </style>
         """
@@ -416,14 +416,14 @@ def render_term_loan_ui(
         # Display
         st.markdown(
             "<div style='background-color: #16A34A; color: white; padding: 8px 12px; "
-            "font-weight: bold; font-size: 1.1rem;'>Term Loan Calculator (Actual/360)</div>",
+            "font-weight: bold; font-size: 1.375rem;'>Term Loan Calculator (Actual/360)</div>",
             unsafe_allow_html=True,
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
         calc_css = """
         <style>
-        .calc-desc { font-size: 0.85rem; color: #64748B; margin-top: 2px; margin-bottom: 8px; }
+        .calc-desc { font-size: 1.0625rem; color: #64748B; margin-top: 2px; margin-bottom: 8px; }
         .calc-value-red { color: #DC2626; font-weight: bold; }
         </style>
         """
@@ -583,14 +583,14 @@ def render_bullet_loan_ui(
         # Display
         st.markdown(
             "<div style='background-color: #16A34A; color: white; padding: 8px 12px; "
-            "font-weight: bold; font-size: 1.1rem;'>Bullet Loan Calculator (Actual/360)</div>",
+            "font-weight: bold; font-size: 1.375rem;'>Bullet Loan Calculator (Actual/360)</div>",
             unsafe_allow_html=True,
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
         calc_css = """
         <style>
-        .calc-desc { font-size: 0.85rem; color: #64748B; margin-top: 2px; margin-bottom: 8px; }
+        .calc-desc { font-size: 1.0625rem; color: #64748B; margin-top: 2px; margin-bottom: 8px; }
         .calc-value-red { color: #DC2626; font-weight: bold; }
         </style>
         """
@@ -742,7 +742,7 @@ def render_customised_repayments_ui(
         st.session_state[session_key] = df
 
         st.markdown(
-            "<div style='background-color: #16A34A; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.1rem;'>Customised Repayments (Actual/360)</div>",
+            "<div style='background-color: #16A34A; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.375rem;'>Customised Repayments (Actual/360)</div>",
             unsafe_allow_html=True,
         )
         if irregular_calc:

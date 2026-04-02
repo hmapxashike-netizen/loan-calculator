@@ -28,7 +28,7 @@ def render_journals_ui(*, get_system_date) -> None:
     
     st.markdown(
         "<div style='background-color: #0F766E; color: white; padding: 8px 12px; "
-        "font-weight: bold; font-size: 1.1rem;'>Journals</div>",
+        "font-weight: bold; font-size: 1.375rem;'>Journals</div>",
         unsafe_allow_html=True,
     )
     st.markdown("<br>", unsafe_allow_html=True)

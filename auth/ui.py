@@ -96,20 +96,6 @@ def registration_form():
 
 
 def auth_page():
-    st.markdown(
-        """
-        <style>
-        /* Increase auth page typography by ~50% */
-        div[data-testid="stTabs"] button[role="tab"] p { font-size: 1.5rem !important; }
-        div[data-testid="stTextInput"] label p { font-size: 1.5rem !important; }
-        div[data-testid="stTextInput"] input { font-size: 1.5rem !important; }
-        div[data-testid="stButton"] button p { font-size: 1.5rem !important; }
-        h3 { font-size: 2.25rem !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
     col_left, col_center, col_right = st.columns([1, 2, 1])
     with col_center:
         logo_path = _logo_path()
