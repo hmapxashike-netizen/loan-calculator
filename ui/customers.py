@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from ui.components import render_green_page_title
+from ui.components import render_centered_html_table, render_green_page_title
 
 from constants import (
     AGENT_CORPORATE_DOC_TYPES,
@@ -41,6 +41,45 @@ def _agent_table_id_cell(v: object) -> str:
         return ""
     try:
         return str(int(v))
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _vm_entity_id_cell(v: object) -> str:
+    """String id for View & Manage list (numeric customer id or agent key like A12)."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    return str(v)
+
+
+def _vm_created_at_cell(v: object) -> str:
+    """Stable string for View & Manage created_at (DB datetime, pandas Timestamp, or str)."""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (ValueError, TypeError):
+        pass
+    if hasattr(v, "strftime"):
+        try:
+            return v.strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, OSError):
+            pass
+    s = str(v).strip()
+    return s[:19] if len(s) >= 19 else s
+
+
+def _format_commission_display(v: object) -> str:
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (ValueError, TypeError):
+        pass
+    try:
+        return f"{float(v):.2f}"
     except (TypeError, ValueError):
         return str(v)
 
@@ -625,20 +664,38 @@ def render_view_manage_customers_tab(
 ) -> None:
 
     st.subheader("View & Manage Customers & Agents")
-    vm_r1a, vm_r1b, vm_r1c, vm_r1d = st.columns(4)
-    with vm_r1a:
+    vm_c1, vm_c2, vm_c3, vm_c4, vm_c5 = st.columns(5)
+    with vm_c1:
         status_filter = st.selectbox(
             "Status",
             ["all", "active", "inactive"],
             format_func=_fmt_status_filter,
             key="cust_status_filter",
         )
-    with vm_r1b:
+    with vm_c2:
         type_filter = st.selectbox(
             "Type",
             ["all", "individual", "corporate", "agent"],
             format_func=_fmt_customer_type_filter,
             key="cust_type_filter",
+        )
+    with vm_c3:
+        show_status_tools = st.checkbox(
+            "Change Status",
+            value=False,
+            key="cust_show_status_tools_top",
+        )
+    with vm_c4:
+        show_contact_docs_tools = st.checkbox(
+            "Contact Person Documents",
+            value=False,
+            key="cust_show_contact_docs_tools_top",
+        )
+    with vm_c5:
+        show_edit_customer = st.checkbox(
+            "Edit Details",
+            value=False,
+            key="cust_show_edit_tools_top",
         )
     status = None if status_filter == "all" else status_filter
     customer_type = None if type_filter == "all" else type_filter
@@ -663,29 +720,9 @@ def render_view_manage_customers_tab(
     except Exception as e:
         st.error(f"Could Not Load Entities: {e}")
         customers_list = []
-
-    action_col1, action_col2, action_col3, action_col4 = st.columns(4)
-    with action_col1:
-        show_status_tools = st.checkbox(
-            "Change Status",
-            value=False,
-            key="cust_show_status_tools_top",
-        )
-    with action_col2:
-        show_contact_docs_tools = st.checkbox(
-            "Contact Person Documents",
-            value=False,
-            key="cust_show_contact_docs_tools_top",
-        )
-    with action_col3:
-        show_edit_customer = st.checkbox(
-            "Edit Details",
-            value=False,
-            key="cust_show_edit_tools_top",
-        )
     if not customers_list:
         st.info("No Entities Found.")
-            
+
     def _get_display(item):
         is_agt = item.get("is_agent")
         if pd.notna(is_agt) and bool(is_agt):
@@ -699,7 +736,6 @@ def render_view_manage_customers_tab(
     loaded_id = None
     is_loaded_agent = False
     if (show_status_tools or show_contact_docs_tools or show_edit_customer) and customers_list:
-            
         cust_options = [(c["id"], _get_display(c), c.get("is_agent", False)) for c in customers_list]
         labels = [f"{name} (ID {cid})" for cid, name, _ in cust_options]
         sel_idx = 0
@@ -709,21 +745,19 @@ def render_view_manage_customers_tab(
                 sel_idx = next(i for i, (cid, _n, _a) in enumerate(cust_options) if cid == prev_id)
             except Exception:
                 sel_idx = 0
-        st.divider()
         selected_label = st.selectbox(
             "Select Entity For Selected Action(s)",
             labels,
             index=sel_idx,
             key="cust_action_select",
         )
-            
+
         if selected_label:
             idx = labels.index(selected_label)
             loaded_id = cust_options[idx][0]
             is_loaded_agent = cust_options[idx][2]
         st.session_state["cust_loaded_id"] = loaded_id
     elif not (show_status_tools or show_contact_docs_tools or show_edit_customer):
-        st.caption("Enable An Action Above To Select And Manage An Entity.")
         st.session_state.pop("cust_loaded_id", None)
 
     if loaded_id is not None:
@@ -737,9 +771,8 @@ def render_view_manage_customers_tab(
                 st.subheader(f"Agent #{real_agent_id}")
                 st.markdown(f"**Name:** {arec.get('name')}")
                 st.caption(f"Status: {arec.get('status')}")
-                    
+
                 if show_edit_customer:
-                    st.divider()
                     from customers.approval import save_approval_draft
                     with st.form(f"edit_agent_manage_{real_agent_id}"):
                         eam1, eam2, eam3, eam4 = st.columns(4)
@@ -923,7 +956,6 @@ def render_view_manage_customers_tab(
 
                 if show_edit_customer:
                     from customers.approval import save_approval_draft
-                    st.divider()
                     st.subheader("Edit Customer Details")
                     with st.form(f"edit_customer_form_{loaded_id}"):
                         if ctype == "individual":
@@ -1085,7 +1117,6 @@ def render_view_manage_customers_tab(
                         dir_list = rec.get("directors") or []
 
                         if cp_list:
-                            st.divider()
                             st.subheader("Contact Person Documents")
                             cp_options = [(cp["id"], cp.get("full_name") or f"Contact #{cp['id']}") for cp in cp_list]
                             cdp_a, cdp_b, cdp_c, cdp_d = st.columns(4)
@@ -1136,7 +1167,6 @@ def render_view_manage_customers_tab(
                                 st.success("Contact Person Document Uploaded.")
 
                         if dir_list:
-                            st.divider()
                             st.subheader("Director Documents")
                             dir_options = [(d["id"], d.get("full_name") or f"Director #{d['id']}") for d in dir_list]
                             ddp_a, ddp_b, ddp_c, ddp_d = st.columns(4)
@@ -1185,14 +1215,16 @@ def render_view_manage_customers_tab(
                                     notes=stored_notes or "",
                                 )
                                 st.success("Director Document Uploaded.")
-    st.divider()
     if customers_list:
         df = pd.DataFrame(customers_list)
         df["display_name"] = df.apply(_get_display, axis=1)
-        st.dataframe(
-            df[["id", "type", "status", "display_name", "created_at"]],
-            width="stretch",
-            hide_index=True,
+        vm_cols = ["id", "type", "status", "display_name", "created_at"]
+        df_vm = df[vm_cols].copy()
+        df_vm["id"] = df_vm["id"].map(_vm_entity_id_cell)
+        df_vm["created_at"] = df_vm["created_at"].map(_vm_created_at_cell)
+        render_centered_html_table(
+            df_vm,
+            ["ID", "Type", "Status", "Display Name", "Created At"],
         )
 
 
@@ -1213,12 +1245,14 @@ def render_agents_tab(
     if not agents_available:
         st.error(f"Agents Module Is Not Available. ({agents_error})")
     else:
-        status_agent = st.selectbox(
-            "Filter By Status",
-            ["active", "inactive", "all"],
-            format_func=_fmt_status_filter,
-            key="agent_status_filter",
-        )
+        _ag_filter_col, _ag_filter_spacer = st.columns([1, 2])
+        with _ag_filter_col:
+            status_agent = st.selectbox(
+                "Filter By Status",
+                ["active", "inactive", "all"],
+                format_func=_fmt_status_filter,
+                key="agent_status_filter",
+            )
         status_val = None if status_agent == "all" else status_agent
         try:
             agents_list = list_agents(status=status_val)
@@ -1230,19 +1264,26 @@ def render_agents_tab(
             cols_show = ["id", "name", "id_number", "phone1", "email", "commission_rate_pct", "tax_clearance_expiry", "status"]
             cols_show = [c for c in cols_show if c in df_agents.columns]
             df_show = df_agents[cols_show].copy()
-            col_cfg = {}
             if "id" in df_show.columns:
                 df_show["id"] = df_show["id"].map(_agent_table_id_cell)
-                col_cfg["id"] = st.column_config.TextColumn("ID", width="small")
-            st.dataframe(
+            if "commission_rate_pct" in df_show.columns:
+                df_show["commission_rate_pct"] = df_show["commission_rate_pct"].map(_format_commission_display)
+            _ag_tbl_headers = {
+                "id": "ID",
+                "name": "Name",
+                "id_number": "ID Number",
+                "phone1": "Phone 1",
+                "email": "Email",
+                "commission_rate_pct": "Commission %",
+                "tax_clearance_expiry": "Tax Clearance Expiry",
+                "status": "Status",
+            }
+            render_centered_html_table(
                 df_show,
-                width="stretch",
-                hide_index=True,
-                column_config=col_cfg if col_cfg else None,
+                [_ag_tbl_headers[c] for c in cols_show],
             )
         else:
             st.info("No Agents Found.")
-        st.divider()
         ag_col1, ag_col2 = st.columns(2)
         with ag_col1:
             show_add_agent = st.checkbox(
@@ -1256,9 +1297,6 @@ def render_agents_tab(
                 value=False,
                 key="agent_show_edit_toggle",
             )
-
-        if not show_add_agent and not show_edit_agent:
-            st.caption("Enable An Action Above To Add Or Edit An Agent.")
 
         if show_add_agent:
             st.subheader("Add Agent")
@@ -1382,7 +1420,6 @@ def render_agents_tab(
                     st.warning("Please Enter Agent Name.")
 
         if show_edit_agent:
-            st.divider()
             st.subheader("Edit Agent")
             edit_agent_id = st.number_input("Agent ID To Edit", min_value=1, value=1, step=1, key="edit_agent_id")
             if st.button("Load Agent", key="agent_load_btn"):
@@ -1504,7 +1541,7 @@ def render_customers_ui(
         )
         return
 
-    render_green_page_title("Customers")
+    render_green_page_title("Customers", compact=True)
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(
         ["Add Individual", "Add Corporate", "View & Manage", "Agents", "Approvals"]
@@ -1619,10 +1656,6 @@ def customer_approvals_ui(is_tab=False):
         st.error(f"Could Not Load Drafts: {e}")
 
     with st.container(border=True):
-        st.caption(
-            "One Compact Panel: **Stage 1** Lists Pending Items; The **Blue Rule** Separates **Stage 2** "
-            "(Pick A Draft, Compare Old Vs New, Apply A Decision)."
-        )
         st.markdown('<p class="cust-appr-stage-lbl">Stage 1 — Pending Queue</p>', unsafe_allow_html=True)
         if not drafts:
             st.info("No Pending Approval Drafts.")
@@ -1661,9 +1694,7 @@ def customer_approvals_ui(is_tab=False):
         st.markdown('<hr class="cust-appr-blue-rule"/>', unsafe_allow_html=True)
         st.markdown('<p class="cust-appr-stage-lbl">Stage 2 — Review & Decision</p>', unsafe_allow_html=True)
 
-        if not drafts:
-            st.caption("When Items Appear Above, Select A Draft And Choose Approve, Rework, Or Dismiss.")
-        else:
+        if drafts:
             ap1, ap2, ap3, ap4 = st.columns(4)
             with ap1:
                 selected_id = st.selectbox(

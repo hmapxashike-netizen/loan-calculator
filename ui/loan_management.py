@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from html import escape
+
 import pandas as pd
 import streamlit as st
+
+from display_formatting import format_display_currency
+from ui.components import render_centered_html_table
 
 def render_update_loans_ui(
     *,
@@ -33,29 +38,45 @@ def render_update_loans_ui(
             st.info("No customers available. Create a customer first.")
             return
     
-        cust_sel = st.selectbox(
-            "Select Customer",
-            [get_display_name(c["id"]) for c in customers],
-            key="update_loan_cust"
-        )
+        # ~45% + 45% + 10% spacer; small gap between the two selects for clarity
+        _cust_col, _loan_col, _upd_sp = st.columns([9, 9, 2], gap="small", vertical_alignment="center")
+        with _cust_col:
+            cust_sel = st.selectbox(
+                "Select Customer",
+                [get_display_name(c["id"]) for c in customers],
+                key="update_loan_cust",
+            )
         cust_id = next(c["id"] for c in customers if get_display_name(c["id"]) == cust_sel)
-    
+
         loans = get_loans_by_customer(cust_id)
         loans_active = [l for l in loans if l.get("status") == "active"]
-    
-        if not loans_active:
-            st.info("No active loans for this customer.")
-            return
-    
+
         loan_options = [
             (l["id"], f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('principal', 0):,.2f}")
             for l in loans_active
         ]
-    
+
         loan_labels = [t[1] for t in loan_options]
-        loan_sel_label = st.selectbox("Select loan to update", loan_labels, key="update_loan_sel")
+        with _loan_col:
+            if not loans_active:
+                st.selectbox(
+                    "Select loan to update",
+                    ["(no active loans)"],
+                    disabled=True,
+                    key="update_loan_sel",
+                )
+            else:
+                loan_sel_label = st.selectbox(
+                    "Select loan to update",
+                    loan_labels,
+                    key="update_loan_sel",
+                )
+
+        if not loans_active:
+            st.info("No active loans for this customer.")
+            return
+
         loan_id = next(t[0] for t in loan_options if t[1] == loan_sel_label)
-    
         loan = next(l for l in loans_active if l["id"] == loan_id)
     
         tab_edit, tab_term = st.tabs(["Edit Safe Details", "Terminate Loan Request"])
@@ -193,6 +214,9 @@ def render_approve_loans_ui(
 ) -> None:
         """Approval inbox for loan drafts submitted from capture Stage 2."""
         st.subheader("Approve loans")
+        st.caption(
+            "All loan drafts awaiting approval (new submissions and items returned for rework)."
+        )
         if not loan_management_available:
             st.error(f"Loan management module is not available. ({loan_management_error})")
             return
@@ -200,8 +224,7 @@ def render_approve_loans_ui(
         if approve_flash:
             st.success(str(approve_flash))
     
-        # Small, compact search/filter row.
-        f1, f2, f3, f4 = st.columns([2, 1, 1, 1])
+        f1, f2 = st.columns([4, 1])
         with f1:
             search_txt = st.text_input(
                 "Search draft",
@@ -209,35 +232,19 @@ def render_approve_loans_ui(
                 key="approve_loan_search",
             )
         with f2:
-            show_status = st.selectbox(
-                "Status",
-                ["PENDING", "REWORK", "APPROVED", "DISMISSED"],
-                index=0,
-                key="approve_loan_status",
-            )
-        with f3:
-            assigned_only = st.checkbox("Assigned to me", value=False, key="approve_assigned_only")
-        with f4:
             st.write("")
             st.write("")
             if st.button("Clear selection", key="approve_clear_selection", width="stretch"):
                 st.session_state.pop("approve_selected_draft_id", None)
                 st.rerun()
-    
-        assigned_filter = None
-        if assigned_only:
-            current_uid = st.session_state.get("user_id")
-            if current_uid is not None:
-                assigned_filter = str(current_uid)
-    
+
         drafts = list_loan_approval_drafts(
-            status=show_status,
+            statuses=["PENDING", "REWORK"],
             search=search_txt.strip() or None,
-            assigned_approver_id=assigned_filter,
             limit=500,
         )
         if not drafts:
-            st.info("No loan drafts found for the selected filters.")
+            st.info("No loan drafts are awaiting approval.")
             return
     
         draft_options = [int(r["id"]) for r in drafts]
@@ -427,28 +434,30 @@ def render_view_schedule_ui(
         if not loan_management_available:
             st.error(f"Loan management module is not available. ({loan_management_error})")
             return
-    
-        st.caption("Select a loan by ID or customer to view the stored repayment schedule.")
-    
+
         loan_id = None
         search_by = st.radio("Find loan by", ["Loan ID", "Customer"], key="view_sched_by", horizontal=True)
-    
+
         if search_by == "Loan ID":
-            id_col, btn_col = st.columns([2, 1])
-            with id_col:
-                lid_input = st.number_input("Loan ID", min_value=1, value=1, step=1, key="view_sched_loan_id")
-            with btn_col:
-                st.write("")
-                st.write("")
-                load_by_id = st.button("Load schedule", key="view_sched_load_by_id", use_container_width=True)
-            if load_by_id:
-                loan = get_loan(int(lid_input)) if loan_management_available else None
-                if not loan:
-                    st.warning(f"Loan #{lid_input} not found.")
-                else:
-                    loan_id = int(lid_input)
-                    st.session_state["view_schedule_loan_id"] = loan_id
-            loan_id = st.session_state.get("view_schedule_loan_id")
+            _half_l, _half_r = st.columns([1, 1])
+            with _half_l:
+                id_col, btn_col = st.columns([2, 1])
+                with id_col:
+                    lid_input = st.number_input("Loan ID", min_value=1, value=1, step=1, key="view_sched_loan_id")
+                with btn_col:
+                    st.write("")
+                    st.write("")
+                    load_by_id = st.button("Load schedule", key="view_sched_load_by_id", use_container_width=True)
+                if load_by_id:
+                    loan = get_loan(int(lid_input)) if loan_management_available else None
+                    if not loan:
+                        st.warning(f"Loan #{lid_input} not found.")
+                    else:
+                        loan_id = int(lid_input)
+                        st.session_state["view_schedule_loan_id"] = loan_id
+                loan_id = st.session_state.get("view_schedule_loan_id")
+            with _half_r:
+                st.empty()
         else:
             if not customers_available:
                 st.info("Customer module is required to select by customer.")
@@ -459,18 +468,29 @@ def render_view_schedule_ui(
                 else:
                     cust_options = [(c["id"], get_display_name(c["id"]) or f"Customer #{c['id']}") for c in customers_list]
                     cust_labels = [t[1] for t in cust_options]
-                    cust_sel = st.selectbox("Customer", cust_labels, key="view_sched_cust")
+                    cust_col, loan_col = st.columns([1, 1])
+                    with cust_col:
+                        cust_sel = st.selectbox("Customer", cust_labels, key="view_sched_cust")
                     cid = cust_options[cust_labels.index(cust_sel)][0] if cust_sel else None
-                    if cid:
-                        loans_list = get_loans_by_customer(cid)
-                        if not loans_list:
-                            st.info("No loans for this customer.")
+                    with loan_col:
+                        if not cid:
+                            st.caption("Select a customer to choose a loan.")
                         else:
-                            loan_options = [(l["id"], f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('principal', 0):,.2f}") for l in loans_list]
-                            loan_labels = [t[1] for t in loan_options]
-                            loan_sel = st.selectbox("Loan", loan_labels, key="view_sched_loan_sel")
-                            if loan_sel:
-                                loan_id = loan_options[loan_labels.index(loan_sel)][0]
+                            loans_list = get_loans_by_customer(cid)
+                            if not loans_list:
+                                st.info("No loans for this customer.")
+                            else:
+                                loan_options = [
+                                    (
+                                        l["id"],
+                                        f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('principal', 0):,.2f}",
+                                    )
+                                    for l in loans_list
+                                ]
+                                loan_labels = [t[1] for t in loan_options]
+                                loan_sel = st.selectbox("Loan", loan_labels, key="view_sched_loan_sel")
+                                if loan_sel:
+                                    loan_id = loan_options[loan_labels.index(loan_sel)][0]
     
         if loan_id:
             try:
@@ -484,7 +504,29 @@ def render_view_schedule_ui(
             else:
                 loan_info = get_loan(loan_id)
                 if loan_info:
-                    st.markdown(f"**Loan #{loan_id}** · {loan_info.get('loan_type', '')} · Principal: {loan_info.get('principal', 0):,.2f} · Customer: {get_display_name(loan_info.get('customer_id')) if customers_available else loan_info.get('customer_id')}")
+                    _lt_raw = str(loan_info.get("loan_type", "") or "—").strip()
+                    _lt_disp = escape(_lt_raw.replace("_", " ").title() if _lt_raw != "—" else "—")
+                    _pr_disp = escape(format_display_currency(loan_info.get("principal")))
+                    _cust_raw = (
+                        get_display_name(loan_info.get("customer_id"))
+                        if customers_available
+                        else loan_info.get("customer_id")
+                    )
+                    _cust_disp = escape(str(_cust_raw) if _cust_raw is not None else "—")
+                    st.markdown(
+                        f"""
+<div style="margin:0.2rem 0 1rem 0; font-size:1.02rem; line-height:1.7; color:#0f172a;">
+  <span style="font-weight:700;">Loan</span>&nbsp;<span style="font-weight:400;">#{int(loan_id)}</span>
+  <span style="display:inline-block; margin:0 1rem; color:#94a3b8; font-weight:300;">|</span>
+  <span style="font-weight:700;">Type</span>&nbsp;<span style="font-weight:400;">{_lt_disp}</span>
+  <span style="display:inline-block; margin:0 1rem; color:#94a3b8; font-weight:300;">|</span>
+  <span style="font-weight:700;">Principal</span>&nbsp;<span style="font-weight:400;">{_pr_disp}</span>
+  <span style="display:inline-block; margin:0 1rem; color:#94a3b8; font-weight:300;">|</span>
+  <span style="font-weight:700;">Customer</span>&nbsp;<span style="font-weight:400;">{_cust_disp}</span>
+</div>
+""",
+                        unsafe_allow_html=True,
+                    )
                 df = pd.DataFrame(lines)
                 # Map DB column names to display names used by format_schedule_display
                 col_map = {
@@ -497,7 +539,8 @@ def render_view_schedule_ui(
                 df = df.rename(columns=col_map)
                 display_cols = [c for c in ["Period", "Date", "Payment", "Principal", "Interest", "Principal Balance", "Total Outstanding"] if c in df.columns]
                 df_display = df[display_cols] if display_cols else df
-                st.dataframe(format_schedule_df(df_display), width="stretch", hide_index=True)
+                _df_vs = format_schedule_df(df_display)
+                render_centered_html_table(_df_vs, [str(c) for c in _df_vs.columns])
                 schedule_export_downloads(
                     df_display, file_stem=f"loan_{loan_id}_schedule", key_prefix=f"dl_sched_loan_view_{loan_id}"
                 )

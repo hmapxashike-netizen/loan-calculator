@@ -14,7 +14,7 @@ This document lists the `st.session_state` keys used by the Streamlit app, group
 
 ## Navigation / section memory
 
-- **`loan_mgmt_subnav`**: Loan management sub-section radio (kept across actions/reruns).
+- **`loan_mgmt_subnav`**: Loan management sub-section (segmented bar; Title Case labels; kept across actions/reruns).
 
 ## System configurations UI (`syscfg_*`)
 
@@ -77,7 +77,8 @@ These keys represent the multi-step loan capture workflow state.
 ## Loan documents staging
 
 - **`loan_docs_staged`**: staged list for loan capture docs prior to final submit.
-- **`_fcapture_panel_css_v7`**: one-time CSS injection toggle for capture UI panel.
+- **`_fcapture_panel_css_v10`**: one-time CSS injection toggle for capture UI panel.
+- **`capture_open_draft_panel`**: `None` | `"rework"` | `"staged"` — which loan draft helper panel is expanded (link toggles).
 
 ## Calculators / customised repayments
 
@@ -113,6 +114,7 @@ Do not rename without checking nested widgets.
 - **`cust_loaded_id`** — selected entity id for View & Manage action panel; removed when no action checkbox is enabled.
 - **`agent_edit_loaded_id`** — agent id after “Load Agent” on the Agents tab.
 - **`_cust_appr_panel_css`** — one-shot flag so Approvals injects panel CSS once.
+- **`_farnda_cust_tbl_css`** — one-shot flag so View & Manage / Agents HTML entity tables inject shared table CSS once.
 
 ### Widget key prefixes (stable identities)
 

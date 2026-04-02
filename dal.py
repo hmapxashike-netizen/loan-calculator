@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 import psycopg2
@@ -196,6 +196,26 @@ class SecurityAuditLogRepository:
                 LIMIT %s
                 """,
                 (limit,),
+            )
+            rows = cur.fetchall()
+        return list(rows)
+
+    def list_between(self, start: date, end: date, *, limit: int = 5000) -> list[dict]:
+        """Rows with ``created_at`` on ``start`` through ``end`` (inclusive, local calendar days)."""
+        if start > end:
+            return []
+        start_dt = datetime.combine(start, time.min)
+        end_exclusive = datetime.combine(end + timedelta(days=1), time.min)
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM security_audit_log
+                WHERE created_at >= %s AND created_at < %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (start_dt, end_exclusive, limit),
             )
             rows = cur.fetchall()
         return list(rows)

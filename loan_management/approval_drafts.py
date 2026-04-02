@@ -145,18 +145,28 @@ def resubmit_loan_approval_draft(
 
 def list_loan_approval_drafts(
     *,
-    status: str = "PENDING",
+    status: str | None = "PENDING",
+    statuses: list[str] | None = None,
     search: str | None = None,
     assigned_approver_id: str | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    """List loan approval drafts for inbox/review."""
+    """List loan approval drafts for inbox/review.
+
+    If ``statuses`` is non-empty, filter with ``IN (...)`` (takes precedence over ``status``).
+    Otherwise, if ``status`` is set, filter to that single status. If both are unset/empty,
+    no status filter is applied.
+    """
     with _connection() as conn:
         _ensure_loan_approval_drafts_table(conn)
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             where = ["TRUE"]
             params: list[Any] = []
-            if status:
+            if statuses:
+                placeholders = ", ".join(["%s"] * len(statuses))
+                where.append(f"d.status IN ({placeholders})")
+                params.extend(statuses)
+            elif status:
                 where.append("d.status = %s")
                 params.append(status)
             if assigned_approver_id is not None:

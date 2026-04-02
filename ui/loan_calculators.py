@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import Any
-
+from datetime import datetime
 import pandas as pd
 import streamlit as st
+
+from ui.components import inject_tertiary_hyperlink_css_once, render_centered_html_table
 
 from loans import (
     add_months,
@@ -15,7 +15,29 @@ from loans import (
     parse_schedule_dates_from_table,
     recompute_customised_from_payments,
     repayment_dates,
+    schedule_dataframe_to_csv_bytes,
+    schedule_dataframe_to_excel_bytes,
 )
+
+_LABEL_AMOUNT_BASIS = "Amount Basis"
+_LABEL_NET_PROCEEDS = "Net Proceeds"
+_LABEL_PRINCIPAL_TOTAL = "Principal (Total Loan Amount)"
+_AMOUNT_BASIS_OPTIONS = [_LABEL_NET_PROCEEDS, _LABEL_PRINCIPAL_TOTAL]
+_LABEL_DISBURSEMENT_DATE = "Disbursement Date"
+_LABEL_REPAYMENTS_ON = "Repayments On"
+
+
+def _render_calc_schedule_table(format_schedule_df, df_schedule: pd.DataFrame) -> None:
+    st.subheader("Repayment schedule")
+    styled = format_schedule_df(df_schedule)
+    render_centered_html_table(styled, [str(c) for c in styled.columns])
+
+
+def _schedule_export_bytes_pair(df: pd.DataFrame) -> tuple[bytes, bytes]:
+    return (
+        schedule_dataframe_to_csv_bytes(df, amount_decimals=2),
+        schedule_dataframe_to_excel_bytes(df, amount_decimals=2),
+    )
 
 
 def render_consumer_loan_ui(
@@ -26,7 +48,6 @@ def render_consumer_loan_ui(
     get_global_loan_settings,
     compute_consumer_schedule,
     format_schedule_df,
-    schedule_export_downloads,
 ) -> None:
         schemes = get_consumer_schemes()
         scheme_names = [s["name"] for s in schemes]
@@ -34,7 +55,6 @@ def render_consumer_loan_ui(
         default_additional_rate_pct = cfg.get("consumer_default_additional_rate_pct", 0.0)
 
         st.subheader("Consumer Loan Parameters")
-        # Currency selection with system default + override
         accepted_currencies = cfg.get(
             "accepted_currencies", [cfg.get("base_currency", "USD")]
         )
@@ -44,8 +64,8 @@ def render_consumer_loan_ui(
             accepted_currencies = [default_ccy, *accepted_currencies]
         glob = get_global_loan_settings()
         scheme_options = scheme_names + ["Other"]
-        p_col1, p_col2 = st.columns(2)
-        with p_col1:
+        r1 = st.columns(4, gap=None)
+        with r1[0]:
             currency = st.selectbox(
                 "Currency",
                 accepted_currencies,
@@ -54,13 +74,15 @@ def render_consumer_loan_ui(
                 else 0,
                 key="cl_currency",
             )
-            principal_input_choice = st.radio(
-                "What are you entering?",
-                ["Net proceeds", "Principal (total loan amount)"],
-                key="cl_principal_input",
+        with r1[1]:
+            _basis = st.selectbox(
+                _LABEL_AMOUNT_BASIS,
+                _AMOUNT_BASIS_OPTIONS,
+                key="cl_amount_basis",
             )
-            input_total_facility = principal_input_choice == "Principal (total loan amount)"
-            loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
+            input_total_facility = _basis == _LABEL_PRINCIPAL_TOTAL
+        with r1[2]:
+            loan_input_label = _LABEL_PRINCIPAL_TOTAL if input_total_facility else _LABEL_NET_PROCEEDS
             loan_required = st.number_input(
                 loan_input_label,
                 min_value=0.0,
@@ -69,6 +91,7 @@ def render_consumer_loan_ui(
                 format="%.2f",
                 key="cl_principal",
             )
+        with r1[3]:
             loan_term = st.number_input(
                 "Term (Months)",
                 min_value=1,
@@ -77,19 +100,23 @@ def render_consumer_loan_ui(
                 step=1,
                 key="cl_term",
             )
-        with p_col2:
-            st.caption("Schemes and default rates are managed in **System configurations**.")
+        r2 = st.columns(4, gap=None)
+        with r2[0]:
             scheme = st.selectbox("Loan Scheme", scheme_options, key="cl_scheme")
-            disbursement_input = st.date_input("Disbursement date", get_system_date(), key="cl_start")
+        with r2[1]:
+            disbursement_input = st.date_input(_LABEL_DISBURSEMENT_DATE, get_system_date(), key="cl_start")
             disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
+        with r2[2]:
             default_first_rep = add_months(disbursement_date, 1).date()
             first_rep_input = st.date_input("First Repayment Date", default_first_rep, key="cl_first_rep")
             first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
-            use_anniversary = st.radio(
-                "Repayments on",
+        with r2[3]:
+            _rep = st.selectbox(
+                _LABEL_REPAYMENTS_ON,
                 ["Anniversary date (same day each month)", "Last day of each month"],
-                key="cl_timing",
-            ).startswith("Anniversary")
+                key="cl_repay_on",
+            )
+            use_anniversary = _rep.startswith("Anniversary")
         if not use_anniversary and not is_last_day_of_month(first_repayment_date):
             st.error("When repayments are on last day of month, First Repayment Date must be the last day of that month.")
 
@@ -122,8 +149,8 @@ def render_consumer_loan_ui(
             base_rate = (sch["interest_rate_pct"] / 100.0) if sch else 0.07
             admin_fee = (sch["admin_fee_pct"] / 100.0) if sch else 0.07
         else:
-            o_col1, o_col2 = st.columns(2)
-            with o_col1:
+            o4 = st.columns(4, gap=None)
+            with o4[0]:
                 interest_rate_percent = st.number_input(
                     "Interest rate (%)",
                     min_value=0.0,
@@ -132,7 +159,7 @@ def render_consumer_loan_ui(
                     step=0.1,
                     key="cl_other_rate",
                 )
-            with o_col2:
+            with o4[1]:
                 admin_fee_percent = st.number_input(
                     "Administration fee (%)",
                     min_value=0.0,
@@ -163,81 +190,39 @@ def render_consumer_loan_ui(
             first_repayment_date=first_repayment_date, use_anniversary=use_anniversary,
         )
         details["currency"] = currency
-        total_facility = details["principal"]
-        amount_required_display = details["disbursed_amount"]
-        total_monthly_rate = details["monthly_rate"]
-        monthly_installment = details["installment"]
-        end_date = details["end_date"]
-        first_repayment_date = details["first_repayment_date"]
 
-        st.markdown(
-            "<div style='background-color: #16A34A; color: white; padding: 8px 12px; "
-            "font-weight: bold; font-size: 1.375rem;'>Consumer Loan Calculator</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown("<br>", unsafe_allow_html=True)
+        _render_calc_schedule_table(format_schedule_df, df_schedule)
 
-        calc_css = """
-        <style>
-        .calc-desc { font-size: 1.0625rem; color: #64748B; margin-top: 2px; margin-bottom: 8px; }
-        .calc-value-red { color: #DC2626; font-weight: bold; }
-        </style>
-        """
-        st.markdown(calc_css, unsafe_allow_html=True)
-
-        st.markdown(f"**a. Scheme:** {scheme}")
-        st.markdown(f"**b. Net proceeds:** {amount_required_display:,.2f} US Dollars")
-        st.markdown(f"**c. Interest Rate (% per month):** {total_monthly_rate * 100:.2f}%")
-        st.markdown(
-            f"<p class='calc-desc'>"
-            f"{total_monthly_rate * 100:.2f}% per month accrued from day to day on principal balance"
-            "</p>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"**d. Administration Fees (%):** {admin_fee * 100:.2f}%")
-        st.markdown(
-            f"<p class='calc-desc'>"
-            f"{admin_fee * 100:.2f}% once-off on total loan amount"
-            "</p>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"**e. Principal (total loan amount):** {total_facility:,.2f} US Dollars")
-        st.markdown(
-            f"<span class='calc-value-red'><strong>f. Monthly Instalment:</strong> US${monthly_installment:,.2f}</span>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"**g. Disbursement date:** {disbursement_date.strftime('%d-%b-%Y')}")
-        st.markdown(f"**h. Loan Term (months):** {loan_term}")
-        st.markdown(f"**j. First Repayment Date:** {first_repayment_date.strftime('%d-%b-%Y')}")
-        st.markdown(f"**k. No. of Repayments:** {loan_term} times")
-        st.markdown(f"**i. End Date:** {end_date.strftime('%d-%b-%Y')}")
-
-        with st.expander("Notes", expanded=False):
-            st.markdown(
-                "<div style='background-color: #F1F5F9; padding: 12px 16px; border-radius: 4px;'>"
-                "<strong>Notes</strong><br>"
-                "1. Select Scheme (a.). If the loan does not fall under a Scheme, select \"Other\"<br>"
-                "2. Enter net proceeds in (b) or principal (total loan amount)<br>"
-                "3. If you selected \"Other\", enter interest rate (c.) and administration fee (d.)<br>"
-                "4. Enter the Loan Term in months (h.)<br>"
-                "5. Monthly repayment (f.) assumes every month has 30 days<br>"
-                "6. Default rates and schemes are in **System configurations**"
-                "</div>",
-                unsafe_allow_html=True,
-            )
-        with st.expander("Repayment schedule and downloads", expanded=False):
-            st.dataframe(format_schedule_df(df_schedule), width="stretch", hide_index=True, height=240)
-            schedule_export_downloads(df_schedule, file_stem="consumer_loan_schedule", key_prefix="dl_sched_consumer")
-
-        # 6. Save button - DB-ready structure (from shared engine)
         loan_record = {**details, "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
         for k in ("disbursement_date", "start_date", "end_date", "first_repayment_date"):
             if k in loan_record and hasattr(loan_record[k], "isoformat"):
                 loan_record[k] = loan_record[k].isoformat()
 
-        with st.expander("Save to system", expanded=False):
-            if st.button("Save Loan Record to System", type="primary", key="cl_save"):
-                # TODO: Replace with db.insert(loan_record) when DB is ready
+        inject_tertiary_hyperlink_css_once()
+        _csv_b, _xlsx_b = _schedule_export_bytes_pair(df_schedule)
+        _ac1, _ac2, _ac3, _ = st.columns([1, 1, 1, 4], gap=None, vertical_alignment="center")
+        with _ac1:
+            st.download_button(
+                "Download CSV",
+                data=_csv_b,
+                file_name="consumer_loan_schedule.csv",
+                mime="text/csv",
+                key="dl_sched_consumer_csv",
+                type="tertiary",
+                help="UTF-8 with BOM; amounts rounded to 2dp for readability.",
+            )
+        with _ac2:
+            st.download_button(
+                "Download Excel",
+                data=_xlsx_b,
+                file_name="consumer_loan_schedule.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_sched_consumer_xlsx",
+                type="tertiary",
+                help="Native Excel numbers (.xlsx); no text warnings.",
+            )
+        with _ac3:
+            if st.button("Save record to DB", type="tertiary", key="cl_save"):
                 st.success(f"Loan for ${loan_required:,.2f} has been prepared for database sync.")
                 with st.expander("Preview record (for DB insertion)"):
                     st.json(loan_record)
@@ -250,40 +235,14 @@ def render_term_loan_ui(
     get_global_loan_settings,
     get_system_config,
     get_system_date,
-    loan_management_available: bool,
-    list_products,
-    get_product_config_from_db,
-    get_product_rate_basis,
     compute_term_schedule,
     format_schedule_df,
-    schedule_export_downloads,
 ) -> None:
         glob = get_global_loan_settings()
         cfg = get_system_config()
-        # Optional product selector for calculator defaults (safe fallback to system defaults).
         rate_basis = glob.get("rate_basis", "Per month")
-        product_cfg: dict[str, Any] = {}
-        product_opts = []
-        try:
-            all_products = list_products(active_only=True) if loan_management_available else []
-            product_opts = [
-                p for p in (all_products or [])
-                if str(p.get("loan_type") or "").strip().lower() == "term_loan"
-            ]
-        except Exception:
-            product_opts = []
 
         st.subheader("Term Loan Parameters")
-        if product_opts:
-            prod_labels = ["System defaults"] + [f"{p.get('code')} - {p.get('name')}" for p in product_opts]
-            selected_label = st.selectbox("Product (optional)", prod_labels, key="term_product_pick")
-            if selected_label != "System defaults":
-                picked = product_opts[prod_labels.index(selected_label) - 1]
-                product_code = str(picked.get("code") or "").strip()
-                if product_code:
-                    product_cfg = get_product_config_from_db(product_code) or {}
-                    rate_basis = get_product_rate_basis(product_cfg, fallback=rate_basis)
-
         # Currency selection with system default + override
         accepted_currencies = cfg.get(
             "accepted_currencies", [cfg.get("base_currency", "USD")]
@@ -292,8 +251,8 @@ def render_term_loan_ui(
         default_ccy = loan_curr_cfg.get("term_loan", cfg.get("base_currency", "USD"))
         if default_ccy not in accepted_currencies:
             accepted_currencies = [default_ccy, *accepted_currencies]
-        p_col1, p_col2 = st.columns(2)
-        with p_col1:
+        t1 = st.columns(4, gap=None)
+        with t1[0]:
             currency = st.selectbox(
                 "Currency",
                 accepted_currencies,
@@ -302,13 +261,15 @@ def render_term_loan_ui(
                 else 0,
                 key="term_currency",
             )
-            principal_input_choice = st.radio(
-                "What are you entering?",
-                ["Net proceeds", "Principal (total loan amount)"],
-                key="term_principal_input",
+        with t1[1]:
+            _tb = st.selectbox(
+                _LABEL_AMOUNT_BASIS,
+                _AMOUNT_BASIS_OPTIONS,
+                key="term_amount_basis",
             )
-            input_total_facility = principal_input_choice == "Principal (total loan amount)"
-            loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
+            input_total_facility = _tb == _LABEL_PRINCIPAL_TOTAL
+        with t1[2]:
+            loan_input_label = _LABEL_PRINCIPAL_TOTAL if input_total_facility else _LABEL_NET_PROCEEDS
             loan_required = st.number_input(
                 loan_input_label,
                 min_value=0.0,
@@ -317,6 +278,7 @@ def render_term_loan_ui(
                 format="%.2f",
                 key="term_principal",
             )
+        with t1[3]:
             loan_term = st.number_input(
                 "Term (Months)",
                 min_value=1,
@@ -325,23 +287,22 @@ def render_term_loan_ui(
                 step=1,
                 key="term_months",
             )
-        with p_col2:
-            disbursement_input = st.date_input("Disbursement date", get_system_date(), key="term_disb")
-            disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
 
-        # Term loan: defaults from selected product (if any), else system config; always safe.
         dr_sys = cfg.get("default_rates", {}).get("term_loan", {}) or {}
-        dr_prod = (product_cfg.get("default_rates") or {}).get("term_loan") or {}
-        dr = {**dr_sys, **dr_prod}
+        dr = dict(dr_sys)
         default_interest = float(dr.get("interest_pct") or 7.0)
         default_drawdown = float(dr.get("drawdown_pct") or 2.5)
         default_arrangement = float(dr.get("arrangement_pct") or 2.5)
         rate_label = "Interest rate (% per annum)" if rate_basis == "Per annum" else "Interest rate (% per month)"
-        fee_col1, fee_col2 = st.columns(2)
-        with fee_col1:
+        t2 = st.columns(4, gap=None)
+        with t2[0]:
+            disbursement_input = st.date_input(_LABEL_DISBURSEMENT_DATE, get_system_date(), key="term_disb")
+            disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
+        with t2[1]:
             rate_pct = st.number_input(rate_label, 0.0, 100.0, default_interest, step=0.1, key="term_rate")
+        with t2[2]:
             drawdown_fee_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, default_drawdown, step=0.1, key="term_drawdown") / 100.0
-        with fee_col2:
+        with t2[3]:
             arrangement_fee_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, default_arrangement, step=0.1, key="term_arrangement") / 100.0
         total_fee = drawdown_fee_pct + arrangement_fee_pct
         if rate_pct <= 0:
@@ -359,30 +320,30 @@ def render_term_loan_ui(
         annual_rate = (rate_pct / 100.0) * 12.0 if rate_basis == "Per month" else (rate_pct / 100.0)
         flat_rate = glob.get("interest_method") == "Flat rate"
 
-        # Grace period + repayment timing
-        g_col1, g_col2 = st.columns(2)
-        with g_col1:
-            st.markdown("**Grace Period**")
-            grace_type = st.radio(
-                "Grace period type",
+        t3 = st.columns(4, gap=None)
+        with t3[0]:
+            grace_type = st.selectbox(
+                "Grace period",
                 ["No grace period", "Principal moratorium", "Principal and interest moratorium"],
-                key="term_grace",
+                key="term_grace_sel",
             )
-            moratorium_months = 0
+        moratorium_months = 0
+        with t3[1]:
             if "Principal moratorium" in grace_type:
-                moratorium_months = st.number_input("Moratorium length (months)", 1, 60, 3, key="term_moratorium_p")
+                moratorium_months = st.number_input("Moratorium (months)", 1, 60, 3, key="term_moratorium_p")
             elif "Principal and interest" in grace_type:
-                moratorium_months = st.number_input("Moratorium length (months)", 1, 60, 3, key="term_moratorium_pi")
-        with g_col2:
+                moratorium_months = st.number_input("Moratorium (months)", 1, 60, 3, key="term_moratorium_pi")
+        with t3[2]:
             default_first_rep = add_months(disbursement_date, 1).date()
             first_rep_input = st.date_input("First Repayment Date", default_first_rep, key="term_first_rep")
             first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
-            st.markdown("**Repayment Timing**")
-            use_anniversary = st.radio(
-                "Repayments on",
+        with t3[3]:
+            _tr = st.selectbox(
+                _LABEL_REPAYMENTS_ON,
                 ["Anniversary date (same day each month)", "Last day of each month"],
-                key="term_timing",
-            ).startswith("Anniversary")
+                key="term_repay_on",
+            )
+            use_anniversary = _tr.startswith("Anniversary")
 
         today_norm = datetime.combine(get_system_date(), datetime.min.time()).replace(hour=0, minute=0, second=0, microsecond=0)
         next_month_limit = add_months(today_norm, 1)
@@ -410,60 +371,39 @@ def render_term_loan_ui(
             rate_basis, flat_rate,
         )
         details["currency"] = currency
-        installment = details["installment"]
-        end_date = details["end_date"]
 
-        # Display
-        st.markdown(
-            "<div style='background-color: #16A34A; color: white; padding: 8px 12px; "
-            "font-weight: bold; font-size: 1.375rem;'>Term Loan Calculator (Actual/360)</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        calc_css = """
-        <style>
-        .calc-desc { font-size: 1.0625rem; color: #64748B; margin-top: 2px; margin-bottom: 8px; }
-        .calc-value-red { color: #DC2626; font-weight: bold; }
-        </style>
-        """
-        st.markdown(calc_css, unsafe_allow_html=True)
-
-        net_proceeds_to_display = float(details.get("disbursed_amount", loan_required) or 0.0)
-        st.markdown(f"**a. Net proceeds:** {net_proceeds_to_display:,.2f} US Dollars")
-        st.markdown(f"**b. Interest Rate (annual, Actual/360):** {details['annual_rate'] * 100:.2f}%")
-        st.markdown(
-            "<p class='calc-desc'>Interest accrued on actual days / 360 basis</p>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"**c. Drawdown fee (%):** {drawdown_fee_pct * 100:.2f}% | **Arrangement fee (%):** {arrangement_fee_pct * 100:.2f}%")
-        total_fee = drawdown_fee_pct + arrangement_fee_pct
-        st.markdown(
-            f"<p class='calc-desc'>Total {total_fee * 100:.2f}% once-off on total facility</p>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"**d. Principal (total loan amount):** {details['principal']:,.2f} US Dollars")
-        st.markdown(
-            f"<span class='calc-value-red'><strong>e. Installment (from first P&I period):</strong> US${installment:,.2f}</span>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"**f. Disbursement Date:** {disbursement_date.strftime('%d-%b-%Y')}")
-        st.markdown(f"**g. Loan Term (months):** {loan_term}")
-        st.markdown(f"**h. First Repayment Date:** {first_repayment_date.strftime('%d-%b-%Y')}")
-        st.markdown(f"**i. Grace period:** {grace_type}")
-        st.markdown(f"**j. End Date:** {end_date.strftime('%d-%b-%Y')}")
-
-        with st.expander("Repayment schedule and downloads", expanded=False):
-            st.dataframe(format_schedule_df(df_schedule), width="stretch", hide_index=True, height=240)
-            schedule_export_downloads(df_schedule, file_stem="term_loan_schedule", key_prefix="dl_sched_term")
+        _render_calc_schedule_table(format_schedule_df, df_schedule)
 
         loan_record = {**details, "loan_type": "term_loan", "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
         for k in ("disbursement_date", "start_date", "end_date", "first_repayment_date"):
             if k in loan_record and hasattr(loan_record[k], "isoformat"):
                 loan_record[k] = loan_record[k].isoformat()
 
-        with st.expander("Save to system", expanded=False):
-            if st.button("Save Term Loan Record to System", type="primary", key="term_save"):
+        inject_tertiary_hyperlink_css_once()
+        _csv_b, _xlsx_b = _schedule_export_bytes_pair(df_schedule)
+        _ac1, _ac2, _ac3, _ = st.columns([1, 1, 1, 4], gap=None, vertical_alignment="center")
+        with _ac1:
+            st.download_button(
+                "Download CSV",
+                data=_csv_b,
+                file_name="term_loan_schedule.csv",
+                mime="text/csv",
+                key="dl_sched_term_csv",
+                type="tertiary",
+                help="UTF-8 with BOM; amounts rounded to 2dp for readability.",
+            )
+        with _ac2:
+            st.download_button(
+                "Download Excel",
+                data=_xlsx_b,
+                file_name="term_loan_schedule.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_sched_term_xlsx",
+                type="tertiary",
+                help="Native Excel numbers (.xlsx); no text warnings.",
+            )
+        with _ac3:
+            if st.button("Save record to DB", type="tertiary", key="term_save"):
                 st.success(f"Term loan for ${loan_required:,.2f} has been prepared for database sync.")
                 with st.expander("Preview record (for DB insertion)"):
                     st.json(loan_record)
@@ -478,7 +418,6 @@ def render_bullet_loan_ui(
     get_system_date,
     compute_bullet_schedule,
     format_schedule_df,
-    schedule_export_downloads,
 ) -> None:
         glob = get_global_loan_settings()
         cfg = get_system_config()
@@ -491,8 +430,8 @@ def render_bullet_loan_ui(
         default_ccy = loan_curr_cfg.get("bullet_loan", cfg.get("base_currency", "USD"))
         if default_ccy not in accepted_currencies:
             accepted_currencies = [default_ccy, *accepted_currencies]
-        p_col1, p_col2 = st.columns(2)
-        with p_col1:
+        b1 = st.columns(4, gap=None)
+        with b1[0]:
             currency = st.selectbox(
                 "Currency",
                 accepted_currencies,
@@ -501,13 +440,15 @@ def render_bullet_loan_ui(
                 else 0,
                 key="bullet_currency",
             )
-            principal_input_choice = st.radio(
-                "What are you entering?",
-                ["Net proceeds", "Principal (total loan amount)"],
-                key="bullet_principal_input",
+        with b1[1]:
+            _bb = st.selectbox(
+                _LABEL_AMOUNT_BASIS,
+                _AMOUNT_BASIS_OPTIONS,
+                key="bullet_amount_basis",
             )
-            input_total_facility = principal_input_choice == "Principal (total loan amount)"
-            loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
+            input_total_facility = _bb == _LABEL_PRINCIPAL_TOTAL
+        with b1[2]:
+            loan_input_label = _LABEL_PRINCIPAL_TOTAL if input_total_facility else _LABEL_NET_PROCEEDS
             loan_required = st.number_input(
                 loan_input_label,
                 min_value=0.0,
@@ -516,6 +457,7 @@ def render_bullet_loan_ui(
                 format="%.2f",
                 key="bullet_principal",
             )
+        with b1[3]:
             loan_term = st.number_input(
                 "Term (Months)",
                 min_value=1,
@@ -524,22 +466,25 @@ def render_bullet_loan_ui(
                 step=1,
                 key="bullet_term",
             )
-        with p_col2:
-            bullet_type = st.radio(
+        b2 = st.columns(4, gap=None)
+        with b2[0]:
+            bullet_type = st.selectbox(
                 "Bullet type",
                 ["Straight bullet (no interim payments)", "Bullet with interest payments"],
-                key="bullet_type",
+                key="bullet_type_sel",
             )
-            disbursement_input = st.date_input("Disbursement date", get_system_date(), key="bullet_disb")
+        with b2[1]:
+            disbursement_input = st.date_input(_LABEL_DISBURSEMENT_DATE, get_system_date(), key="bullet_disb")
             disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
 
         dr = cfg.get("default_rates", {}).get("bullet_loan", {})
         rate_label = "Interest rate (% per annum)" if glob.get("rate_basis") == "Per annum" else "Interest rate (% per month)"
-        f_col1, f_col2 = st.columns(2)
-        with f_col1:
+        b3 = st.columns(4, gap=None)
+        with b3[0]:
             rate_pct = st.number_input(rate_label, min_value=0.0, max_value=100.0, value=float(dr.get("interest_pct", 7.0)), step=0.1, key="bullet_rate")
+        with b3[1]:
             drawdown_fee_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="bullet_drawdown") / 100.0
-        with f_col2:
+        with b3[2]:
             arrangement_fee_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct", 2.5)), step=0.1, key="bullet_arrangement") / 100.0
         total_fee = drawdown_fee_pct + arrangement_fee_pct
         if rate_pct <= 0:
@@ -553,17 +498,18 @@ def render_bullet_loan_ui(
         first_repayment_date = None
         use_anniversary = True
         if "with interest" in bullet_type:
-            t_col1, t_col2 = st.columns(2)
-            with t_col1:
+            b4 = st.columns(4, gap=None)
+            with b4[0]:
                 default_first_rep = add_months(disbursement_date, 1).date()
                 first_rep_input = st.date_input("First Repayment Date", default_first_rep, key="bullet_first_rep")
                 first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
-            with t_col2:
-                use_anniversary = st.radio(
+            with b4[1]:
+                _bt = st.selectbox(
                     "Interest payments on",
                     ["Anniversary date (same day each month)", "Last day of each month"],
-                    key="bullet_timing",
-                ).startswith("Anniversary")
+                    key="bullet_timing_sel",
+                )
+                use_anniversary = _bt.startswith("Anniversary")
             if not use_anniversary and not is_last_day_of_month(first_repayment_date):
                 last_day = days_in_month(first_repayment_date.year, first_repayment_date.month)
                 example = datetime(first_repayment_date.year, first_repayment_date.month, last_day).strftime("%d-%b-%Y")
@@ -579,51 +525,40 @@ def render_bullet_loan_ui(
             glob.get("rate_basis", "Per month"), flat_rate,
         )
         details["currency"] = currency
-
-        # Display
-        st.markdown(
-            "<div style='background-color: #16A34A; color: white; padding: 8px 12px; "
-            "font-weight: bold; font-size: 1.375rem;'>Bullet Loan Calculator (Actual/360)</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        calc_css = """
-        <style>
-        .calc-desc { font-size: 1.0625rem; color: #64748B; margin-top: 2px; margin-bottom: 8px; }
-        .calc-value-red { color: #DC2626; font-weight: bold; }
-        </style>
-        """
-        st.markdown(calc_css, unsafe_allow_html=True)
-
         net_proceeds_to_display = float(details.get("disbursed_amount", loan_required) or 0.0)
-        st.markdown(f"**a. Net proceeds:** {net_proceeds_to_display:,.2f} US Dollars")
-        st.markdown(f"**b. Interest Rate (annual, Actual/360):** {details['annual_rate'] * 100:.2f}%")
-        st.markdown("<p class='calc-desc'>Interest on actual days / 360 basis</p>", unsafe_allow_html=True)
-        st.markdown(f"**c. Drawdown fee (%):** {drawdown_fee_pct * 100:.2f}% | **Arrangement fee (%):** {arrangement_fee_pct * 100:.2f}%")
-        st.markdown(f"<p class='calc-desc'>Total {total_fee * 100:.2f}% once-off on total facility</p>", unsafe_allow_html=True)
-        st.markdown(f"**d. Principal (total loan amount):** {details['principal']:,.2f} US Dollars")
-        st.markdown(
-            f"<span class='calc-value-red'><strong>e. Total payment at maturity:</strong> US${details['total_payment']:,.2f}</span>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"**f. Disbursement Date:** {disbursement_date.strftime('%d-%b-%Y')}")
-        st.markdown(f"**g. Term (months):** {loan_term}")
-        st.markdown(f"**h. End date:** {details['end_date'].strftime('%d-%b-%Y')}")
-        if details.get("first_repayment_date") is not None:
-            st.markdown(f"**i. First interest payment:** {details['first_repayment_date'].strftime('%d-%b-%Y')}")
 
-        with st.expander("Repayment schedule and downloads", expanded=False):
-            st.dataframe(format_schedule_df(df_schedule), width="stretch", hide_index=True, height=240)
-            schedule_export_downloads(df_schedule, file_stem="bullet_loan_schedule", key_prefix="dl_sched_bullet")
+        _render_calc_schedule_table(format_schedule_df, df_schedule)
 
         loan_record = {**details, "loan_type": "bullet_loan", "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
         for k in ("disbursement_date", "end_date", "first_repayment_date"):
             if k in loan_record and loan_record[k] is not None and hasattr(loan_record[k], "isoformat"):
                 loan_record[k] = loan_record[k].isoformat()
 
-        with st.expander("Save to system", expanded=False):
-            if st.button("Save Bullet Loan Record to System", type="primary", key="bullet_save"):
+        inject_tertiary_hyperlink_css_once()
+        _csv_b, _xlsx_b = _schedule_export_bytes_pair(df_schedule)
+        _ac1, _ac2, _ac3, _ = st.columns([1, 1, 1, 4], gap=None, vertical_alignment="center")
+        with _ac1:
+            st.download_button(
+                "Download CSV",
+                data=_csv_b,
+                file_name="bullet_loan_schedule.csv",
+                mime="text/csv",
+                key="dl_sched_bullet_csv",
+                type="tertiary",
+                help="UTF-8 with BOM; amounts rounded to 2dp for readability.",
+            )
+        with _ac2:
+            st.download_button(
+                "Download Excel",
+                data=_xlsx_b,
+                file_name="bullet_loan_schedule.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_sched_bullet_xlsx",
+                type="tertiary",
+                help="Native Excel numbers (.xlsx); no text warnings.",
+            )
+        with _ac3:
+            if st.button("Save record to DB", type="tertiary", key="bullet_save"):
                 st.success(f"Bullet loan for ${net_proceeds_to_display:,.2f} has been prepared for database sync.")
                 with st.expander("Preview record (for DB insertion)"):
                     st.json(loan_record)
@@ -637,7 +572,6 @@ def render_customised_repayments_ui(
     get_system_config,
     get_system_date,
     format_schedule_df,
-    schedule_export_downloads,
     money_df_column_config,
     schedule_editor_disabled_amounts,
     first_repayment_from_customised_table,
@@ -657,8 +591,8 @@ def render_customised_repayments_ui(
         )
         if default_ccy not in accepted_currencies:
             accepted_currencies = [default_ccy, *accepted_currencies]
-        p_col1, p_col2 = st.columns(2)
-        with p_col1:
+        c1 = st.columns(4, gap=None)
+        with c1[0]:
             currency = st.selectbox(
                 "Currency",
                 accepted_currencies,
@@ -667,13 +601,15 @@ def render_customised_repayments_ui(
                 else 0,
                 key="cust_currency",
             )
-            principal_input_choice = st.radio(
-                "What are you entering?",
-                ["Net proceeds", "Principal (total loan amount)"],
-                key="cust_principal_input",
+        with c1[1]:
+            _cb = st.selectbox(
+                _LABEL_AMOUNT_BASIS,
+                _AMOUNT_BASIS_OPTIONS,
+                key="cust_amount_basis",
             )
-            input_total_facility = principal_input_choice == "Principal (total loan amount)"
-            loan_input_label = "Principal (total loan amount)" if input_total_facility else "Net proceeds"
+            input_total_facility = _cb == _LABEL_PRINCIPAL_TOTAL
+        with c1[2]:
+            loan_input_label = _LABEL_PRINCIPAL_TOTAL if input_total_facility else _LABEL_NET_PROCEEDS
             loan_required = st.number_input(
                 loan_input_label,
                 min_value=0.0,
@@ -682,6 +618,7 @@ def render_customised_repayments_ui(
                 format="%.2f",
                 key="cust_principal",
             )
+        with c1[3]:
             loan_term = st.number_input(
                 "Term (Months)",
                 min_value=1,
@@ -690,30 +627,36 @@ def render_customised_repayments_ui(
                 step=1,
                 key="cust_term",
             )
-        with p_col2:
-            disbursement_input = st.date_input("Disbursement date", get_system_date(), key="cust_start")
+        c2 = st.columns(4, gap=None)
+        with c2[0]:
+            disbursement_input = st.date_input(_LABEL_DISBURSEMENT_DATE, get_system_date(), key="cust_start")
             disbursement_date = datetime.combine(disbursement_input, datetime.min.time())
+        with c2[1]:
             irregular_calc = st.checkbox("Irregular", value=False, key="cust_irregular", help="Allow editing dates and adding rows; schedule recomputes from table.")
-            use_anniversary = st.radio(
-                "Repayments on",
+        with c2[2]:
+            _cr = st.selectbox(
+                _LABEL_REPAYMENTS_ON,
                 ["Anniversary date (same day each month)", "Last day of each month"],
-                key="cust_timing",
-            ).startswith("Anniversary")
+                key="cust_repay_on",
+            )
+            use_anniversary = _cr.startswith("Anniversary")
         default_first_rep = add_months(disbursement_date, 1).date()
         if not use_anniversary:
             default_first_rep = default_first_rep.replace(day=days_in_month(default_first_rep.year, default_first_rep.month))
         existing_cust = st.session_state.get("customised_repayments_df")
         first_rep_calc = first_repayment_from_customised_table(existing_cust) if existing_cust is not None and len(existing_cust) > 1 else None
         first_rep_display_calc = (first_rep_calc.date() if first_rep_calc else default_first_rep)
-        st.date_input("First repayment date (from table)", first_rep_display_calc, key="cust_first_rep", disabled=True, help="From first row with non-zero payment.")
+        with c2[3]:
+            st.date_input("First repayment (from table)", first_rep_display_calc, key="cust_first_rep", disabled=True, help="From first row with non-zero payment.")
         first_repayment_date = datetime.combine(first_rep_display_calc, datetime.min.time())
         dr = cfg.get("default_rates", {}).get("customised_repayments", {})
         rate_label = "Interest rate (% per annum)" if glob.get("rate_basis") == "Per annum" else "Interest rate (% per month)"
-        f_col1, f_col2 = st.columns(2)
-        with f_col1:
+        c3 = st.columns(4, gap=None)
+        with c3[0]:
             rate_pct = st.number_input(rate_label, 0.0, 100.0, float(dr.get("interest_pct", 7.0)), step=0.1, key="cust_rate")
+        with c3[1]:
             drawdown_fee_pct = st.number_input("Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct", 2.5)), step=0.1, key="cust_drawdown") / 100.0
-        with f_col2:
+        with c3[2]:
             arrangement_fee_pct = st.number_input("Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct", 2.5)), step=0.1, key="cust_arrangement") / 100.0
         total_fee = drawdown_fee_pct + arrangement_fee_pct
         if total_fee < 0:
@@ -741,10 +684,7 @@ def render_customised_repayments_ui(
         df = recompute_customised_from_payments(df, total_facility, schedule_dates, annual_rate, flat_rate, disbursement_date)
         st.session_state[session_key] = df
 
-        st.markdown(
-            "<div style='background-color: #16A34A; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.375rem;'>Customised Repayments (Actual/360)</div>",
-            unsafe_allow_html=True,
-        )
+        st.subheader("Repayment schedule")
         if irregular_calc:
             if st.button("Add row", key="cust_add_row"):
                 last_df = st.session_state[session_key]
@@ -764,30 +704,29 @@ def render_customised_repayments_ui(
         else:
             st.caption("Edit the **Payment** column; interest and balances update automatically. Save only when the loan is fully cleared (Total Outstanding = $0).")
         date_editable_calc = irregular_calc
-        with st.expander("Repayment editor and schedule", expanded=False):
-            edited = st.data_editor(
+        edited = st.data_editor(
+            df,
+            column_config=money_df_column_config(
                 df,
-                column_config=money_df_column_config(
-                    df,
-                    overrides={
-                        "Period": st.column_config.NumberColumn(disabled=True),
-                        "Date": st.column_config.TextColumn(
-                            disabled=not date_editable_calc,
-                            help="Format: DD-Mon-YYYY" if date_editable_calc else None,
-                        ),
-                    },
-                    column_disabled=schedule_editor_disabled_amounts,
-                ),
-                width="stretch",
-                hide_index=True,
-                key="cust_editor",
-                height=260,
-            )
-            if not edited.equals(df):
-                schedule_dates_edit = parse_schedule_dates_from_table(edited, start_date=disbursement_date)
-                df_updated = recompute_customised_from_payments(edited, total_facility, schedule_dates_edit, annual_rate, flat_rate, disbursement_date)
-                st.session_state[session_key] = df_updated
-                st.rerun()
+                overrides={
+                    "Period": st.column_config.NumberColumn(disabled=True),
+                    "Date": st.column_config.TextColumn(
+                        disabled=not date_editable_calc,
+                        help="Format: DD-Mon-YYYY" if date_editable_calc else None,
+                    ),
+                },
+                column_disabled=schedule_editor_disabled_amounts,
+            ),
+            width="stretch",
+            hide_index=True,
+            key="cust_editor",
+            height=320,
+        )
+        if not edited.equals(df):
+            schedule_dates_edit = parse_schedule_dates_from_table(edited, start_date=disbursement_date)
+            df_updated = recompute_customised_from_payments(edited, total_facility, schedule_dates_edit, annual_rate, flat_rate, disbursement_date)
+            st.session_state[session_key] = df_updated
+            st.rerun()
 
         final_total_outstanding = float(df.at[len(df) - 1, "Total Outstanding"]) if len(df) > 1 and "Total Outstanding" in df.columns else total_facility
         if abs(final_total_outstanding) < 0.01:
@@ -796,8 +735,31 @@ def render_customised_repayments_ui(
             st.warning(f"Total outstanding at end: **${final_total_outstanding:,.2f}**. Adjust payments so Total Outstanding is $0 to save.")
 
         can_save = abs(final_total_outstanding) < 0.01
-        with st.expander("Save to system", expanded=False):
-            if st.button("Save Customised Repayments to System", type="primary", key="cust_save", disabled=not can_save):
+        inject_tertiary_hyperlink_css_once()
+        _csv_b, _xlsx_b = _schedule_export_bytes_pair(df)
+        _ac1, _ac2, _ac3, _ = st.columns([1, 1, 1, 4], gap=None, vertical_alignment="center")
+        with _ac1:
+            st.download_button(
+                "Download CSV",
+                data=_csv_b,
+                file_name="customised_loan_schedule.csv",
+                mime="text/csv",
+                key="dl_sched_cust_csv",
+                type="tertiary",
+                help="UTF-8 with BOM; amounts rounded to 2dp for readability.",
+            )
+        with _ac2:
+            st.download_button(
+                "Download Excel",
+                data=_xlsx_b,
+                file_name="customised_loan_schedule.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_sched_cust_xlsx",
+                type="tertiary",
+                help="Native Excel numbers (.xlsx); no text warnings.",
+            )
+        with _ac3:
+            if st.button("Save record to DB", type="tertiary", key="cust_save", disabled=not can_save):
                 if can_save:
                     st.success(f"Customised loan for ${loan_required:,.2f} has been prepared for database sync.")
                     with st.expander("Preview record (for DB insertion)"):

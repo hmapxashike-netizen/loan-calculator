@@ -41,7 +41,7 @@ from core.config_manager import (
 )
 from utils.formatters import parse_display_substrings_csv as _parse_display_substrings_csv
 from utils.rates import pct_to_monthly as _pct_to_monthly
-from ui.components import render_green_page_title
+from ui.components import inject_tertiary_hyperlink_css_once, render_green_page_title
 from ui.system_configurations import render_system_configurations_ui
 
 try:
@@ -210,24 +210,27 @@ def _schedule_export_downloads(df: pd.DataFrame, *, file_stem: str, key_prefix: 
     """
     if df is None or getattr(df, "empty", True):
         return
-    c1, c2 = st.columns(2)
+    inject_tertiary_hyperlink_css_once()
+    c1, c2, _c_sp = st.columns([1, 1, 2], gap="small")
     with c1:
         st.download_button(
-            label="Download CSV (2 decimals)",
+            label="Download CSV",
             data=schedule_dataframe_to_csv_bytes(df, amount_decimals=2),
             file_name=f"{file_stem}.csv",
             mime="text/csv",
             key=f"{key_prefix}_csv",
+            type="tertiary",
             help="UTF-8 with BOM; amounts rounded to 2dp for readability.",
         )
     with c2:
         st.download_button(
-            label="Download Excel (.xlsx)",
+            label="Download Excel",
             data=schedule_dataframe_to_excel_bytes(df, amount_decimals=2),
             file_name=f"{file_stem}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"{key_prefix}_xlsx",
-            help="Native Excel numbers (no text warnings).",
+            type="tertiary",
+            help="Native Excel numbers (.xlsx); no text warnings.",
         )
 
 
@@ -584,7 +587,6 @@ def consumer_loan_ui():
         get_global_loan_settings=_get_global_loan_settings,
         compute_consumer_schedule=compute_consumer_schedule,
         format_schedule_df=_format_schedule_df,
-        schedule_export_downloads=_schedule_export_downloads,
     )
 
 def term_loan_ui():
@@ -594,13 +596,8 @@ def term_loan_ui():
         get_global_loan_settings=_get_global_loan_settings,
         get_system_config=_get_system_config,
         get_system_date=_get_system_date,
-        loan_management_available=_loan_management_available,
-        list_products=list_products,
-        get_product_config_from_db=get_product_config_from_db,
-        get_product_rate_basis=_get_product_rate_basis,
         compute_term_schedule=compute_term_schedule,
         format_schedule_df=_format_schedule_df,
-        schedule_export_downloads=_schedule_export_downloads,
     )
 
 def bullet_loan_ui():
@@ -612,7 +609,6 @@ def bullet_loan_ui():
         get_system_date=_get_system_date,
         compute_bullet_schedule=compute_bullet_schedule,
         format_schedule_df=_format_schedule_df,
-        schedule_export_downloads=_schedule_export_downloads,
     )
 
 def customised_repayments_ui():
@@ -623,7 +619,6 @@ def customised_repayments_ui():
         get_system_config=_get_system_config,
         get_system_date=_get_system_date,
         format_schedule_df=_format_schedule_df,
-        schedule_export_downloads=_schedule_export_downloads,
         money_df_column_config=_money_df_column_config,
         schedule_editor_disabled_amounts=_SCHEDULE_EDITOR_DISABLED_AMOUNTS,
         first_repayment_from_customised_table=_first_repayment_from_customised_table,
@@ -729,10 +724,11 @@ def compute_term_schedule(
     annual_rate = (rate_pct / 100.0) * 12.0 if rate_basis == "Per month" else (rate_pct / 100.0)
     schedule_dates = repayment_dates(disbursement_date, first_repayment_date, int(loan_term), use_anniversary)
     grace_key = "none"
-    if "Principal moratorium" in grace_type:
-        grace_key = "principal"
-    elif "Principal and interest" in grace_type:
+    _gt = (grace_type or "").lower()
+    if "principal and interest" in _gt:
         grace_key = "principal_and_interest"
+    elif "principal" in _gt and "moratorium" in _gt:
+        grace_key = "principal"
     df_schedule, installment = get_term_loan_amortization_schedule(
         total_facility, annual_rate, disbursement_date, schedule_dates, grace_key, moratorium_months, flat_rate=flat_rate
     )
@@ -1040,6 +1036,7 @@ def document_management_ui():
 def main():
     # Stage 5: ensure core session state exists early.
     ensure_core_session_state()
+    inject_tertiary_hyperlink_css_once()
     _nav_sections = get_loan_app_sections()
     if not _nav_sections:
         st.error("Navigation is not configured (no sections).")
@@ -1091,57 +1088,147 @@ def render_loan_app_section(nav: str) -> None:
         render_portfolio_reports_ui()
     elif nav == "Loan management":
         render_green_page_title("Loan Management")
-        pending_approval_count = 0
-        try:
-            pending_approval_count = len(
-                list_loan_approval_drafts(status="PENDING", limit=10000) or []
-            )
-        except Exception:
-            pending_approval_count = 0
-        st.caption(
-            f"**{pending_approval_count}** loan draft(s) awaiting approval. "
-            "Use the section control below; your choice is kept after actions such as **Send back for rework**."
+        # Emit every run: Streamlit replaces the document each rerun; gating on session state
+        # removed the <style> block after the first button click/navigation.
+        st.markdown(
+            """
+<style>
+/* Loan Management — blue segmented bar (high specificity so Loan Capture / fcapture-scope CSS cannot override). */
+.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) {
+  background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%) !important;
+  border-radius: 10px !important;
+  padding: 4px !important;
+  gap: 0 !important;
+  margin: 0.12rem 0 0.9rem 0 !important;
+  box-shadow: 0 2px 10px rgba(29, 78, 216, 0.22) !important;
+  border: 1px solid #1e40af !important;
+  align-items: stretch !important;
+}
+.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) > div[data-testid="column"] {
+  border-right: 1px solid rgba(255, 255, 255, 0.22) !important;
+}
+.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) > div[data-testid="column"]:last-child {
+  border-right: none !important;
+}
+.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) button {
+  border-radius: 7px !important;
+  font-weight: 600 !important;
+  min-height: 2.6rem !important;
+}
+.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) button[kind="secondary"] {
+  background: transparent !important;
+  color: #f1f5f9 !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) button[kind="secondary"]:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+  color: #ffffff !important;
+}
+.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) button[kind="primary"] {
+  background: #f8fafc !important;
+  color: #1e3a8a !important;
+  border: none !important;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12) !important;
+}
+.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) button[kind="primary"]:hover {
+  background: #ffffff !important;
+  color: #172554 !important;
+}
+.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) [data-testid="stMarkdownContainer"]:has(.farnda-lm-segbar-root) {
+  margin: 0 !important;
+  padding: 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  line-height: 0 !important;
+  overflow: hidden !important;
+}
+</style>
+            """,
+            unsafe_allow_html=True,
         )
         _lm_sections = [
-            "Loan capture",
-            "View schedule",
-            "Loan calculators",
-            "Update loans",
-            "Interest in suspense",
-            "Approve loans",
+            "Loan Capture",
+            "View Schedule",
+            "Loan Calculators",
+            "Update Loans",
+            "Interest In Suspense",
+            "Approve Loans",
         ]
-        st.session_state.setdefault("loan_mgmt_subnav", "Loan capture")
+        _lm_legacy = {
+            "Loan capture": "Loan Capture",
+            "View schedule": "View Schedule",
+            "Loan calculators": "Loan Calculators",
+            "Update loans": "Update Loans",
+            "Interest in suspense": "Interest In Suspense",
+            "Approve loans": "Approve Loans",
+        }
+        _cur_nav = st.session_state.get("loan_mgmt_subnav")
+        if _cur_nav in _lm_legacy:
+            st.session_state["loan_mgmt_subnav"] = _lm_legacy[_cur_nav]
+        st.session_state.setdefault("loan_mgmt_subnav", "Loan Capture")
         if st.session_state["loan_mgmt_subnav"] not in _lm_sections:
-            st.session_state["loan_mgmt_subnav"] = "Loan capture"
-        _lm_idx = _lm_sections.index(st.session_state["loan_mgmt_subnav"])
-        _lm_pick = st.radio(
-            "Loan management section",
-            _lm_sections,
-            index=_lm_idx,
-            horizontal=True,
-            key="loan_mgmt_subnav",
-            label_visibility="collapsed",
-        )
-        if _lm_pick == "Loan capture":
+            st.session_state["loan_mgmt_subnav"] = "Loan Capture"
+        _nav_cols = st.columns(len(_lm_sections), gap=None, vertical_alignment="center")
+        for i, sec in enumerate(_lm_sections):
+            with _nav_cols[i]:
+                _is_sel = st.session_state["loan_mgmt_subnav"] == sec
+                if st.button(
+                    sec,
+                    key=f"loan_mgmt_subnav_{i}",
+                    use_container_width=True,
+                    type="primary" if _is_sel else "secondary",
+                ):
+                    if st.session_state["loan_mgmt_subnav"] != sec:
+                        st.session_state["loan_mgmt_subnav"] = sec
+                        st.rerun()
+                # Marker after button so every segment top-aligns; :has still matches the row.
+                st.markdown(
+                    '<span class="farnda-lm-segbar-root" aria-hidden="true" style="display:none"></span>',
+                    unsafe_allow_html=True,
+                )
+        _lm_pick = st.session_state["loan_mgmt_subnav"]
+        if _lm_pick == "Loan Capture":
             capture_loan_ui()
-        elif _lm_pick == "View schedule":
+        elif _lm_pick == "View Schedule":
             view_schedule_ui()
-        elif _lm_pick == "Loan calculators":
-            st.caption("All calculators are available on one page. Open any section below.")
-            col_left, col_right = st.columns(2)
-            with col_left:
-                with st.expander("Consumer Loan Calculator", expanded=True):
-                    consumer_loan_ui()
-                with st.expander("Bullet Loan Calculator", expanded=False):
-                    bullet_loan_ui()
-            with col_right:
-                with st.expander("Term Loan Calculator", expanded=True):
-                    term_loan_ui()
-                with st.expander("Customised Repayments Calculator", expanded=False):
-                    customised_repayments_ui()
-        elif _lm_pick == "Update loans":
+        elif _lm_pick == "Loan Calculators":
+            _calc_types = [
+                "Consumer Loan",
+                "Term Loan",
+                "Bullet Loan",
+                "Customised Repayments",
+            ]
+            st.session_state.setdefault("loan_mgmt_calc_type", "Consumer Loan")
+            if st.session_state.get("loan_mgmt_calc_type") not in _calc_types:
+                st.session_state["loan_mgmt_calc_type"] = "Consumer Loan"
+            _lt_lab, _lt_dd, _lt_sp = st.columns([1, 6, 5], gap="small")
+            with _lt_lab:
+                st.markdown(
+                    '<p style="margin:0;padding-top:0.5rem;font-weight:600;">Loan Type</p>',
+                    unsafe_allow_html=True,
+                )
+            with _lt_dd:
+                st.selectbox(
+                    "Loan Type",
+                    _calc_types,
+                    key="loan_mgmt_calc_type",
+                    label_visibility="collapsed",
+                )
+            with _lt_sp:
+                st.empty()
+            _ct = st.session_state["loan_mgmt_calc_type"]
+            if _ct == "Consumer Loan":
+                consumer_loan_ui()
+            elif _ct == "Term Loan":
+                term_loan_ui()
+            elif _ct == "Bullet Loan":
+                bullet_loan_ui()
+            else:
+                customised_repayments_ui()
+        elif _lm_pick == "Update Loans":
             update_loans_ui()
-        elif _lm_pick == "Interest in suspense":
+        elif _lm_pick == "Interest In Suspense":
             from interest_suspense_ui import render_suspense_ui
 
             render_suspense_ui()

@@ -1,12 +1,20 @@
-import streamlit as st
-import pandas as pd
 import psycopg2
 import psycopg2.extras
+import pandas as pd
+import streamlit as st
+
 from config import get_database_url
+from display_formatting import format_display_currency
+
+
+def _format_loan_status(status: object) -> str:
+    if status is None or str(status).strip() == "":
+        return "—"
+    return str(status).replace("_", " ").strip().title()
+
 
 def render_suspense_ui():
     st.header("Interest in Suspense Management")
-    st.markdown("Manually flag or unflag loans for Interest in Suspense (Non-Accrual Status).")
     
     conn = psycopg2.connect(get_database_url(), cursor_factory=psycopg2.extras.RealDictCursor)
     try:
@@ -38,17 +46,55 @@ def render_suspense_ui():
                 options.append(label)
                 loan_map[label] = row
             
-            selected = st.selectbox("Search and select a loan", options)
-            
+            _s_lab, _s_dd, _s_sp = st.columns([2, 6, 4], gap="small", vertical_alignment="center")
+            with _s_lab:
+                st.markdown(
+                    '<p style="margin:0;padding-top:0.45rem;font-weight:600;color:#31333F;">Search and select a loan</p>',
+                    unsafe_allow_html=True,
+                )
+            with _s_dd:
+                selected = st.selectbox(
+                    "Search and select a loan",
+                    options,
+                    label_visibility="collapsed",
+                    key="iis_loan_pick",
+                )
+            with _s_sp:
+                st.empty()
+
             if selected:
                 loan = loan_map[selected]
-                st.subheader(f"Loan ID: {loan['id']}")
-                st.write(f"**Customer ID:** {loan['customer_id']}")
-                st.write(f"**Principal:** ${loan['principal']:,.2f}")
-                st.write(f"**Current Status:** {loan['status']}")
-                st.write(f"**Interest in Suspense Flag:** {'YES' if loan['interest_in_suspense'] else 'NO'}")
-                
-                new_flag = st.radio("Mark Interest in Suspense?", [True, False], index=0 if loan['interest_in_suspense'] else 1)
+                summary_df = pd.DataFrame(
+                    [
+                        {
+                            "Loan ID": str(int(loan["id"])),
+                            "Customer ID": str(int(loan["customer_id"])),
+                            "Principal": format_display_currency(loan["principal"]),
+                            "Current Status": _format_loan_status(loan.get("status")),
+                            "Interest in Suspense Flag": "YES"
+                            if loan["interest_in_suspense"]
+                            else "NO",
+                        }
+                    ]
+                )
+                _cn = [str(c) for c in summary_df.columns]
+                _cc = {_cn[0]: {"alignment": "left"}}
+                for _c in _cn[1:]:
+                    _cc[_c] = {"alignment": "center"}
+                st.dataframe(
+                    summary_df,
+                    width="stretch",
+                    hide_index=True,
+                    height=88,
+                    column_config=_cc,
+                )
+
+                new_flag = st.radio(
+                    "Mark Interest In Suspense?",
+                    [True, False],
+                    index=0 if loan["interest_in_suspense"] else 1,
+                    format_func=lambda x: "YES" if x else "NO",
+                )
                 
                 if new_flag != loan['interest_in_suspense']:
                     if st.button("Update Flag"):

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import base64
-from datetime import datetime
+from datetime import date, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 import importlib.util
 
@@ -12,6 +13,7 @@ from middleware import get_current_user, clear_current_user, require_login
 from auth.ui import auth_page
 from dal import get_conn, UserRepository, SecurityAuditLogRepository
 from auth.service import AuthService
+from ui.components import inject_tertiary_hyperlink_css_once
 
 
 def _load_loan_ui_module():
@@ -30,6 +32,100 @@ def _load_loan_ui_module():
 
 
 loan_app = _load_loan_ui_module()
+
+
+def _dataframe_first_col_left_config(df: pd.DataFrame) -> dict | None:
+    """Streamlit dataframe: left-align first column only (headers follow grid defaults)."""
+    if df.shape[1] < 1:
+        return None
+    return {str(df.columns[0]): {"alignment": "left"}}
+
+
+def _audit_log_ts_cell(v: object) -> str:
+    """String for audit ``created_at`` (matches Agents / View & Manage table timestamps)."""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (ValueError, TypeError):
+        pass
+    if hasattr(v, "strftime"):
+        try:
+            return v.strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, OSError):
+            pass
+    s = str(v).strip()
+    return s[:19] if len(s) >= 19 else s
+
+
+def _audit_log_id_cell(v: object) -> str:
+    """String audit row id (numeric display like Agents table ID column)."""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (ValueError, TypeError):
+        pass
+    try:
+        return str(int(v))
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _recent_login_audit_pdf_bytes(df_display: pd.DataFrame, *, title: str = "Recent login activity") -> bytes | None:
+    """PDF table export for audit login grid (landscape; truncates long agent strings)."""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import landscape, letter
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    except ImportError:
+        return None
+    if df_display.empty:
+        return None
+    df_pdf = df_display.fillna("").astype(str).copy()
+    ua_col = next((c for c in df_pdf.columns if str(c).strip().lower() == "user agent"), None)
+    if ua_col:
+        df_pdf[ua_col] = df_pdf[ua_col].str.slice(0, 140)
+    buf = BytesIO()
+    page = landscape(letter)
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=page,
+        rightMargin=36,
+        leftMargin=36,
+        topMargin=42,
+        bottomMargin=42,
+    )
+    styles = getSampleStyleSheet()
+    story = [Paragraph(title, styles["Title"]), Spacer(1, 14)]
+    table_data = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
+    ncols = max(len(df_pdf.columns), 1)
+    avail_w = page[0] - 72
+    col_w = avail_w / ncols
+    t = Table(table_data, colWidths=[col_w] * ncols, repeatRows=1)
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                ("FONTSIZE", (0, 1), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+                ("TOPPADDING", (0, 0), (-1, 0), 6),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ]
+        )
+    )
+    story.append(t)
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 def render_footer() -> None:
@@ -118,6 +214,7 @@ def admin_home():
     tab_users, tab_audit = st.tabs(["User Management", "Security Audit Log"])
 
     with tab_users:
+        inject_tertiary_hyperlink_css_once()
         if msg := st.session_state.pop("admin_ok_msg", None):
             st.success(msg)
         if msg := st.session_state.pop("admin_info_msg", None):
@@ -182,20 +279,32 @@ def admin_home():
                     for u in users
                 ]
             )
-            st.dataframe(df.drop(columns=["password_hash"], errors="ignore"), width="stretch")
+            df_users = df.drop(columns=["password_hash"], errors="ignore")
+            st.dataframe(
+                df_users,
+                width="stretch",
+                hide_index=True,
+                column_config=_dataframe_first_col_left_config(df_users),
+            )
 
-        open_m, open_c, _ = st.columns([1, 1, 4], gap="small")
+        open_m, open_c, _ = st.columns([1.25, 1.15, 4.5], gap=None, vertical_alignment="center")
         with open_m:
             if st.button(
                 "Manage Selected User",
                 disabled=not users,
                 key="adm_open_manage",
+                type="tertiary",
                 help="Open user update panel",
             ):
                 st.session_state["admin_users_panel"] = "manage"
                 st.rerun()
         with open_c:
-            if st.button("Create New User", key="adm_open_create", help="Open create user panel"):
+            if st.button(
+                "Create New User",
+                key="adm_open_create",
+                type="tertiary",
+                help="Open create user panel",
+            ):
                 st.session_state["admin_users_panel"] = "create"
                 st.rerun()
 
@@ -333,27 +442,123 @@ def admin_home():
 
     with tab_audit:
         st.subheader("Recent login activity")
-        try:
-            conn = get_conn()
-        except Exception as e:
-            st.error(f"Database connection error: {e}")
-            return
+        inject_tertiary_hyperlink_css_once()
+        _to_d = date.today()
+        _from_d = _to_d - timedelta(days=30)
+        _r = st.columns([1.05, 1.05, 0.88, 0.88, 4.2], gap=None, vertical_alignment="center")
+        with _r[0]:
+            d_from = st.date_input(
+                "From",
+                value=_from_d,
+                key="adm_audit_date_from",
+                format="DD/MM/YYYY",
+            )
+        with _r[1]:
+            d_to = st.date_input(
+                "To",
+                value=_to_d,
+                key="adm_audit_date_to",
+                format="DD/MM/YYYY",
+            )
 
-        repo = SecurityAuditLogRepository(conn)
-        try:
-            rows = repo.list_recent(limit=200)
-        except Exception as e:
-            conn.close()
-            st.error(f"Could not load audit log: {e}")
-            return
-
-        conn.close()
-
-        if not rows:
-            st.info("No audit events yet.")
+        rows: list = []
+        _err_audit = None
+        if d_from > d_to:
+            _err_audit = "From date must be on or before To date."
         else:
+            try:
+                conn = get_conn()
+                try:
+                    repo = SecurityAuditLogRepository(conn)
+                    rows = repo.list_between(d_from, d_to, limit=5000)
+                finally:
+                    conn.close()
+            except Exception as e:
+                _err_audit = f"Database error: {e}"
+
+        _stem = f"recent_login_activity_{d_from.isoformat()}_{d_to.isoformat()}"
+        _csv_bytes = b" "
+        _pdf_bytes: bytes | None = None
+        _can_export = not _err_audit and bool(rows)
+        df_show = None
+        header_list: list[str] = []
+
+        if _can_export:
             df = pd.DataFrame(rows)
-            st.dataframe(df, width="stretch")
+            _audit_order = [
+                "id",
+                "created_at",
+                "email_used",
+                "success",
+                "ip_address",
+                "user_agent",
+                "event_type",
+                "user_id",
+            ]
+            cols_show = [c for c in _audit_order if c in df.columns]
+            df_show = df[cols_show].copy()
+            if "id" in df_show.columns:
+                df_show["id"] = df_show["id"].map(_audit_log_id_cell)
+            if "created_at" in df_show.columns:
+                df_show["created_at"] = df_show["created_at"].map(_audit_log_ts_cell)
+            if "success" in df_show.columns:
+                df_show["success"] = df_show["success"].map(
+                    lambda x: "Yes" if x is True else ("No" if x is False else "")
+                )
+            _audit_headers = {
+                "id": "ID",
+                "created_at": "When",
+                "email_used": "Email",
+                "success": "Success",
+                "ip_address": "IP",
+                "user_agent": "User Agent",
+                "event_type": "Event",
+                "user_id": "User ID",
+            }
+            header_list = [_audit_headers[c] for c in cols_show]
+            df_export = df_show.copy()
+            df_export.columns = header_list
+            _csv_buf = BytesIO()
+            df_export.to_csv(_csv_buf, index=False, encoding="utf-8-sig", lineterminator="\n")
+            _csv_bytes = _csv_buf.getvalue()
+            _pdf_bytes = _recent_login_audit_pdf_bytes(df_export, title="Recent login activity")
+
+        with _r[2]:
+            st.download_button(
+                "Download CSV",
+                data=_csv_bytes,
+                file_name=f"{_stem}.csv",
+                mime="text/csv; charset=utf-8",
+                key="adm_audit_login_csv",
+                type="tertiary",
+                disabled=not _can_export,
+                help="UTF-8 with BOM; matches the table for the selected From/To dates.",
+            )
+        with _r[3]:
+            st.download_button(
+                "Download PDF",
+                data=_pdf_bytes if _pdf_bytes else b" ",
+                file_name=f"{_stem}.pdf",
+                mime="application/pdf",
+                key="adm_audit_login_pdf",
+                type="tertiary",
+                disabled=not _can_export or _pdf_bytes is None,
+                help="PDF export requires reportlab." if _pdf_bytes is None else None,
+            )
+
+        if _err_audit:
+            st.error(_err_audit)
+        elif not rows:
+            st.info("No audit events in this date range.")
+        else:
+            _df_audit_display = df_show.copy()
+            _df_audit_display.columns = header_list
+            st.dataframe(
+                _df_audit_display,
+                width="stretch",
+                hide_index=True,
+                column_config=_dataframe_first_col_left_config(_df_audit_display),
+            )
 
 
 def loan_management_app():

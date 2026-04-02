@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from html import escape as html_escape
-
 import pandas as pd
 import streamlit as st
 
 from display_formatting import format_display_amount
+from ui.components import render_centered_html_table
 
 from loans import (
     add_months,
@@ -36,11 +35,6 @@ _CAPTURE_LOAN_DOC_TYPE_NAMES = {
 # Do not revert to tabbed Details/Schedule + separate review step without explicit product sign-off.
 _FCAP_BRAND_GREEN = "#16A34A"
 _FCAP_BRAND_TEAL = "#0F766E"
-# Loan capture: full flow (shown on heading tooltip only).
-_FCAPTURE_FLOW_TOOLTIP = (
-    "1. Capture (details · schedule) · 2. Review & submit — Enter details and build the repayment "
-    "schedule, then choose Use this schedule. Scroll down for review, documents, and actions at the bottom."
-)
 
 
 def _render_capture_loan_documents_staging(
@@ -65,26 +59,24 @@ def _render_capture_loan_documents_staging(
     if not name_to_cat:
         st.info("No matching loan document categories configured.")
         return
-    dcol1, dcol2, dcol3 = st.columns(3)
+    dcol1, dcol2 = st.columns(2)
     with dcol1:
         doc_type = st.selectbox(
-            "Doc type",
+            "Doc Type",
             sorted(name_to_cat.keys()),
             key=f"loan_doc_type{suf}",
         )
         other_label = ""
         if doc_type == "Other":
             other_label = st.text_input(
-                "If Other, describe the document",
+                "If Other, Describe The Document",
                 key=f"loan_doc_other_label{suf}",
             )
     with dcol2:
-        f = st.file_uploader("Choose file", type=["pdf", "png", "jpg", "jpeg"], key=f"loan_doc_file{suf}")
-    with dcol3:
-        notes = st.text_input("Notes (optional)", key=f"loan_doc_notes{suf}")
-    if st.button("Add to list", key=f"loan_doc_add{suf}") and f is not None:
+        f = st.file_uploader("Choose File", type=["pdf", "png", "jpg", "jpeg"], key=f"loan_doc_file{suf}")
+    if st.button("Add To List", type="secondary", key=f"loan_doc_add{suf}") and f is not None:
         cat = name_to_cat[doc_type]
-        label = other_label.strip() if doc_type == "Other" else notes.strip()
+        label = other_label.strip() if doc_type == "Other" else ""
         staged_loan_docs.append(
             {
                 "category_id": cat["id"],
@@ -100,124 +92,106 @@ def _render_capture_loan_documents_staging(
         st.markdown("**Staged documents:**")
         for idx, row in enumerate(staged_loan_docs, start=1):
             cat_name = row.get("category_name") or "Document"
-            st.write(f"{idx}. {row['file'].name} · {cat_name} ({row.get('notes') or 'no notes'})")
+            _lbl = (row.get("notes") or "").strip()
+            _line = f"{idx}. {row['file'].name} · {cat_name}"
+            if _lbl:
+                _line = f"{_line} · {_lbl}"
+            st.write(_line)
 
 
 def _fcapture_inject_css_once() -> None:
-    """Loan capture only: scoped via :has(.fcapture-head). Bump _fcapture_panel_css_v* when CSS changes."""
-    if st.session_state.get("_fcapture_panel_css_v7"):
+    """Loan capture only: scoped via :has(.fcapture-scope). Bump _fcapture_panel_css_v* when CSS changes."""
+    if st.session_state.get("_fcapture_panel_css_v10"):
         return
-    st.session_state["_fcapture_panel_css_v7"] = True
+    st.session_state["_fcapture_panel_css_v10"] = True
     _g = _FCAP_BRAND_GREEN
     _t = _FCAP_BRAND_TEAL
     st.markdown(
         f"""
 <style>
-/* ---- Loan capture: brand + larger type (only when this page renders .fcapture-head) ---- */
-main .block-container:has(.fcapture-head) {{
+/* ---- Loan capture: compact panel (marker .fcapture-scope on page) ---- */
+main .block-container:has(.fcapture-scope) {{
   --fcap-green: {_g};
   --fcap-teal: {_t};
   --fcap-ink: #0a0a0a;
   color: var(--fcap-ink);
-  font-size: 1.5rem;
-  line-height: 1.42;
-  padding-top: 0.85rem !important;
-  padding-bottom: 0.85rem !important;
+  font-size: 1.08rem;
+  line-height: 1.32;
+  padding-top: 0.35rem !important;
+  padding-bottom: 0.45rem !important;
 }}
-main .block-container:has(.fcapture-head) .stMarkdown,
-main .block-container:has(.fcapture-head) label,
-main .block-container:has(.fcapture-head) [data-testid="stWidgetLabel"] {{
+main .block-container:has(.fcapture-scope) h3 {{
+  margin-top: 0.2rem !important;
+  margin-bottom: 0.15rem !important;
+  font-size: 1.25rem !important;
+}}
+main .block-container:has(.fcapture-scope) .stMarkdown,
+main .block-container:has(.fcapture-scope) label,
+main .block-container:has(.fcapture-scope) [data-testid="stWidgetLabel"] {{
   color: var(--fcap-ink) !important;
 }}
-main .block-container:has(.fcapture-head) [data-testid="stCaptionContainer"] {{
-  margin-top: 0.1rem !important;
-  margin-bottom: 0.15rem !important;
+main .block-container:has(.fcapture-scope) [data-testid="stCaptionContainer"] {{
+  margin-top: 0.05rem !important;
+  margin-bottom: 0.08rem !important;
 }}
-main .block-container:has(.fcapture-head) [data-testid="stCaptionContainer"] p {{
-  font-size: 1.275rem !important;
-  color: #1e293b !important;
+main .block-container:has(.fcapture-scope) [data-testid="stCaptionContainer"] p {{
+  font-size: 0.95rem !important;
+  color: #334155 !important;
   margin-bottom: 0 !important;
 }}
-main .block-container:has(.fcapture-head) [data-baseweb="select"] span,
-main .block-container:has(.fcapture-head) [data-baseweb="input"] input {{
-  font-size: 1.05em !important;
+main .block-container:has(.fcapture-scope) [data-baseweb="select"] span,
+main .block-container:has(.fcapture-scope) [data-baseweb="input"] input {{
+  font-size: 0.98em !important;
 }}
-main .block-container:has(.fcapture-head) [data-testid="stDataFrame"] {{
-  font-size: 1.12em !important;
+main .block-container:has(.fcapture-scope) [data-testid="stDataFrame"] {{
+  font-size: 0.95em !important;
 }}
-/* Focus / open: teal ring + slight left nudge so active control is obvious */
-main .block-container:has(.fcapture-head) [data-baseweb="select"]:focus-within {{
-  transform: translateX(-6px);
+main .block-container:has(.fcapture-scope) [data-baseweb="select"]:focus-within {{
+  transform: translateX(-4px);
   transition: transform 0.16s ease, box-shadow 0.16s ease;
-  box-shadow: -3px 0 0 0 var(--fcap-teal);
+  box-shadow: -2px 0 0 0 var(--fcap-teal);
   border-radius: 4px;
 }}
-main .block-container:has(.fcapture-head) .stTextInput input:focus-visible,
-main .block-container:has(.fcapture-head) .stNumberInput input:focus-visible,
-main .block-container:has(.fcapture-head) [data-baseweb="input"] input:focus-visible {{
+main .block-container:has(.fcapture-scope) .stTextInput input:focus-visible,
+main .block-container:has(.fcapture-scope) .stNumberInput input:focus-visible,
+main .block-container:has(.fcapture-scope) [data-baseweb="input"] input:focus-visible {{
   outline: 2px solid var(--fcap-teal) !important;
   outline-offset: 2px;
-  transform: translateX(-4px);
+  transform: translateX(-3px);
   transition: transform 0.16s ease;
 }}
-main .block-container:has(.fcapture-head) [data-baseweb="popover"] {{
+main .block-container:has(.fcapture-scope) [data-baseweb="popover"] {{
   z-index: 900 !important;
-}}
-.fcapture-head {{
-  color: {_g};
-  font-weight: 700;
-  font-size: 1.6875rem;
-  margin: 0 0 0.1rem 0;
-}}
-.fcapture-help-tip {{
-  cursor: help;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.15em;
-  height: 1.15em;
-  margin-left: 0.4rem;
-  font-size: 0.72em;
-  font-weight: 800;
-  line-height: 1;
-  user-select: none;
-  color: #fff;
-  background: {_g};
-  border: 1px solid #15803d;
-  border-radius: 50%;
-  vertical-align: 0.15em;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.12);
-}}
-.fcapture-help-tip:hover {{
-  background: #15803d;
-  border-color: #166534;
-}}
-.fcapture-sec {{
-  color: {_g};
-  font-weight: 700;
-  font-size: 1.7225rem;
-  margin: 0.18rem 0 0.06rem 0;
-  text-transform: uppercase;
-  letter-spacing: 0.045em;
-}}
-.fcapture-rule {{
-  border: 0;
-  border-top: 3px solid {_g};
-  margin: 0.12rem 0 0.2rem 0;
-  border-radius: 1px;
-  opacity: 0.88;
 }}
 .fcapture-soft {{
   border: 0;
   border-top: 1px solid #94a3b8;
-  margin: 0.16rem 0;
+  margin: 0.1rem 0;
 }}
-/* Tighter bordered capture panel */
-main .block-container:has(.fcapture-head) [data-testid="stVerticalBlockBorderWrapper"] {{
-  padding: 0.45rem 0.55rem 0.5rem 0.55rem !important;
+main .block-container:has(.fcapture-scope) [data-testid="stVerticalBlockBorderWrapper"] {{
+  padding: 0.35rem 0.45rem 0.4rem 0.45rem !important;
 }}
-main .block-container:has(.fcapture-head) [data-testid="stVerticalBlock"] > div {{
+main .block-container:has(.fcapture-scope) [data-testid="stVerticalBlock"] > div {{
+  gap: 0.22rem !important;
+}}
+/* Do not restyle Loan Management segmented subnav (same block-container once .fcapture-scope exists). */
+main .block-container:has(.fcapture-scope) [data-testid="stHorizontalBlock"]:not(:has(.farnda-lm-segbar-root)) {{
   gap: 0.35rem !important;
+}}
+/* Draft panel triggers: hyperlink-style tertiary buttons */
+main .block-container:has(.fcapture-scope) button[data-testid="baseButton-tertiary"] {{
+  color: #1d4ed8 !important;
+  font-weight: 600 !important;
+  text-decoration: underline !important;
+  text-underline-offset: 0.12em;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0.05rem 0.25rem 0.15rem 0 !important;
+  min-height: auto !important;
+}}
+main .block-container:has(.fcapture-scope) button[data-testid="baseButton-tertiary"]:hover {{
+  color: #1e40af !important;
 }}
 </style>
         """,
@@ -230,7 +204,7 @@ def _fcapture_clear_session_after_submit() -> None:
     for k in list(st.session_state.keys()):
         if (k.startswith("capture_") or k.startswith("cap_")) and k not in (
             "capture_flash_message",
-            "_fcapture_panel_css_v7",
+            "_fcapture_panel_css_v10",
         ):
             st.session_state.pop(k, None)
     st.session_state["loan_docs_staged"] = []
@@ -382,211 +356,255 @@ def render_capture_loan_ui(
         except Exception as e:
             st.error(f"Could not send draft for approval: {e}")
 
+    def _loan_type_display_map(raw: str) -> str:
+        _m = {
+            "consumer_loan": "Consumer Loan",
+            "term_loan": "Term Loan",
+            "bullet_loan": "Bullet Loan",
+            "customised_repayments": "Customised Repayments",
+        }
+        return _m.get(raw, raw)
+
+    def _apply_rework_draft_from_row(draft: dict) -> None:
+        st.session_state["capture_open_draft_panel"] = None
+        draft_loan_type = str(draft.get("loan_type") or "")
+        display_type = _loan_type_display_map(draft_loan_type)
+        det = draft.get("details_json") or {}
+        sched = draft.get("schedule_json") or []
+        st.session_state["capture_customer_id"] = int(draft.get("customer_id"))
+        st.session_state["capture_loan_type"] = display_type
+        st.session_state["capture_product_code"] = draft.get("product_code")
+        st.session_state["capture_loan_details"] = det
+        st.session_state["capture_loan_schedule_df"] = pd.DataFrame(sched)
+        st.session_state["capture_agent_id"] = det.get("agent_id")
+        st.session_state["capture_relationship_manager_id"] = det.get("relationship_manager_id")
+        st.session_state.pop("capture_disbursement_bank_option_id", None)
+        st.session_state["capture_cash_gl_account_id"] = det.get("cash_gl_account_id")
+        _cs = det.get("collateral_security_subtype_id")
+        if _cs is not None:
+            try:
+                st.session_state["capture_collateral_subtype_pick"] = int(_cs)
+            except (TypeError, ValueError):
+                st.session_state.pop("capture_collateral_subtype_pick", None)
+        else:
+            st.session_state.pop("capture_collateral_subtype_pick", None)
+        st.session_state["capture_collateral_charge"] = float(det.get("collateral_charge_amount") or 0)
+        st.session_state["capture_collateral_valuation"] = float(det.get("collateral_valuation_amount") or 0)
+        _lp_rw = det.get("loan_purpose_id")
+        if _lp_rw is not None and str(_lp_rw).strip() != "":
+            try:
+                st.session_state["capture_loan_purpose_id"] = int(_lp_rw)
+            except (TypeError, ValueError):
+                st.session_state.pop("capture_loan_purpose_id", None)
+        else:
+            st.session_state.pop("capture_loan_purpose_id", None)
+        st.session_state["capture_rework_source_draft_id"] = int(draft.get("id"))
+        st.session_state.pop("capture_stage1_draft_id", None)
+        for _wk in (
+            "cap_customer_sel",
+            "cap_product_sel",
+            "cap_rm_t1",
+            "cap_agent_sel_t0",
+            "cap_cash_gl_sel_t0",
+            "cap_loan_purpose_sel",
+        ):
+            st.session_state.pop(_wk, None)
+        st.session_state["loan_docs_staged"] = []
+        st.session_state["capture_loan_step"] = 0
+        st.session_state["capture_flash_message"] = (
+            f"Loaded rework draft #{draft.get('id')} — edit the form above, then **Send For Approval**."
+        )
+        st.rerun()
+
+    def _apply_staged_draft_from_row(draft_s: dict) -> None:
+        st.session_state["capture_open_draft_panel"] = None
+        draft_loan_type_s = str(draft_s.get("loan_type") or "")
+        display_type_s = _loan_type_display_map(draft_loan_type_s)
+        det_s = draft_s.get("details_json") or {}
+        sched_rows = draft_s.get("schedule_json") or []
+        df_res = pd.DataFrame(sched_rows)
+        has_sched = df_res is not None and not df_res.empty
+        st.session_state["capture_customer_id"] = int(draft_s.get("customer_id"))
+        st.session_state["capture_loan_type"] = display_type_s
+        st.session_state["capture_product_code"] = draft_s.get("product_code")
+        st.session_state["capture_agent_id"] = det_s.get("agent_id")
+        st.session_state["capture_relationship_manager_id"] = det_s.get("relationship_manager_id")
+        st.session_state.pop("capture_disbursement_bank_option_id", None)
+        st.session_state["capture_cash_gl_account_id"] = det_s.get("cash_gl_account_id")
+        _cs_s = det_s.get("collateral_security_subtype_id")
+        if _cs_s is not None:
+            try:
+                st.session_state["capture_collateral_subtype_pick"] = int(_cs_s)
+            except (TypeError, ValueError):
+                st.session_state.pop("capture_collateral_subtype_pick", None)
+        else:
+            st.session_state.pop("capture_collateral_subtype_pick", None)
+        st.session_state["capture_collateral_charge"] = float(det_s.get("collateral_charge_amount") or 0)
+        st.session_state["capture_collateral_valuation"] = float(det_s.get("collateral_valuation_amount") or 0)
+        _lp_st = det_s.get("loan_purpose_id")
+        if _lp_st is not None and str(_lp_st).strip() != "":
+            try:
+                st.session_state["capture_loan_purpose_id"] = int(_lp_st)
+            except (TypeError, ValueError):
+                st.session_state.pop("capture_loan_purpose_id", None)
+        else:
+            st.session_state.pop("capture_loan_purpose_id", None)
+        st.session_state["capture_stage1_draft_id"] = int(draft_s.get("id"))
+        st.session_state.pop("capture_rework_source_draft_id", None)
+        if has_sched:
+            st.session_state["capture_loan_details"] = det_s
+            st.session_state["capture_loan_schedule_df"] = df_res
+            st.session_state["capture_loan_step"] = 0
+            _msg = f"Resumed staged draft #{draft_s.get('id')} — scroll to **Review**, **Documents**, and **Actions**."
+        else:
+            st.session_state.pop("capture_loan_details", None)
+            st.session_state.pop("capture_loan_schedule_df", None)
+            st.session_state["capture_loan_step"] = 0
+            _msg = f"Resumed staged draft #{draft_s.get('id')} — continue from **Details** and **Schedule** above."
+        for _wk in (
+            "cap_customer_sel",
+            "cap_product_sel",
+            "cap_rm_t1",
+            "cap_agent_sel_t0",
+            "cap_cash_gl_sel_t0",
+            "cap_loan_purpose_sel",
+        ):
+            st.session_state.pop(_wk, None)
+        st.session_state["loan_docs_staged"] = []
+        st.session_state["capture_flash_message"] = _msg
+        st.rerun()
+
     flash_msg = st.session_state.pop("capture_flash_message", None)
     if flash_msg:
         st.success(str(flash_msg))
     if st.session_state.pop("capture_require_docs_prompt", False):
-        st.info("Upload supporting loan documents before **Send for approval**.")
+        st.info("Upload supporting loan documents before **Send For Approval**.")
     if st.session_state.get("capture_rework_note"):
         st.warning(str(st.session_state.pop("capture_rework_note")))
     if int(st.session_state.get("capture_loan_step") or 0) in (1, 2):
         st.session_state["capture_loan_step"] = 0
     _fcapture_inject_css_once()
-    _tip_esc = html_escape(_FCAPTURE_FLOW_TOOLTIP, quote=True)
     st.markdown(
-        f'<p class="fcapture-head">Loan capture'
-        f'<span class="fcapture-help-tip" title="{_tip_esc}">?</span></p>',
+        '<span class="fcapture-scope" aria-hidden="true"></span>',
         unsafe_allow_html=True,
     )
-    _col_rework_pop, _col_resume_pop = st.columns(2)
-    with _col_rework_pop:
-        with st.popover("See loans for rework"):
-            srch = st.text_input(
-                "Search rework drafts",
-                placeholder="Draft ID / Customer ID / Product / Loan type",
-                key="cap_rework_search",
+    st.session_state.setdefault("capture_open_draft_panel", None)
+    _open_panel = st.session_state.get("capture_open_draft_panel")
+    _lnk1, _lnk2, _lnk_sp = st.columns([1.15, 1.25, 3])
+    with _lnk1:
+        if st.button(
+            "See Loans for Rework",
+            key="cap_open_rework_panel",
+            type="tertiary",
+        ):
+            st.session_state["capture_open_draft_panel"] = (
+                None if _open_panel == "rework" else "rework"
             )
-            rework_rows = list_loan_approval_drafts(
-                status="REWORK",
-                search=srch.strip() or None,
-                limit=200,
+            st.rerun()
+    with _lnk2:
+        if st.button(
+            "Resume Capture Draft",
+            key="cap_open_staged_panel",
+            type="tertiary",
+        ):
+            st.session_state["capture_open_draft_panel"] = (
+                None if _open_panel == "staged" else "staged"
             )
-            if not rework_rows:
-                st.caption("No drafts currently in rework.")
-            else:
-                rw_df = pd.DataFrame(rework_rows)
-                rw_cols = [c for c in ["id", "customer_id", "loan_type", "product_code", "assigned_approver_id", "submitted_at"] if c in rw_df.columns]
-                st.dataframe(rw_df[rw_cols], width="stretch", hide_index=True, height=160)
-                rw_options = [int(r["id"]) for r in rework_rows]
-                pick_rw = st.selectbox("Select rework draft", rw_options, key="cap_rework_pick")
-                if st.button("Load selected draft", key="cap_rework_load_btn", width="stretch"):
-                    draft = get_loan_approval_draft(int(pick_rw))
-                    if not draft:
-                        st.error(f"Draft #{pick_rw} not found.")
-                    else:
-                        draft_loan_type = str(draft.get("loan_type") or "")
-                        type_map = {
-                            "consumer_loan": "Consumer Loan",
-                            "term_loan": "Term Loan",
-                            "bullet_loan": "Bullet Loan",
-                            "customised_repayments": "Customised Repayments",
-                        }
-                        display_type = type_map.get(draft_loan_type, draft_loan_type)
-                        det = draft.get("details_json") or {}
-                        sched = draft.get("schedule_json") or []
-                        st.session_state["capture_customer_id"] = int(draft.get("customer_id"))
-                        st.session_state["capture_loan_type"] = display_type
-                        st.session_state["capture_product_code"] = draft.get("product_code")
-                        st.session_state["capture_loan_details"] = det
-                        st.session_state["capture_loan_schedule_df"] = pd.DataFrame(sched)
-                        st.session_state["capture_agent_id"] = det.get("agent_id")
-                        st.session_state["capture_relationship_manager_id"] = det.get("relationship_manager_id")
-                        st.session_state.pop("capture_disbursement_bank_option_id", None)
-                        st.session_state["capture_cash_gl_account_id"] = det.get("cash_gl_account_id")
-                        _cs = det.get("collateral_security_subtype_id")
-                        if _cs is not None:
-                            try:
-                                st.session_state["capture_collateral_subtype_pick"] = int(_cs)
-                            except (TypeError, ValueError):
-                                st.session_state.pop("capture_collateral_subtype_pick", None)
-                        else:
-                            st.session_state.pop("capture_collateral_subtype_pick", None)
-                        st.session_state["capture_collateral_charge"] = float(det.get("collateral_charge_amount") or 0)
-                        st.session_state["capture_collateral_valuation"] = float(det.get("collateral_valuation_amount") or 0)
-                        _lp_rw = det.get("loan_purpose_id")
-                        if _lp_rw is not None and str(_lp_rw).strip() != "":
-                            try:
-                                st.session_state["capture_loan_purpose_id"] = int(_lp_rw)
-                            except (TypeError, ValueError):
-                                st.session_state.pop("capture_loan_purpose_id", None)
-                        else:
-                            st.session_state.pop("capture_loan_purpose_id", None)
-                        st.session_state["capture_rework_source_draft_id"] = int(draft.get("id"))
-                        st.session_state.pop("capture_stage1_draft_id", None)
-                        for _wk in (
-                            "cap_customer_sel",
-                            "cap_product_sel",
-                            "cap_rm_t1",
-                            "cap_agent_sel_t0",
-                            "cap_cash_gl_sel_t0",
-                            "cap_loan_purpose_sel",
-                        ):
-                            st.session_state.pop(_wk, None)
-                        st.session_state["loan_docs_staged"] = []
-                        st.session_state["capture_loan_step"] = 0
-                        st.session_state["capture_flash_message"] = (
-                            f"Loaded rework draft #{draft.get('id')} — edit the form above, then **Send for approval**."
-                        )
-                        st.rerun()
+            st.rerun()
 
-    with _col_resume_pop:
-        with st.popover("Resume capture draft"):
-            st.caption("Incomplete captures saved from **Build schedule** with **Save & continue later** (not yet sent for approval).")
-            stg_srch = st.text_input(
-                "Search staged drafts",
-                placeholder="Draft ID / Customer ID / Product",
-                key="cap_staged_search",
-            )
-            staged_rows = list_loan_approval_drafts(
-                status="STAGED",
-                search=stg_srch.strip() or None,
-                limit=200,
-            )
-            if not staged_rows:
-                st.caption("No staged capture drafts.")
-            else:
-                stg_df = pd.DataFrame(staged_rows)
-                stg_cols = [
-                    c
-                    for c in [
-                        "id",
-                        "customer_id",
-                        "loan_type",
-                        "product_code",
-                        "assigned_approver_id",
-                        "submitted_at",
-                    ]
-                    if c in stg_df.columns
+    if st.session_state.get("capture_open_draft_panel") == "rework":
+        st.subheader("See Loans For Rework")
+        srch = st.text_input(
+            "Search Rework Drafts",
+            placeholder="Draft ID / Customer ID / Product / Loan Type",
+            key="cap_rework_search",
+        )
+        rework_rows = list_loan_approval_drafts(
+            status="REWORK",
+            search=srch.strip() or None,
+            limit=200,
+        )
+        if rework_rows:
+            rw_df = pd.DataFrame(rework_rows)
+            rw_cols = [
+                c
+                for c in [
+                    "id",
+                    "customer_id",
+                    "loan_type",
+                    "product_code",
+                    "assigned_approver_id",
+                    "submitted_at",
                 ]
-                st.dataframe(stg_df[stg_cols], width="stretch", hide_index=True, height=140)
-                stg_options = [int(r["id"]) for r in staged_rows]
-                pick_stg = st.selectbox("Select draft", stg_options, key="cap_staged_pick")
-                if st.button("Load staged draft", key="cap_staged_load_btn", width="stretch"):
-                    draft_s = get_loan_approval_draft(int(pick_stg))
-                    if not draft_s:
-                        st.error(f"Draft #{pick_stg} not found.")
+                if c in rw_df.columns
+            ]
+            st.dataframe(
+                rw_df[rw_cols],
+                width="stretch",
+                hide_index=True,
+                height=min(160, 40 + min(len(rework_rows), 12) * 28),
+            )
+            for r in rework_rows:
+                rid = int(r["id"])
+                _rw_lbl = (
+                    f"Load Draft #{rid} · Customer {r.get('customer_id')} · "
+                    f"{r.get('product_code', '—')} · {r.get('loan_type', '—')}"
+                )
+                if st.button(_rw_lbl, key=f"cap_rework_row_{rid}"):
+                    draft = get_loan_approval_draft(rid)
+                    if not draft:
+                        st.error(f"Draft #{rid} not found.")
                     else:
-                        draft_loan_type_s = str(draft_s.get("loan_type") or "")
-                        type_map_s = {
-                            "consumer_loan": "Consumer Loan",
-                            "term_loan": "Term Loan",
-                            "bullet_loan": "Bullet Loan",
-                            "customised_repayments": "Customised Repayments",
-                        }
-                        display_type_s = type_map_s.get(draft_loan_type_s, draft_loan_type_s)
-                        det_s = draft_s.get("details_json") or {}
-                        sched_rows = draft_s.get("schedule_json") or []
-                        df_res = pd.DataFrame(sched_rows)
-                        has_sched = df_res is not None and not df_res.empty
-                        st.session_state["capture_customer_id"] = int(draft_s.get("customer_id"))
-                        st.session_state["capture_loan_type"] = display_type_s
-                        st.session_state["capture_product_code"] = draft_s.get("product_code")
-                        st.session_state["capture_agent_id"] = det_s.get("agent_id")
-                        st.session_state["capture_relationship_manager_id"] = det_s.get("relationship_manager_id")
-                        st.session_state.pop("capture_disbursement_bank_option_id", None)
-                        st.session_state["capture_cash_gl_account_id"] = det_s.get("cash_gl_account_id")
-                        _cs_s = det_s.get("collateral_security_subtype_id")
-                        if _cs_s is not None:
-                            try:
-                                st.session_state["capture_collateral_subtype_pick"] = int(_cs_s)
-                            except (TypeError, ValueError):
-                                st.session_state.pop("capture_collateral_subtype_pick", None)
-                        else:
-                            st.session_state.pop("capture_collateral_subtype_pick", None)
-                        st.session_state["capture_collateral_charge"] = float(det_s.get("collateral_charge_amount") or 0)
-                        st.session_state["capture_collateral_valuation"] = float(det_s.get("collateral_valuation_amount") or 0)
-                        _lp_st = det_s.get("loan_purpose_id")
-                        if _lp_st is not None and str(_lp_st).strip() != "":
-                            try:
-                                st.session_state["capture_loan_purpose_id"] = int(_lp_st)
-                            except (TypeError, ValueError):
-                                st.session_state.pop("capture_loan_purpose_id", None)
-                        else:
-                            st.session_state.pop("capture_loan_purpose_id", None)
-                        st.session_state["capture_stage1_draft_id"] = int(draft_s.get("id"))
-                        st.session_state.pop("capture_rework_source_draft_id", None)
-                        if has_sched:
-                            st.session_state["capture_loan_details"] = det_s
-                            st.session_state["capture_loan_schedule_df"] = df_res
-                            st.session_state["capture_loan_step"] = 0
-                            _msg = (
-                                f"Resumed staged draft #{draft_s.get('id')} — scroll to **Review**, **Documents**, and **Actions**."
-                            )
-                        else:
-                            st.session_state.pop("capture_loan_details", None)
-                            st.session_state.pop("capture_loan_schedule_df", None)
-                            st.session_state["capture_loan_step"] = 0
-                            _msg = (
-                                f"Resumed staged draft #{draft_s.get('id')} — continue from **Details** and **Schedule** above."
-                            )
-                        for _wk in (
-                            "cap_customer_sel",
-                            "cap_product_sel",
-                            "cap_rm_t1",
-                            "cap_agent_sel_t0",
-                            "cap_cash_gl_sel_t0",
-                            "cap_loan_purpose_sel",
-                        ):
-                            st.session_state.pop(_wk, None)
-                        st.session_state["loan_docs_staged"] = []
-                        st.session_state["capture_flash_message"] = _msg
-                        st.rerun()
+                        _apply_rework_draft_from_row(draft)
+
+    if st.session_state.get("capture_open_draft_panel") == "staged":
+        st.subheader("Resume Capture Draft")
+        stg_srch = st.text_input(
+            "Search Staged Drafts",
+            placeholder="Draft ID / Customer ID / Product",
+            key="cap_staged_search",
+        )
+        staged_rows = list_loan_approval_drafts(
+            status="STAGED",
+            search=stg_srch.strip() or None,
+            limit=200,
+        )
+        if staged_rows:
+            stg_df = pd.DataFrame(staged_rows)
+            stg_cols = [
+                c
+                for c in [
+                    "id",
+                    "customer_id",
+                    "loan_type",
+                    "product_code",
+                    "assigned_approver_id",
+                    "submitted_at",
+                ]
+                if c in stg_df.columns
+            ]
+            st.dataframe(
+                stg_df[stg_cols],
+                width="stretch",
+                hide_index=True,
+                height=min(140, 36 + min(len(staged_rows), 10) * 28),
+            )
+            for r in staged_rows:
+                sid = int(r["id"])
+                _st_lbl = (
+                    f"Load Staged Draft #{sid} · Customer {r.get('customer_id')} · "
+                    f"{r.get('product_code', '—')} · {r.get('loan_type', '—')}"
+                )
+                if st.button(_st_lbl, key=f"cap_staged_row_{sid}"):
+                    draft_s = get_loan_approval_draft(sid)
+                    if not draft_s:
+                        st.error(f"Draft #{sid} not found.")
+                    else:
+                        _apply_staged_draft_from_row(draft_s)
 
     # -------- Loan capture: flat panel (details → schedule → review → actions) --------
     with st.container(border=True):
-        st.markdown('<p class="fcapture-sec">Details</p>', unsafe_allow_html=True)
-        st.markdown('<hr class="fcapture-rule"/>', unsafe_allow_html=True)
-        st.caption("Controls")
+        st.subheader("Details")
         customers_list = list_customers(status="active") or []
         if not customers_list:
             st.warning("No active customers. Add a customer first under **Customers**.")
@@ -608,7 +626,6 @@ def render_capture_loan_ui(
                     index=_default_ci,
                     format_func=lambda i: options[i][1],
                     key="cap_customer_sel",
-                    help="Active borrower for this facility.",
                 )
             lt_display = {
                 "consumer_loan": "Consumer Loan",
@@ -630,7 +647,6 @@ def render_capture_loan_ui(
                         value="",
                         disabled=True,
                         key="cap_product_ph",
-                        help="Select a customer first, then choose product.",
                     )
                     st.session_state["capture_product_code"] = None
                     st.session_state["capture_loan_type"] = "Term Loan"
@@ -655,7 +671,6 @@ def render_capture_loan_ui(
                         index=_default_pi,
                         format_func=prod_format,
                         key="cap_product_sel",
-                        help="Defines loan type and product_config rules for schedule capture.",
                     )
                     if product_sel_idx is not None and 0 <= product_sel_idx < len(product_opts):
                         _lp = product_opts[product_sel_idx]["loan_type"]
@@ -682,11 +697,10 @@ def render_capture_loan_ui(
                         except StopIteration:
                             _default_rmi = 0
                     rm_sel = st.selectbox(
-                        "Rel. manager",
+                        "Relationship Manager",
                         rm_labels,
                         index=_default_rmi,
                         key="cap_rm_t1",
-                        help="Internal relationship manager (optional).",
                     )
                     st.session_state["capture_relationship_manager_id"] = rm_ids[rm_labels.index(rm_sel)] if rm_sel else None
                 else:
@@ -715,7 +729,6 @@ def render_capture_loan_ui(
                         agent_labels_cap,
                         index=default_agent_idx,
                         key="cap_agent_sel_t0",
-                        help="External broker / agent (optional).",
                     )
                     st.session_state["capture_agent_id"] = agent_ids_cap[agent_labels_cap.index(sel_agent_label)] if sel_agent_label else None
                 else:
@@ -730,16 +743,11 @@ def render_capture_loan_ui(
                     if _prev_cg and str(_prev_cg) in _cg_ids:
                         _cg_default = _cg_ids.index(str(_prev_cg))
                     _cg_i = st.selectbox(
-                        "Source cash GL",
+                        "Source Cash GL",
                         range(len(_cg_lab)),
                         format_func=lambda i: _cg_lab[i],
                         index=_cg_default,
                         key="cap_cash_gl_sel_t0",
-                        help=(
-                            "Operating bank GL for disbursement and LOAN_CAPTURE on `cash_operating` "
-                            "(same cache as Teller). Rebuild under System configurations → Accounting → "
-                            "source cash account cache."
-                        ),
                     )
                     st.session_state["capture_cash_gl_account_id"] = _cg_ids[_cg_i]
                 else:
@@ -751,7 +759,7 @@ def render_capture_loan_ui(
                     try:
                         _purposes_all = list_loan_purposes(active_only=False)
                     except Exception as _cap_lp_ex:
-                        st.caption(f"Loan purposes list failed: {_cap_lp_ex}")
+                        st.warning(f"Loan purposes list failed: {_cap_lp_ex}")
                 _purposes_active = [p for p in _purposes_all if p.get("is_active", True)]
                 _purposes_for_dropdown = list(_purposes_active)
                 _cur_lp = st.session_state.get("capture_loan_purpose_id")
@@ -787,16 +795,15 @@ def render_capture_loan_ui(
                             "**System configurations → Loan purposes**, or add a new active purpose."
                         )
                     else:
-                        st.caption(
+                        st.warning(
                             "No loan purposes in the database. Add them under **System configurations → Loan purposes**."
                         )
                 _sel_lp_ix = st.selectbox(
-                    "Loan purpose",
+                    "Loan Purpose",
                     list(range(len(_opts_lp_labels))),
                     index=min(_default_lp_i, max(0, len(_opts_lp_labels) - 1)),
                     format_func=lambda i, labs=_opts_lp_labels: labs[i],
                     key="cap_loan_purpose_sel",
-                    help="Optional. Stored on the loan when the facility is approved.",
                 )
                 st.session_state["capture_loan_purpose_id"] = _opts_lp_ids[int(_sel_lp_ix)]
 
@@ -825,22 +832,20 @@ def render_capture_loan_ui(
                             int(s["id"]): f"{s['security_type']} · {s['subtype_name']} (haircut {s['typical_haircut_pct']}%)"
                             for s in _subs
                         }
-                        _cc1, _cc2, _cc3, _ = st.columns(4)
+                        _cc1, _cc2, _cc3, _ = st.columns([2, 1, 1, 1])
                         with _cc1:
                             st.selectbox(
-                                "Collateral subtype",
+                                "Collateral Subtype",
                                 _sid_opts,
                                 format_func=lambda i, m=_sid_lbl: m.get(int(i), str(i)),
                                 key="capture_collateral_subtype_pick",
-                                help="Stored on the loan at approval for IFRS collateral context.",
                             )
                         with _cc2:
                             st.number_input(
-                                "Charge amount",
+                                "Charge Amount",
                                 min_value=0.0,
                                 step=0.01,
                                 key="capture_collateral_charge",
-                                help="Registered / agreed charge amount.",
                             )
                         with _cc3:
                             st.number_input(
@@ -848,20 +853,17 @@ def render_capture_loan_ui(
                                 min_value=0.0,
                                 step=0.01,
                                 key="capture_collateral_valuation",
-                                help="Market valuation.",
                             )
 
-        st.markdown('<p class="fcapture-sec">Schedule</p>', unsafe_allow_html=True)
-        st.markdown('<hr class="fcapture-rule"/>', unsafe_allow_html=True)
+        st.subheader("Schedule")
         cid = st.session_state.get("capture_customer_id")
         ltype = st.session_state.get("capture_loan_type")
         product_code = st.session_state.get("capture_product_code") or "—"
         if not cid or not ltype:
-            st.info("Select **customer** and **product** under **Details** first.")
+            st.info("Select **Customer** And **Product** Under **Details** First.")
         else:
-            st.caption(f"**Customer:** {get_display_name(cid)} (ID {cid}) · **Product:** {product_code} · **Loan type:** {ltype}")
             if st.session_state.get("capture_loan_details") is not None or st.session_state.get("capture_loan_schedule_df") is not None:
-                if st.button("Clear saved schedule", key="cap_clear_t2"):
+                if st.button("Clear Saved Schedule", key="cap_clear_t2"):
                     st.session_state.pop("capture_loan_details", None)
                     st.session_state.pop("capture_loan_schedule_df", None)
                     st.rerun()
@@ -878,9 +880,9 @@ def render_capture_loan_ui(
                 st.stop()
             flat_rate = interest_method == "Flat rate"
             rate_label = (
-                "Interest rate (% per annum)"
+                "Interest Rate (% Per Annum)"
                 if product_rate_basis == "Per annum"
-                else "Interest rate (% per month)"
+                else "Interest Rate (% Per Month)"
             )
             if ltype == "Consumer Loan":
                 cfg = get_system_config()
@@ -891,10 +893,10 @@ def render_capture_loan_ui(
                 if default_ccy not in accepted_currencies:
                     accepted_currencies = [default_ccy, *accepted_currencies]
 
-                _cl_pr_opts = ["Net proceeds", "Principal (total loan amount)"]
+                _cl_pr_opts = ["Net Proceeds", "Principal (Total Loan Amount)"]
                 _cl_rt_opts = [
-                    "Anniversary date (same day each month)",
-                    "Last day of each month",
+                    "Anniversary Date (Same Day Each Month)",
+                    "Last Day Of Each Month",
                 ]
                 cl_r1c1, cl_r1c2, cl_r1c3, cl_r1c4 = st.columns(4)
                 with cl_r1c1:
@@ -907,31 +909,31 @@ def render_capture_loan_ui(
                         key="cap_cl_currency",
                     )
                     _pi_lab = st.selectbox(
-                        "What are you entering?",
+                        "What are you Entering?",
                         _cl_pr_opts,
                         key="cap_cl_principal_mode",
                     )
-                    input_tf = _pi_lab == "Principal (total loan amount)"
+                    input_tf = _pi_lab == "Principal (Total Loan Amount)"
                 with cl_r1c2:
                     loan_required = st.number_input(
-                        "Loan amount",
+                        "Loan Amount",
                         min_value=0.0,
                         value=0.0,
                         step=10.0,
                         format="%.2f",
                         key="cap_cl_principal",
                     )
-                    loan_term = st.number_input("Term (months)", 1, 60, 6, key="cap_cl_term")
+                    loan_term = st.number_input("Term (Months)", 1, 60, 6, key="cap_cl_term")
                 with cl_r1c3:
                     disbursement_date = datetime.combine(
-                        st.date_input("Disbursement date", get_system_date(), key="cap_cl_start"),
+                        st.date_input("Disbursement Date", get_system_date(), key="cap_cl_start"),
                         datetime.min.time(),
                     )
                     default_first_rep = add_months(disbursement_date, 1).date()
-                    first_rep_input = st.date_input("First repayment date", default_first_rep, key="cap_cl_first_rep")
+                    first_rep_input = st.date_input("First Repayment Date", default_first_rep, key="cap_cl_first_rep")
                     first_repayment_date = datetime.combine(first_rep_input, datetime.min.time())
                 with cl_r1c4:
-                    _rt_lab = st.selectbox("Repayments on", _cl_rt_opts, key="cap_cl_repay_timing")
+                    _rt_lab = st.selectbox("Repayments On", _cl_rt_opts, key="cap_cl_repay_timing")
                     use_anniversary = _rt_lab.startswith("Anniversary")
                 cl_schedule_valid = use_anniversary or is_last_day_of_month(first_repayment_date)
                 if not cl_schedule_valid:
@@ -1005,19 +1007,17 @@ def render_capture_loan_ui(
                     )
                     st.stop()
 
-                st.caption(f"Derived from product `{product_code}` → Scheme: `{scheme}`")
-
                 _rates_mode = st.selectbox(
-                    "Regular interest & admin fee",
-                    ["Use product defaults", "Override manually"],
+                    "Regular Interest & Admin Fee",
+                    ["Use Product Defaults", "Override Manually"],
                     key="cap_cl_rates_mode",
                 )
                 override_rates = _rates_mode.startswith("Override")
                 if override_rates:
                     override_interest_label = (
-                        "Regular interest rate (% per annum)"
+                        "Regular Interest Rate (% Per Annum)"
                         if product_rate_basis == "Per annum"
-                        else "Regular interest rate (% per month)"
+                        else "Regular Interest Rate (% Per Month)"
                     )
                     override_interest_pct = st.number_input(
                         override_interest_label,
@@ -1028,7 +1028,7 @@ def render_capture_loan_ui(
                         key="cap_cl_override_interest_pct",
                     )
                     override_admin_fee_pct = st.number_input(
-                        "Administration fee (%)",
+                        "Administration Fee (%)",
                         min_value=0.0,
                         max_value=100.0,
                         value=round(float(admin_fee) * 100.0, 4),
@@ -1061,11 +1061,6 @@ def render_capture_loan_ui(
                         if matched_override and matched_override.get("name")
                         else "Other"
                     )
-
-                    st.caption(
-                        f"Overrides applied → Scheme: `{scheme}` "
-                        f"(interest={override_interest_pct:.2f}%, admin={override_admin_fee_pct:.2f}%)."
-                    )
                 if cl_schedule_valid:
                     details, df_schedule = compute_consumer_schedule(
                         loan_required, loan_term, disbursement_date, base_rate, admin_fee, input_tf,
@@ -1075,8 +1070,9 @@ def render_capture_loan_ui(
                     details["currency"] = currency
                     details["penalty_rate_pct"] = penalty_pct
                     details["penalty_quotation"] = penalty_quotation_product
-                    st.dataframe(format_schedule_df(df_schedule), width="stretch", hide_index=True)
-                    if st.button("Use this schedule", key="cap_cl_use"):
+                    _df_cl = format_schedule_df(df_schedule)
+                    render_centered_html_table(_df_cl, [str(c) for c in _df_cl.columns])
+                    if st.button("Use This Schedule", type="secondary", key="cap_cl_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
                         st.session_state["capture_loan_step"] = 0
@@ -1106,21 +1102,21 @@ def render_capture_loan_ui(
                 if default_ccy not in accepted_currencies:
                     accepted_currencies = [default_ccy, *accepted_currencies]
 
-                _term_pr_opts = ["Net proceeds", "Principal (total loan amount)"]
+                _term_pr_opts = ["Net Proceeds", "Principal (Total Loan Amount)"]
                 _term_grace_opts = [
-                    "No grace period",
-                    "Principal moratorium",
-                    "Principal and interest moratorium",
+                    "No Grace Period",
+                    "Principal Moratorium",
+                    "Principal And Interest Moratorium",
                 ]
-                _term_rt_opts = ["Anniversary date", "Last day of month"]
+                _term_rt_opts = ["Anniversary Date", "Last Day Of Month"]
                 tt1, tt2, tt3, tt4 = st.columns(4)
                 with tt1:
-                    _tp_lab = st.selectbox("What are you entering?", _term_pr_opts, key="cap_term_principal_mode")
-                    input_tf = _tp_lab == "Principal (total loan amount)"
+                    _tp_lab = st.selectbox("What are you Entering?", _term_pr_opts, key="cap_term_principal_mode")
+                    input_tf = _tp_lab == "Principal (Total Loan Amount)"
                 with tt2:
-                    grace_type = st.selectbox("Grace period", _term_grace_opts, key="cap_term_grace_sel")
+                    grace_type = st.selectbox("Grace Period", _term_grace_opts, key="cap_term_grace_sel")
                 with tt3:
-                    _trt = st.selectbox("Repayments on", _term_rt_opts, key="cap_term_timing_sel")
+                    _trt = st.selectbox("Repayments On", _term_rt_opts, key="cap_term_timing_sel")
                     use_anniversary = _trt.startswith("Anniversary")
                 with tt4:
                     currency = st.selectbox(
@@ -1135,23 +1131,23 @@ def render_capture_loan_ui(
                 tcol1, tcol2, tcol3, tcol4 = st.columns(4)
                 with tcol1:
                     loan_required = st.number_input(
-                        "Loan amount",
+                        "Loan Amount",
                         min_value=0.0,
                         value=0.0,
                         step=100.0,
                         format="%.2f",
                         key="cap_term_principal",
                     )
-                    loan_term = st.number_input("Term (months)", 1, 120, 24, key="cap_term_months")
+                    loan_term = st.number_input("Term (Months)", 1, 120, 24, key="cap_term_months")
                 with tcol2:
                     disbursement_date = datetime.combine(
-                        st.date_input("Disbursement date", get_system_date(), key="cap_term_disb"),
+                        st.date_input("Disbursement Date", get_system_date(), key="cap_term_disb"),
                         datetime.min.time(),
                     )
                 with tcol3:
                     drawdown_pct = (
                         st.number_input(
-                            "Drawdown fee (%)",
+                            "Drawdown Fee (%)",
                             0.0,
                             100.0,
                             float(dr.get("drawdown_pct")),
@@ -1163,7 +1159,7 @@ def render_capture_loan_ui(
                 with tcol4:
                     arrangement_pct = (
                         st.number_input(
-                            "Arrangement fee (%)",
+                            "Arrangement Fee (%)",
                             0.0,
                             100.0,
                             float(dr.get("arrangement_pct")),
@@ -1196,9 +1192,9 @@ def render_capture_loan_ui(
                     )
                 with tpen2:
                     penalty_label = (
-                        "Penalty interest (% per annum)"
+                        "Penalty Interest (% Per Annum)"
                         if product_rate_basis == "Per annum"
-                        else "Penalty interest (% per month)"
+                        else "Penalty Interest (% Per Month)"
                     )
                     penalty_pct = st.number_input(
                         penalty_label,
@@ -1207,23 +1203,22 @@ def render_capture_loan_ui(
                         float(def_penalty),
                         step=0.5,
                         key="cap_term_penalty",
-                        help="Required. 0% is acceptable. Will be converted to a per-month penalty rate for EOD.",
                     )
                 with tpen3:
                     default_first = add_months(disbursement_date, 1).date()
                     first_rep = datetime.combine(
-                        st.date_input("First repayment date", default_first, key="cap_term_first_rep"),
+                        st.date_input("First Repayment Date", default_first, key="cap_term_first_rep"),
                         datetime.min.time(),
                     )
                 moratorium_months = 0
                 with tpen4:
-                    if "Principal moratorium" in grace_type:
+                    if grace_type == "Principal Moratorium":
                         moratorium_months = st.number_input(
-                            "Moratorium (months)", 1, 60, 3, key="cap_term_moratorium_p"
+                            "Moratorium (Months)", 1, 60, 3, key="cap_term_moratorium_p"
                         )
-                    elif "Principal and interest" in grace_type:
+                    elif grace_type == "Principal And Interest Moratorium":
                         moratorium_months = st.number_input(
-                            "Moratorium (months)", 1, 60, 3, key="cap_term_moratorium_pi"
+                            "Moratorium (Months)", 1, 60, 3, key="cap_term_moratorium_pi"
                         )
                 if not use_anniversary and not is_last_day_of_month(first_rep):
                     st.error("When repayments are on last day of month, first repayment date must be the last day of that month.")
@@ -1240,8 +1235,9 @@ def render_capture_loan_ui(
                         st.stop()
                     details["penalty_rate_pct"] = float(penalty_pct_monthly)
                     details["penalty_quotation"] = penalty_quotation_product
-                    st.dataframe(format_schedule_df(df_schedule), width="stretch", hide_index=True)
-                    if st.button("Use this schedule", key="cap_term_use"):
+                    _df_term = format_schedule_df(df_schedule)
+                    render_centered_html_table(_df_term, [str(c) for c in _df_term.columns])
+                    if st.button("Use This Schedule", type="secondary", key="cap_term_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
                         st.session_state["capture_loan_step"] = 0
@@ -1270,11 +1266,11 @@ def render_capture_loan_ui(
                 if default_ccy not in accepted_currencies:
                     accepted_currencies = [default_ccy, *accepted_currencies]
                 _bul_type_opts = [
-                    "Straight bullet (no interim payments)",
-                    "Bullet with interest payments",
+                    "Straight Bullet (No Interim Payments)",
+                    "Bullet With Interest Payments",
                 ]
-                _bul_pr_opts = ["Net proceeds", "Principal (total loan amount)"]
-                _bul_rt_opts = ["Anniversary date", "Last day of month"]
+                _bul_pr_opts = ["Net Proceeds", "Principal (Total Loan Amount)"]
+                _bul_rt_opts = ["Anniversary Date", "Last Day Of Month"]
                 br1c1, br1c2, br1c3, br1c4 = st.columns(4)
                 with br1c1:
                     currency = st.selectbox(
@@ -1286,13 +1282,13 @@ def render_capture_loan_ui(
                         key="cap_bullet_currency",
                     )
                 with br1c2:
-                    bullet_type = st.selectbox("Bullet type", _bul_type_opts, key="cap_bullet_type_sel")
+                    bullet_type = st.selectbox("Bullet Type", _bul_type_opts, key="cap_bullet_type_sel")
                 with br1c3:
-                    _bpr = st.selectbox("What are you entering?", _bul_pr_opts, key="cap_bullet_principal_mode")
-                    input_tf = _bpr == "Principal (total loan amount)"
+                    _bpr = st.selectbox("What are you Entering?", _bul_pr_opts, key="cap_bullet_principal_mode")
+                    input_tf = _bpr == "Principal (Total Loan Amount)"
                 with br1c4:
                     loan_required = st.number_input(
-                        "Loan amount",
+                        "Loan Amount",
                         min_value=0.0,
                         value=0.0,
                         step=100.0,
@@ -1301,10 +1297,10 @@ def render_capture_loan_ui(
                     )
                 br2c1, br2c2, br2c3, br2c4 = st.columns(4)
                 with br2c1:
-                    loan_term = st.number_input("Term (months)", 1, 120, 12, key="cap_bullet_term")
+                    loan_term = st.number_input("Term (Months)", 1, 120, 12, key="cap_bullet_term")
                 with br2c2:
                     disbursement_date = datetime.combine(
-                        st.date_input("Disbursement date", get_system_date(), key="cap_bullet_disb"),
+                        st.date_input("Disbursement Date", get_system_date(), key="cap_bullet_disb"),
                         datetime.min.time(),
                     )
                 with br2c3:
@@ -1319,7 +1315,7 @@ def render_capture_loan_ui(
                 with br2c4:
                     drawdown_pct = (
                         st.number_input(
-                            "Drawdown fee (%)",
+                            "Drawdown Fee (%)",
                             0.0,
                             100.0,
                             float(dr.get("drawdown_pct")),
@@ -1344,7 +1340,7 @@ def render_capture_loan_ui(
                 with br3c1:
                     arrangement_pct = (
                         st.number_input(
-                            "Arrangement fee (%)",
+                            "Arrangement Fee (%)",
                             0.0,
                             100.0,
                             float(dr.get("arrangement_pct")),
@@ -1355,9 +1351,9 @@ def render_capture_loan_ui(
                     )
                 with br3c2:
                     penalty_label = (
-                        "Penalty interest (% per annum)"
+                        "Penalty Interest (% Per Annum)"
                         if product_rate_basis == "Per annum"
-                        else "Penalty interest (% per month)"
+                        else "Penalty Interest (% Per Month)"
                     )
                     penalty_pct = st.number_input(
                         penalty_label,
@@ -1366,7 +1362,6 @@ def render_capture_loan_ui(
                         float(def_penalty),
                         step=0.5,
                         key="cap_bullet_penalty",
-                        help="Required. 0% is acceptable. Will be converted to a per-month penalty rate for EOD.",
                     )
                 penalty_pct_monthly = pct_to_monthly(penalty_pct, product_rate_basis)
                 if penalty_pct_monthly is None:
@@ -1374,15 +1369,15 @@ def render_capture_loan_ui(
                     st.stop()
                 first_rep = None
                 use_anniversary = True
-                if "with interest" in bullet_type:
+                if "with interest" in bullet_type.lower():
                     with br3c3:
                         default_first = add_months(disbursement_date, 1).date()
                         first_rep = datetime.combine(
-                            st.date_input("First repayment date", default_first, key="cap_bullet_first_rep"),
+                            st.date_input("First Repayment Date", default_first, key="cap_bullet_first_rep"),
                             datetime.min.time(),
                         )
                     with br3c4:
-                        _brt = st.selectbox("Interest payments on", _bul_rt_opts, key="cap_bullet_timing_sel")
+                        _brt = st.selectbox("Interest Payments On", _bul_rt_opts, key="cap_bullet_timing_sel")
                         use_anniversary = _brt.startswith("Anniversary")
                     if not use_anniversary and not is_last_day_of_month(first_rep):
                         st.error("First repayment date must be last day of month when using last day of month.")
@@ -1394,8 +1389,9 @@ def render_capture_loan_ui(
                         details["currency"] = currency
                         details["penalty_rate_pct"] = float(penalty_pct_monthly)
                         details["penalty_quotation"] = penalty_quotation_product
-                        st.dataframe(format_schedule_df(df_schedule), width="stretch", hide_index=True)
-                        if st.button("Use this schedule", key="cap_bullet_use"):
+                        _df_bul = format_schedule_df(df_schedule)
+                        render_centered_html_table(_df_bul, [str(c) for c in _df_bul.columns])
+                        if st.button("Use This Schedule", type="secondary", key="cap_bullet_use"):
                             st.session_state["capture_loan_details"] = details
                             st.session_state["capture_loan_schedule_df"] = df_schedule
                             st.session_state["capture_loan_step"] = 0
@@ -1413,8 +1409,9 @@ def render_capture_loan_ui(
                     details["currency"] = currency
                     details["penalty_rate_pct"] = float(penalty_pct_monthly)
                     details["penalty_quotation"] = penalty_quotation_product
-                    st.dataframe(format_schedule_df(df_schedule), width="stretch", hide_index=True)
-                    if st.button("Use this schedule", key="cap_bullet_use"):
+                    _df_bul2 = format_schedule_df(df_schedule)
+                    render_centered_html_table(_df_bul2, [str(c) for c in _df_bul2.columns])
+                    if st.button("Use This Schedule", type="secondary", key="cap_bullet_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
                         st.session_state["capture_loan_step"] = 0
@@ -1447,9 +1444,9 @@ def render_capture_loan_ui(
                 )
                 if default_ccy not in accepted_currencies:
                     accepted_currencies = [default_ccy, *accepted_currencies]
-                _cust_pr_opts = ["Net proceeds", "Principal (total loan amount)"]
-                _cust_shape_opts = ["Regular (fixed dates)", "Irregular (editable dates)"]
-                _cust_rt_opts = ["Anniversary date", "Last day of month"]
+                _cust_pr_opts = ["Net Proceeds", "Principal (Total Loan Amount)"]
+                _cust_shape_opts = ["Regular (Fixed Dates)", "Irregular (Editable Dates)"]
+                _cust_rt_opts = ["Anniversary Date", "Last Day Of Month"]
                 cu1, cu2, cu3, cu4 = st.columns(4)
                 with cu1:
                     currency = st.selectbox(
@@ -1460,27 +1457,26 @@ def render_capture_loan_ui(
                         else 0,
                         key="cap_cust_currency",
                     )
-                    _cupr = st.selectbox("What are you entering?", _cust_pr_opts, key="cap_cust_principal_mode")
-                    input_tf = _cupr == "Principal (total loan amount)"
+                    _cupr = st.selectbox("What are you Entering?", _cust_pr_opts, key="cap_cust_principal_mode")
+                    input_tf = _cupr == "Principal (Total Loan Amount)"
                 with cu2:
                     loan_required = st.number_input(
-                        "Loan amount", min_value=0.0, value=0.0, step=100.0, format="%.2f", key="cap_cust_principal"
+                        "Loan Amount", min_value=0.0, value=0.0, step=100.0, format="%.2f", key="cap_cust_principal"
                     )
-                    loan_term = st.number_input("Term (months)", 1, 120, 12, key="cap_cust_term")
+                    loan_term = st.number_input("Term (Months)", 1, 120, 12, key="cap_cust_term")
                 with cu3:
                     disbursement_date = datetime.combine(
-                        st.date_input("Disbursement date", get_system_date(), key="cap_cust_start"),
+                        st.date_input("Disbursement Date", get_system_date(), key="cap_cust_start"),
                         datetime.min.time(),
                     )
                     _shape = st.selectbox(
-                        "Schedule shape",
+                        "Schedule Shape",
                         _cust_shape_opts,
                         key="cap_cust_shape",
-                        help="Irregular: edit dates and payments in the table; add rows as needed.",
                     )
                     irregular = _shape.startswith("Irregular")
                 with cu4:
-                    _crt = st.selectbox("Repayments on", _cust_rt_opts, key="cap_cust_timing_sel")
+                    _crt = st.selectbox("Repayments On", _cust_rt_opts, key="cap_cust_timing_sel")
                     use_anniversary = _crt.startswith("Anniversary")
                 default_first = add_months(disbursement_date, 1).date()
                 if not use_anniversary:
@@ -1502,14 +1498,14 @@ def render_capture_loan_ui(
                 with cu6:
                     drawdown_pct = (
                         st.number_input(
-                            "Drawdown fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct")), step=0.1, key="cap_cust_drawdown"
+                            "Drawdown Fee (%)", 0.0, 100.0, float(dr.get("drawdown_pct")), step=0.1, key="cap_cust_drawdown"
                         )
                         / 100.0
                     )
                 with cu7:
                     arrangement_pct = (
                         st.number_input(
-                            "Arrangement fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct")), step=0.1, key="cap_cust_arrangement"
+                            "Arrangement Fee (%)", 0.0, 100.0, float(dr.get("arrangement_pct")), step=0.1, key="cap_cust_arrangement"
                         )
                         / 100.0
                     )
@@ -1529,9 +1525,9 @@ def render_capture_loan_ui(
                     st.stop()
 
                 penalty_label = (
-                    "Penalty interest (% per annum)"
+                    "Penalty Interest (% Per Annum)"
                     if product_rate_basis == "Per annum"
-                    else "Penalty interest (% per month)"
+                    else "Penalty Interest (% Per Month)"
                 )
                 with cu8:
                     penalty_pct = st.number_input(
@@ -1541,7 +1537,6 @@ def render_capture_loan_ui(
                         float(def_penalty),
                         step=0.5,
                         key="cap_cust_penalty",
-                        help="Required. 0% is acceptable. Converted to a per-month penalty rate for EOD.",
                     )
                 penalty_pct_monthly = pct_to_monthly(penalty_pct, product_rate_basis)
                 if penalty_pct_monthly is None:
@@ -1578,7 +1573,7 @@ def render_capture_loan_ui(
 
                 date_editable = irregular
                 if irregular:
-                    if st.button("Add row", key="cap_cust_add_row"):
+                    if st.button("Add Row", type="secondary", key="cap_cust_add_row"):
                         last_df = st.session_state[cap_key]
                         if len(last_df) > 0:
                             try:
@@ -1592,7 +1587,6 @@ def render_capture_loan_ui(
                             new_row = {"Period": len(last_df), "Date": next_dt.strftime("%d-%b-%Y"), "Payment": 0.0, "Interest": 0.0, "Principal": 0.0, "Principal Balance": 0.0, "Total Outstanding": 0.0}
                             st.session_state[cap_key] = pd.concat([last_df, pd.DataFrame([new_row])], ignore_index=True)
                             st.rerun()
-                    st.caption("Irregular: edit **Date** and **Payment**; add rows with the button above. Schedule recomputes from table dates.")
 
                 edited = st.data_editor(
                     df_cap,
@@ -1602,7 +1596,6 @@ def render_capture_loan_ui(
                             "Period": st.column_config.NumberColumn(disabled=True),
                             "Date": st.column_config.TextColumn(
                                 disabled=not date_editable,
-                                help="Format: DD-Mon-YYYY (e.g. 01-Jan-2025)" if date_editable else None,
                             ),
                         },
                         column_disabled=schedule_editor_disabled_amounts,
@@ -1638,7 +1631,7 @@ def render_capture_loan_ui(
                         "penalty_quotation": penalty_quotation_product,
                         "currency": currency,
                     }
-                    if st.button("Use this schedule", key="cap_cust_use"):
+                    if st.button("Use This Schedule", type="secondary", key="cap_cust_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_cap
                         st.session_state["capture_loan_step"] = 0
@@ -1656,8 +1649,7 @@ def render_capture_loan_ui(
         _rv_cid = st.session_state.get("capture_customer_id")
         _rv_lt = st.session_state.get("capture_loan_type")
         if _rv_det and _rv_df is not None and _rv_cid and _rv_lt:
-            st.markdown('<p class="fcapture-sec">Review &amp; submit</p>', unsafe_allow_html=True)
-            st.markdown('<hr class="fcapture-rule"/>', unsafe_allow_html=True)
+            st.subheader("Review & Submit")
             sum_col1, sum_col2, sum_col3, sum_col4 = st.columns(4)
             with sum_col1:
                 st.markdown(f"**Customer:** {get_display_name(_rv_cid)} ({_rv_cid})")
@@ -1727,7 +1719,7 @@ def render_capture_loan_ui(
                 fees = float(d_fee_amt) + float(a_fee_amt) + float(adm_fee_amt)
                 st.markdown(f"**Fees:** {format_display_amount(fees, system_config=get_system_config())}")
             st.markdown('<hr class="fcapture-soft"/>', unsafe_allow_html=True)
-            st.markdown("**Journal preview** (on approval)")
+            st.subheader("Journal Preview (On Approval)")
             from accounting.service import AccountingService
             from loan_management import build_loan_approval_journal_payload
 
@@ -1765,11 +1757,11 @@ def render_capture_loan_ui(
                     st.info("No LOAN_APPROVAL template lines.")
             except Exception as e:
                 st.warning(f"Journal preview unavailable: {e}")
-            st.markdown("**Repayment schedule**")
-            st.dataframe(format_schedule_df(_rv_df), width="stretch", hide_index=True, height=260)
+            st.subheader("Repayment Schedule")
+            _df_rv = format_schedule_df(_rv_df)
+            render_centered_html_table(_df_rv, [str(c) for c in _df_rv.columns])
 
-        st.markdown('<p class="fcapture-sec">Documents</p>', unsafe_allow_html=True)
-        st.markdown('<hr class="fcapture-rule"/>', unsafe_allow_html=True)
+        st.subheader("Documents")
         _render_capture_loan_documents_staging(
             documents_available=documents_available,
             list_document_categories=list_document_categories,
@@ -1783,44 +1775,42 @@ def render_capture_loan_ui(
             st.session_state.get("capture_loan_details") is not None
             and st.session_state.get("capture_loan_schedule_df") is not None
         )
-        st.markdown('<p class="fcapture-sec">Actions</p>', unsafe_allow_html=True)
-        st.markdown('<hr class="fcapture-rule"/>', unsafe_allow_html=True)
+        st.subheader("Actions")
         ba1, ba2, ba3, ba4 = st.columns(4)
         with ba1:
             if st.button(
-                "Clear form",
+                "Clear Form",
+                type="secondary",
                 key="cap_clear_all",
-                help="Reset customer, schedule, and staged documents in this capture session.",
             ):
                 _fcapture_clear_session_after_submit()
                 st.session_state["capture_flash_message"] = "Form cleared."
                 st.rerun()
         with ba2:
             if st.button(
-                "Save & continue later",
+                "Save Continue Later",
+                type="secondary",
                 key="cap_save_staged_schedule",
-                help="Save staged draft (details + schedule) without submitting for approval.",
             ):
                 _save_capture_staged_draft()
         with ba3:
             if st.button(
-                "Send for approval",
-                type="primary",
+                "Send for Approval",
+                type="secondary",
                 key="cap_send_for_approval",
                 disabled=not has_schedule,
-                help="Requires a built schedule (**Use this schedule**) and completes capture.",
             ):
                 _submit_capture_send_for_approval()
         with ba4:
             if st.button(
-                "Dismiss draft",
+                "Dismiss Draft",
+                type="secondary",
                 key="cap_dismiss_t3",
-                help="Discard this capture session (not yet booked).",
             ):
                 for k in list(st.session_state.keys()):
                     if (k.startswith("capture_") or k.startswith("cap_")) and k not in (
                         "capture_flash_message",
-                        "_fcapture_panel_css_v7",
+                        "_fcapture_panel_css_v10",
                     ):
                         st.session_state.pop(k, None)
                 st.session_state["loan_docs_staged"] = []
