@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from html import escape as html_escape
 from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -13,6 +14,7 @@ from middleware import get_current_user, clear_current_user, require_login
 from auth.ui import auth_page
 from dal import get_conn, UserRepository, SecurityAuditLogRepository
 from auth.service import AuthService
+from style import format_navigation_label, inject_farnda_global_styles_once
 from ui.components import inject_tertiary_hyperlink_css_once
 
 
@@ -148,24 +150,28 @@ def _logo_path() -> Path:
 
 
 def render_sidebar_branding() -> None:
+    """Compact logo only (no slogan); sticky at top of sidebar. Slogan stays on login page."""
     logo_path = _logo_path()
     if logo_path.exists():
         mime = "image/svg+xml" if logo_path.suffix.lower() == ".svg" else "image/png"
         logo_b64 = base64.b64encode(logo_path.read_bytes()).decode("ascii")
         st.sidebar.markdown(
             f"""
-            <div style="background:#E5E7EB; border-radius:10px; padding:0.55rem; margin-bottom:0.35rem;">
-                <img src="data:{mime};base64,{logo_b64}" style="width:100%; height:auto; display:block;" />
-            </div>
-            <div style="font-size:1.025rem; color:#374151; margin-top:0.15rem; text-align:center;">
-                Calculated Value, Unmatched Trust
+            <div class="farnda-sidebar-sticky-head">
+              <div class="farnda-sidebar-logo-wrap">
+                <img src="data:{mime};base64,{logo_b64}" alt="FarndaCred" class="farnda-sidebar-logo-img" />
+              </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     else:
         st.sidebar.markdown(
-            "<div style='font-size:1.025rem; color:#374151; text-align:center;'>Calculated Value, Unmatched Trust</div>",
+            """
+            <div class="farnda-sidebar-sticky-head">
+              <p class="farnda-sidebar-wordmark-fallback">FarndaCred</p>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
@@ -181,16 +187,14 @@ def _format_sidebar_name(full_name: str) -> str:
     return f"{initials} {surname}".strip()
 
 
-def render_sidebar_user_meta(user: dict, system_date, calendar_date) -> None:
+def render_sidebar_user_meta(user: dict, system_date) -> None:
     display_name = _format_sidebar_name(user.get("full_name", "User"))
-    role = user.get("role", "USER")
     st.sidebar.markdown(
         f"""
-        <div style="background:#F3F4F6; border:1px solid #D1D5DB; border-radius:10px; padding:0.7rem; margin-top:0.3rem;">
-            <div style="font-size:0.9375rem; color:#6B7280; margin-bottom:0.2rem;">Logged in as</div>
-            <div style="font-weight:600; color:#111827; margin-bottom:0.4rem;">{display_name} ({role})</div>
-            <div style="font-size:1.275rem; color:#16A34A; font-weight:700;">System date: {system_date.isoformat()}</div>
-            <div style="font-size:1.0625rem; color:#374151;">Calendar date: {calendar_date.isoformat()}</div>
+        <div class="farnda-user-card" style="background:#F8FAFC; padding:0.85rem; margin-top:0.35rem;">
+            <div style="font-size:0.875rem; color:#64748B; margin-bottom:0.25rem; font-weight:600;">Logged in as</div>
+            <div style="font-weight:700; color:#002147; margin-bottom:0.35rem; font-size:0.98rem;">{html_escape(display_name)}</div>
+            <div class="farnda-system-date" style="font-size:1.2rem; font-weight:700;">System date: {system_date.isoformat()}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -445,21 +449,38 @@ def admin_home():
         inject_tertiary_hyperlink_css_once()
         _to_d = date.today()
         _from_d = _to_d - timedelta(days=30)
-        _r = st.columns([1.05, 1.05, 0.88, 0.88, 4.2], gap=None, vertical_alignment="center")
+        # One row: From + control | To + control | CSV | PDF (wider) | flexible space — all top-aligned
+        _r = st.columns([1.95, 1.95, 1.0, 1.75, 3.35], gap="small", vertical_alignment="top")
         with _r[0]:
-            d_from = st.date_input(
-                "From",
-                value=_from_d,
-                key="adm_audit_date_from",
-                format="DD/MM/YYYY",
-            )
+            _fl, _fi = st.columns([0.5, 1.5], gap="xsmall", vertical_alignment="top")
+            with _fl:
+                st.markdown(
+                    '<p style="margin:0;padding-top:0.15rem;font-weight:600;">From (dd/mm/yyyy)</p>',
+                    unsafe_allow_html=True,
+                )
+            with _fi:
+                d_from = st.date_input(
+                    "From",
+                    value=_from_d,
+                    key="adm_audit_date_from",
+                    format="DD/MM/YYYY",
+                    label_visibility="collapsed",
+                )
         with _r[1]:
-            d_to = st.date_input(
-                "To",
-                value=_to_d,
-                key="adm_audit_date_to",
-                format="DD/MM/YYYY",
-            )
+            _tl, _ti = st.columns([0.45, 1.55], gap="xsmall", vertical_alignment="top")
+            with _tl:
+                st.markdown(
+                    '<p style="margin:0;padding-top:0.15rem;font-weight:600;">To (dd/mm/yyyy)</p>',
+                    unsafe_allow_html=True,
+                )
+            with _ti:
+                d_to = st.date_input(
+                    "To",
+                    value=_to_d,
+                    key="adm_audit_date_to",
+                    format="DD/MM/YYYY",
+                    label_visibility="collapsed",
+                )
 
         rows: list = []
         _err_audit = None
@@ -532,7 +553,7 @@ def admin_home():
                 key="adm_audit_login_csv",
                 type="tertiary",
                 disabled=not _can_export,
-                help="UTF-8 with BOM; matches the table for the selected From/To dates.",
+                use_container_width=True,
             )
         with _r[3]:
             st.download_button(
@@ -543,8 +564,10 @@ def admin_home():
                 key="adm_audit_login_pdf",
                 type="tertiary",
                 disabled=not _can_export or _pdf_bytes is None,
-                help="PDF export requires reportlab." if _pdf_bytes is None else None,
+                use_container_width=True,
             )
+        with _r[4]:
+            st.empty()
 
         if _err_audit:
             st.error(_err_audit)
@@ -593,6 +616,7 @@ def build_menu_for_role(role: str) -> dict[str, callable]:
 
 def main():
     st.set_page_config(page_title="FarndaCred – Secure", layout="wide")
+    inject_farnda_global_styles_once()
 
     user = get_current_user()
     if user is None:
@@ -607,7 +631,6 @@ def main():
         system_date = get_effective_date()
     except ImportError:
         system_date = datetime.now().date()
-    now = datetime.now().date()
 
     menu = build_menu_for_role(user["role"])
     if not menu:
@@ -620,9 +643,15 @@ def main():
         "<div style='font-weight:700; font-size:125%; margin-bottom:0.15rem;'>Navigation</div>",
         unsafe_allow_html=True,
     )
-    choice = st.sidebar.radio("Navigation", list(menu.keys()), label_visibility="collapsed")
+    choice = st.sidebar.radio(
+        "Navigation",
+        list(menu.keys()),
+        format_func=format_navigation_label,
+        label_visibility="collapsed",
+        key="farnda_main_nav_choice",
+    )
     st.sidebar.divider()
-    render_sidebar_user_meta(user=user, system_date=system_date, calendar_date=now)
+    render_sidebar_user_meta(user=user, system_date=system_date)
 
     # Global guard to ensure we never render a page without a user
     require_login()
@@ -630,7 +659,7 @@ def main():
     page_fn()
     st.sidebar.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
     st.sidebar.divider()
-    if st.sidebar.button("Log out", key="sidebar_logout"):
+    if st.sidebar.button("Log out", key="sidebar_logout", type="primary", use_container_width=True):
         clear_current_user()
         st.rerun()
     render_footer()

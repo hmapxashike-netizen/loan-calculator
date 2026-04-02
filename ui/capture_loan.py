@@ -7,13 +7,14 @@ import pandas as pd
 import streamlit as st
 
 from display_formatting import format_display_amount
-from ui.components import render_centered_html_table
+from ui.components import inject_tertiary_hyperlink_css_once, render_centered_html_table
 
 from loans import (
     add_months,
     days_in_month,
     is_last_day_of_month,
     parse_schedule_dates_from_table,
+    repayment_dates,
     recompute_customised_from_payments,
 )
 
@@ -74,7 +75,7 @@ def _render_capture_loan_documents_staging(
             )
     with dcol2:
         f = st.file_uploader("Choose File", type=["pdf", "png", "jpg", "jpeg"], key=f"loan_doc_file{suf}")
-    if st.button("Add To List", type="secondary", key=f"loan_doc_add{suf}") and f is not None:
+    if st.button("Add To List", type="tertiary", key=f"loan_doc_add{suf}") and f is not None:
         cat = name_to_cat[doc_type]
         label = other_label.strip() if doc_type == "Other" else ""
         staged_loan_docs.append(
@@ -200,11 +201,19 @@ main .block-container:has(.fcapture-scope) button[data-testid="baseButton-tertia
 
 
 def _fcapture_clear_session_after_submit() -> None:
-    """Clear loan capture session keys after successful send (widget state resets on rerun; amounts default via value=0)."""
+    """Clear loan capture session keys after successful send or explicit reset.
+
+    Drops ``cap_*`` / ``capture_*`` widget keys and ``loan_doc_*`` document staging keys so
+    Streamlit recreates controls with defaults on the next run.
+    """
+    _preserve = frozenset({"capture_flash_message", "_fcapture_panel_css_v10"})
     for k in list(st.session_state.keys()):
-        if (k.startswith("capture_") or k.startswith("cap_")) and k not in (
-            "capture_flash_message",
-            "_fcapture_panel_css_v10",
+        if k in _preserve:
+            continue
+        if (
+            k.startswith("capture_")
+            or k.startswith("cap_")
+            or k.startswith("loan_doc_")
         ):
             st.session_state.pop(k, None)
     st.session_state["loan_docs_staged"] = []
@@ -483,6 +492,7 @@ def render_capture_loan_ui(
         st.warning(str(st.session_state.pop("capture_rework_note")))
     if int(st.session_state.get("capture_loan_step") or 0) in (1, 2):
         st.session_state["capture_loan_step"] = 0
+    inject_tertiary_hyperlink_css_once()
     _fcapture_inject_css_once()
     st.markdown(
         '<span class="fcapture-scope" aria-hidden="true"></span>',
@@ -795,9 +805,7 @@ def render_capture_loan_ui(
                             "**System configurations → Loan purposes**, or add a new active purpose."
                         )
                     else:
-                        st.warning(
-                            "No loan purposes in the database. Add them under **System configurations → Loan purposes**."
-                        )
+                        st.info("No loan purposes configured.")
                 _sel_lp_ix = st.selectbox(
                     "Loan Purpose",
                     list(range(len(_opts_lp_labels))),
@@ -1072,7 +1080,7 @@ def render_capture_loan_ui(
                     details["penalty_quotation"] = penalty_quotation_product
                     _df_cl = format_schedule_df(df_schedule)
                     render_centered_html_table(_df_cl, [str(c) for c in _df_cl.columns])
-                    if st.button("Use This Schedule", type="secondary", key="cap_cl_use"):
+                    if st.button("Use This Schedule", type="tertiary", key="cap_cl_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
                         st.session_state["capture_loan_step"] = 0
@@ -1237,7 +1245,7 @@ def render_capture_loan_ui(
                     details["penalty_quotation"] = penalty_quotation_product
                     _df_term = format_schedule_df(df_schedule)
                     render_centered_html_table(_df_term, [str(c) for c in _df_term.columns])
-                    if st.button("Use This Schedule", type="secondary", key="cap_term_use"):
+                    if st.button("Use This Schedule", type="tertiary", key="cap_term_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
                         st.session_state["capture_loan_step"] = 0
@@ -1391,7 +1399,7 @@ def render_capture_loan_ui(
                         details["penalty_quotation"] = penalty_quotation_product
                         _df_bul = format_schedule_df(df_schedule)
                         render_centered_html_table(_df_bul, [str(c) for c in _df_bul.columns])
-                        if st.button("Use This Schedule", type="secondary", key="cap_bullet_use"):
+                        if st.button("Use This Schedule", type="tertiary", key="cap_bullet_use"):
                             st.session_state["capture_loan_details"] = details
                             st.session_state["capture_loan_schedule_df"] = df_schedule
                             st.session_state["capture_loan_step"] = 0
@@ -1411,7 +1419,7 @@ def render_capture_loan_ui(
                     details["penalty_quotation"] = penalty_quotation_product
                     _df_bul2 = format_schedule_df(df_schedule)
                     render_centered_html_table(_df_bul2, [str(c) for c in _df_bul2.columns])
-                    if st.button("Use This Schedule", type="secondary", key="cap_bullet_use"):
+                    if st.button("Use This Schedule", type="tertiary", key="cap_bullet_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
                         st.session_state["capture_loan_step"] = 0
@@ -1631,7 +1639,7 @@ def render_capture_loan_ui(
                         "penalty_quotation": penalty_quotation_product,
                         "currency": currency,
                     }
-                    if st.button("Use This Schedule", type="secondary", key="cap_cust_use"):
+                    if st.button("Use This Schedule", type="tertiary", key="cap_cust_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_cap
                         st.session_state["capture_loan_step"] = 0
@@ -1719,7 +1727,11 @@ def render_capture_loan_ui(
                 fees = float(d_fee_amt) + float(a_fee_amt) + float(adm_fee_amt)
                 st.markdown(f"**Fees:** {format_display_amount(fees, system_config=get_system_config())}")
             st.markdown('<hr class="fcapture-soft"/>', unsafe_allow_html=True)
-            st.subheader("Journal Preview (On Approval)")
+            st.markdown(
+                '<h3 style="text-align:right;margin:1rem 0 0.35rem 0;font-weight:600;">'
+                "Journal before posting</h3>",
+                unsafe_allow_html=True,
+            )
             from accounting.service import AccountingService
             from loan_management import build_loan_approval_journal_payload
 
@@ -1746,12 +1758,16 @@ def render_capture_loan_ui(
                             for line in sim.lines
                         ]
                     )
+                    _jp_cfg = dict(money_df_column_config(df_preview))
+                    for _jc in ("Debit", "Credit"):
+                        if _jc in _jp_cfg and isinstance(_jp_cfg[_jc], dict):
+                            _jp_cfg[_jc] = {**_jp_cfg[_jc], "alignment": "right"}
                     st.dataframe(
                         df_preview,
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=min(220, 42 + len(sim.lines) * 36),
-                        column_config=money_df_column_config(df_preview),
+                        column_config=_jp_cfg,
                     )
                 else:
                     st.info("No LOAN_APPROVAL template lines.")
@@ -1807,13 +1823,6 @@ def render_capture_loan_ui(
                 type="secondary",
                 key="cap_dismiss_t3",
             ):
-                for k in list(st.session_state.keys()):
-                    if (k.startswith("capture_") or k.startswith("cap_")) and k not in (
-                        "capture_flash_message",
-                        "_fcapture_panel_css_v10",
-                    ):
-                        st.session_state.pop(k, None)
-                st.session_state["loan_docs_staged"] = []
-                st.session_state["capture_loan_step"] = 0
+                _fcapture_clear_session_after_submit()
                 st.session_state["capture_flash_message"] = "Capture session dismissed."
                 st.rerun()

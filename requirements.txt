@@ -1,3 +1,4 @@
+# Primary dev/test runtime: Streamlit 1.54.0
 streamlit>=1.43.0
 numpy-financial
 psycopg2-binary

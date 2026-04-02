@@ -103,6 +103,10 @@ def auth_page():
             logo_left, logo_mid, logo_right = st.columns([1, 2, 1])
             with logo_mid:
                 st.image(str(logo_path), width=320)
+            st.markdown(
+                '<p class="farnda-auth-slogan">Calculated Value, Unmatched Trust</p>',
+                unsafe_allow_html=True,
+            )
 
         if "current_user" in st.session_state:
             u = st.session_state["current_user"]

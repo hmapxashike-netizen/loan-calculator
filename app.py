@@ -41,6 +41,7 @@ from core.config_manager import (
 )
 from utils.formatters import parse_display_substrings_csv as _parse_display_substrings_csv
 from utils.rates import pct_to_monthly as _pct_to_monthly
+from style import format_navigation_label, inject_farnda_global_styles_once
 from ui.components import inject_tertiary_hyperlink_css_once, render_green_page_title
 from ui.system_configurations import render_system_configurations_ui
 
@@ -1036,13 +1037,19 @@ def document_management_ui():
 def main():
     # Stage 5: ensure core session state exists early.
     ensure_core_session_state()
+    inject_farnda_global_styles_once()
     inject_tertiary_hyperlink_css_once()
     _nav_sections = get_loan_app_sections()
     if not _nav_sections:
         st.error("Navigation is not configured (no sections).")
         st.stop()
     st.sidebar.header("Navigation")
-    nav = st.sidebar.radio("Section", _nav_sections)
+    nav = st.sidebar.radio(
+        "Section",
+        _nav_sections,
+        format_func=format_navigation_label,
+        key="farnda_app_section_nav",
+    )
     st.sidebar.divider()
     render_loan_app_section(nav)
 
@@ -1050,7 +1057,6 @@ def main():
 LOAN_APP_SECTIONS = [
     "Customers",
     "Loan management",
-    "Provisions",
     "Portfolio reports",
     "Teller",
     "Reamortisation",
@@ -1078,10 +1084,6 @@ def render_loan_app_section(nav: str) -> None:
         reamortisation_ui()
     elif nav == "Statements":
         statements_ui()
-    elif nav == "Provisions":
-        from reporting.portfolio_reports_ui import render_provisions_ui
-
-        render_provisions_ui()
     elif nav == "Portfolio reports":
         from reporting.portfolio_reports_ui import render_portfolio_reports_ui
 

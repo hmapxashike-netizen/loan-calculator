@@ -8,12 +8,12 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-_HTML_TBL_CSS = """
-<style>
+from style import inject_style_block
+
+_HTML_TBL_RULES = """
 .farnda-cust-tbl { width: 100%; border-collapse: collapse; font-size: 0.875rem; margin: 0.1rem 0 0.35rem 0; }
 .farnda-cust-tbl th, .farnda-cust-tbl td { text-align: center; vertical-align: middle; padding: 0.35rem 0.45rem; border: 1px solid rgba(49, 51, 63, 0.2); }
 .farnda-cust-tbl thead th { font-weight: 600; background-color: #f0f2f6; color: #31333F; }
-</style>
 """
 
 
@@ -22,7 +22,7 @@ def _ensure_html_table_css() -> None:
     if st.session_state.get("_farnda_cust_tbl_css"):
         return
     st.session_state["_farnda_cust_tbl_css"] = True
-    st.markdown(_HTML_TBL_CSS, unsafe_allow_html=True)
+    inject_style_block(_HTML_TBL_RULES)
 
 
 def inject_tertiary_hyperlink_css_once() -> None:
@@ -30,9 +30,8 @@ def inject_tertiary_hyperlink_css_once() -> None:
     if st.session_state.get("_farnda_tertiary_hyperlink_css"):
         return
     st.session_state["_farnda_tertiary_hyperlink_css"] = True
-    st.markdown(
+    inject_style_block(
         """
-<style>
 .stApp button[data-testid="stBaseButton-tertiary"] {
   color: #2563EB !important;
   text-decoration: underline !important;
@@ -52,9 +51,7 @@ def inject_tertiary_hyperlink_css_once() -> None:
   color: #94a3b8 !important;
   text-decoration: none !important;
 }
-</style>
-        """,
-        unsafe_allow_html=True,
+"""
     )
 
 

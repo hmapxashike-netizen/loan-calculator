@@ -2,13 +2,29 @@
 
 from __future__ import annotations
 
+import io
 from html import escape
 
 import pandas as pd
 import streamlit as st
 
 from display_formatting import format_display_currency
-from ui.components import render_centered_html_table
+from ui.components import inject_tertiary_hyperlink_css_once, render_centered_html_table
+
+
+def _normalize_document_file_bytes(raw: object) -> bytes:
+    if raw is None:
+        return b""
+    if isinstance(raw, memoryview):
+        return raw.tobytes()
+    if isinstance(raw, bytearray):
+        return bytes(raw)
+    if isinstance(raw, bytes):
+        return raw
+    if isinstance(raw, str):
+        return raw.encode("utf-8")
+    return bytes(raw)
+
 
 def render_update_loans_ui(
     *,
@@ -236,6 +252,9 @@ def render_approve_loans_ui(
             st.write("")
             if st.button("Clear selection", key="approve_clear_selection", width="stretch"):
                 st.session_state.pop("approve_selected_draft_id", None)
+                for _k in list(st.session_state.keys()):
+                    if str(_k).startswith("approve_doc_preview_"):
+                        st.session_state.pop(_k, None)
                 st.rerun()
 
         drafts = list_loan_approval_drafts(
@@ -299,12 +318,128 @@ def render_approve_loans_ui(
                         if not docs:
                             st.info("No documents attached to this draft.")
                         else:
-                            doc_df = pd.DataFrame(docs)
-                            show_doc_cols = [
-                                c for c in ["category_name", "file_name", "file_size", "uploaded_by", "uploaded_at", "notes"]
-                                if c in doc_df.columns
-                            ]
-                            st.dataframe(doc_df[show_doc_cols], width="stretch", hide_index=True, height=180)
+                            inject_tertiary_hyperlink_css_once()
+                            _preview_key = f"approve_doc_preview_{int(selected_id)}"
+                            st.caption("Click a **file name** to preview PDFs and images here. Other types: download from the preview panel.")
+                            _h0, _h1, _h2, _h3, _h4 = st.columns([1.15, 2.35, 0.65, 0.95, 1.1], gap="small")
+                            with _h0:
+                                st.markdown(
+                                    '<p style="margin:0;font-weight:600;font-size:0.8rem;text-align:left;">Category</p>',
+                                    unsafe_allow_html=True,
+                                )
+                            with _h1:
+                                st.markdown(
+                                    '<p style="margin:0;font-weight:600;font-size:0.8rem;text-align:left;">File name</p>',
+                                    unsafe_allow_html=True,
+                                )
+                            with _h2:
+                                st.markdown(
+                                    '<p style="margin:0;font-weight:600;font-size:0.8rem;text-align:center;">KB</p>',
+                                    unsafe_allow_html=True,
+                                )
+                            with _h3:
+                                st.markdown(
+                                    '<p style="margin:0;font-weight:600;font-size:0.8rem;text-align:center;">Uploaded</p>',
+                                    unsafe_allow_html=True,
+                                )
+                            with _h4:
+                                st.markdown(
+                                    '<p style="margin:0;font-weight:600;font-size:0.8rem;text-align:center;">By</p>',
+                                    unsafe_allow_html=True,
+                                )
+                            for _d in docs:
+                                _did = int(_d["id"])
+                                _r0, _r1, _r2, _r3, _r4 = st.columns([1.15, 2.35, 0.65, 0.95, 1.1], gap="small")
+                                with _r0:
+                                    st.markdown(
+                                        f'<p style="margin:0;font-size:0.88rem;text-align:left;">'
+                                        f"{escape(str(_d.get('category_name') or '—'))}</p>",
+                                        unsafe_allow_html=True,
+                                    )
+                                with _r1:
+                                    if st.button(
+                                        str(_d.get("file_name") or "document"),
+                                        key=f"approve_open_doc_{_did}",
+                                        type="tertiary",
+                                    ):
+                                        st.session_state[_preview_key] = _did
+                                        st.rerun()
+                                with _r2:
+                                    try:
+                                        _kb = (
+                                            round(int(_d.get("file_size") or 0) / 1024, 1)
+                                            if _d.get("file_size") is not None
+                                            else "—"
+                                        )
+                                    except (TypeError, ValueError):
+                                        _kb = "—"
+                                    st.markdown(
+                                        f'<p style="margin:0;font-size:0.88rem;text-align:center;">{_kb}</p>',
+                                        unsafe_allow_html=True,
+                                    )
+                                with _r3:
+                                    _ua = _d.get("uploaded_at")
+                                    _ua_s = str(_ua)[:16] if _ua is not None else "—"
+                                    st.markdown(
+                                        f'<p style="margin:0;font-size:0.88rem;text-align:center;">'
+                                        f"{escape(_ua_s)}</p>",
+                                        unsafe_allow_html=True,
+                                    )
+                                with _r4:
+                                    st.markdown(
+                                        f'<p style="margin:0;font-size:0.88rem;text-align:center;">'
+                                        f"{escape(str(_d.get('uploaded_by') or '—'))}</p>",
+                                        unsafe_allow_html=True,
+                                    )
+                            _allowed_doc_ids = {int(d["id"]) for d in docs}
+                            _pid = st.session_state.get(_preview_key)
+                            if _pid is not None:
+                                try:
+                                    _pid_i = int(_pid)
+                                except (TypeError, ValueError):
+                                    st.session_state.pop(_preview_key, None)
+                                    _pid_i = None
+                                if _pid_i is not None and _pid_i not in _allowed_doc_ids:
+                                    st.session_state.pop(_preview_key, None)
+                                    _pid_i = None
+                                if _pid_i is not None:
+                                    full = get_document(_pid_i)
+                                    if not full:
+                                        st.warning("Document could not be loaded.")
+                                        st.session_state.pop(_preview_key, None)
+                                    else:
+                                        st.divider()
+                                        _fn = str(full.get("file_name") or "document")
+                                        st.markdown(f"**Preview:** {escape(_fn)}")
+                                        _raw = _normalize_document_file_bytes(full.get("file_content"))
+                                        _mime = str(full.get("file_type") or "").lower()
+                                        _fn_l = _fn.lower()
+                                        _is_pdf = _mime == "application/pdf" or _fn_l.endswith(".pdf")
+                                        _is_img = _mime.startswith("image/") or _fn_l.endswith(
+                                            (".png", ".jpg", ".jpeg", ".gif", ".webp")
+                                        )
+                                        if _is_pdf and _raw:
+                                            st.pdf(io.BytesIO(_raw))
+                                        elif _is_img and _raw:
+                                            st.image(_raw)
+                                        else:
+                                            st.info(
+                                                "In-app preview is not available for this file type. "
+                                                "Use **Download** to open it locally."
+                                            )
+                                            st.download_button(
+                                                "Download",
+                                                data=_raw,
+                                                file_name=_fn,
+                                                mime=str(full.get("file_type") or "application/octet-stream"),
+                                                key=f"approve_preview_dl_{_pid_i}",
+                                            )
+                                        if st.button(
+                                            "Close preview",
+                                            key=f"approve_close_doc_{int(selected_id)}_{_pid_i}",
+                                        ):
+                                            st.session_state.pop(_preview_key, None)
+                                            st.rerun()
                     else:
                         st.info("Document module is unavailable.")
     
@@ -378,23 +513,112 @@ def render_approve_loans_ui(
     
                 st.divider()
     
-        # Inbox table always visible; select a row via compact "Open draft" controls.
+        # Inbox table always visible; draft ID opens inspection (same as Inspect draft).
         st.markdown("### Draft inbox")
-        df = pd.DataFrame(drafts)
-        show_cols = [
-            c
-            for c in [
-                "id",
-                "customer_id",
-                "loan_type",
-                "product_code",
-                "assigned_approver_id",
-                "status",
-                "submitted_at",
-            ]
-            if c in df.columns
+        inject_tertiary_hyperlink_css_once()
+
+        def _approve_inbox_fmt_submitted(v: object) -> str:
+            if v is None:
+                return "—"
+            s = str(v).strip()
+            return s[:19] if len(s) >= 19 else s
+
+        _inbox_page_size = 35
+        _n_drafts = len(drafts)
+        _n_pages = max(1, (_n_drafts + _inbox_page_size - 1) // _inbox_page_size)
+        if _n_pages > 1:
+            st.session_state.setdefault("approve_inbox_page", 1)
+            try:
+                _pg_i = int(st.session_state["approve_inbox_page"])
+            except (TypeError, ValueError):
+                _pg_i = 1
+            if _pg_i < 1 or _pg_i > _n_pages:
+                _pg_i = min(max(1, _pg_i), _n_pages)
+                st.session_state["approve_inbox_page"] = _pg_i
+            _pg1, _pg2, _pg3 = st.columns([1, 2, 3])
+            with _pg1:
+                st.number_input(
+                    "Page",
+                    min_value=1,
+                    max_value=_n_pages,
+                    step=1,
+                    key="approve_inbox_page",
+                )
+                _cur_pg = int(st.session_state["approve_inbox_page"])
+            with _pg2:
+                st.caption(
+                    f"Showing {min(_n_drafts, (_cur_pg - 1) * _inbox_page_size + 1)}–"
+                    f"{min(_n_drafts, _cur_pg * _inbox_page_size)} of {_n_drafts} drafts."
+                )
+            with _pg3:
+                st.empty()
+        else:
+            st.session_state.pop("approve_inbox_page", None)
+            _cur_pg = 1
+        _slice_start = (_cur_pg - 1) * _inbox_page_size
+        _slice = drafts[_slice_start : _slice_start + _inbox_page_size]
+
+        _w = [0.52, 0.72, 1.05, 1.05, 0.92, 0.88, 1.35]
+        _hc = st.columns(_w)
+        _hdrs = [
+            ("ID", "left"),
+            ("Customer ID", "center"),
+            ("Loan type", "center"),
+            ("Product", "center"),
+            ("Assigned", "center"),
+            ("Status", "center"),
+            ("Submitted", "center"),
         ]
-        st.dataframe(df[show_cols], width="stretch", hide_index=True, height=280)
+        for _hi, (_ht, _al) in enumerate(_hdrs):
+            with _hc[_hi]:
+                st.markdown(
+                    f'<p style="text-align:{_al};margin:0 0 0.2rem 0;font-weight:600;font-size:0.82rem;">'
+                    f"{escape(_ht)}</p>",
+                    unsafe_allow_html=True,
+                )
+        for r in _slice:
+            rid = int(r["id"])
+            rc = st.columns(_w)
+            with rc[0]:
+                if st.button(str(rid), key=f"approve_inbox_open_id_{rid}", type="tertiary"):
+                    st.session_state["approve_selected_draft_id"] = rid
+                    st.rerun()
+            with rc[1]:
+                st.markdown(
+                    f'<p style="text-align:center;margin:0;font-size:0.88rem;">'
+                    f"{escape(str(r.get('customer_id', '')))}</p>",
+                    unsafe_allow_html=True,
+                )
+            with rc[2]:
+                st.markdown(
+                    f'<p style="text-align:center;margin:0;font-size:0.88rem;">'
+                    f"{escape(str(r.get('loan_type') or '—'))}</p>",
+                    unsafe_allow_html=True,
+                )
+            with rc[3]:
+                st.markdown(
+                    f'<p style="text-align:center;margin:0;font-size:0.88rem;">'
+                    f"{escape(str(r.get('product_code') or '—'))}</p>",
+                    unsafe_allow_html=True,
+                )
+            with rc[4]:
+                st.markdown(
+                    f'<p style="text-align:center;margin:0;font-size:0.88rem;">'
+                    f"{escape(str(r.get('assigned_approver_id') or '—'))}</p>",
+                    unsafe_allow_html=True,
+                )
+            with rc[5]:
+                st.markdown(
+                    f'<p style="text-align:center;margin:0;font-size:0.88rem;">'
+                    f"{escape(str(r.get('status') or '—'))}</p>",
+                    unsafe_allow_html=True,
+                )
+            with rc[6]:
+                st.markdown(
+                    f'<p style="text-align:center;margin:0;font-size:0.88rem;">'
+                    f"{escape(_approve_inbox_fmt_submitted(r.get('submitted_at')))}</p>",
+                    unsafe_allow_html=True,
+                )
     
         o1, o2, o3 = st.columns([2, 1, 1])
         with o1:
