@@ -21,6 +21,7 @@ from .unapplied_refs import (
     _unapplied_reversal_reference,
 )
 
+
 def reverse_repayment(
     original_repayment_id: int,
     *,
