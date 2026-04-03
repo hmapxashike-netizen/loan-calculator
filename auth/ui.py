@@ -10,12 +10,15 @@ from middleware import set_current_user, clear_current_user
 
 
 def _logo_path() -> Path:
-    base_dir = Path(__file__).resolve().parent
-    for file_name in ("FarndaCred logo with.svg", "FarndaCred logo with.png"):
-        candidate = base_dir / file_name
-        if candidate.exists():
-            return candidate
-    return base_dir / "FarndaCred logo with.png"
+    """Same asset names as ``main._logo_path``: files usually live at repo root, not under ``auth/``."""
+    auth_dir = Path(__file__).resolve().parent
+    project_root = auth_dir.parent
+    for base in (project_root, auth_dir):
+        for file_name in ("FarndaCred logo with.svg", "FarndaCred logo with.png"):
+            candidate = base / file_name
+            if candidate.exists():
+                return candidate
+    return project_root / "FarndaCred logo with.png"
 
 
 def login_form():
@@ -103,8 +106,9 @@ def auth_page():
             logo_left, logo_mid, logo_right = st.columns([1, 2, 1])
             with logo_mid:
                 st.image(str(logo_path), width=320)
+        else:
             st.markdown(
-                '<p class="farnda-auth-slogan">Calculated Value, Unmatched Trust</p>',
+                '<p class="farnda-auth-wordmark-fallback">FarndaCred</p>',
                 unsafe_allow_html=True,
             )
 
@@ -115,6 +119,11 @@ def auth_page():
                 clear_current_user()
                 st.rerun()
             return
+
+        st.markdown(
+            '<p class="farnda-auth-slogan">Calculated Value, Unmatched Trust</p>',
+            unsafe_allow_html=True,
+        )
 
         tab_login, tab_register = st.tabs(["Login", "Register"])
         with tab_login:

@@ -9,12 +9,13 @@ import importlib.util
 
 import streamlit as st
 import pandas as pd
+from streamlit_option_menu import option_menu
 
 from middleware import get_current_user, clear_current_user, require_login
 from auth.ui import auth_page
 from dal import get_conn, UserRepository, SecurityAuditLogRepository
 from auth.service import AuthService
-from style import format_navigation_label, inject_farnda_global_styles_once
+from style import inject_farnda_global_styles_once, inject_style_block
 from ui.components import inject_tertiary_hyperlink_css_once
 
 
@@ -191,7 +192,7 @@ def render_sidebar_user_meta(user: dict, system_date) -> None:
     display_name = _format_sidebar_name(user.get("full_name", "User"))
     st.sidebar.markdown(
         f"""
-        <div class="farnda-user-card" style="background:#F8FAFC; padding:0.85rem; margin-top:0.35rem;">
+        <div class="farnda-user-card" style="background:#F8FAFC; padding:0.85rem; margin-top:0;">
             <div style="font-size:0.875rem; color:#64748B; margin-bottom:0.25rem; font-weight:600;">Logged in as</div>
             <div style="font-weight:700; color:#002147; margin-bottom:0.35rem; font-size:0.98rem;">{html_escape(display_name)}</div>
             <div class="farnda-system-date" style="font-size:1.2rem; font-weight:700;">System date: {system_date.isoformat()}</div>
@@ -199,6 +200,106 @@ def render_sidebar_user_meta(user: dict, system_date) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+_OPTION_MENU_ICON_BY_SECTION: dict[str, str] = {
+    "Home": "house",
+    "Admin Dashboard": "shield-lock",
+    "Officer Dashboard": "briefcase",
+    "Customers": "people",
+    "Loan management": "cash-coin",
+    "Loan Capture": "clipboard-plus",
+    "Portfolio reports": "bar-chart-line",
+    "Teller": "bank",
+    "Reamortisation": "arrow-repeat",
+    "Statements": "file-earmark-text",
+    "Accounting": "journal-bookmark",
+    "Journals": "journal-text",
+    "Notifications": "bell",
+    "Document Management": "folder",
+    "End of day": "moon-stars",
+    "System configurations": "gear",
+    "View Schedule": "calendar3",
+    "Loan Calculators": "calculator",
+    "Update Loans": "arrow-clockwise",
+    "Interest In Suspense": "hourglass-split",
+    "Approve Loans": "check-circle",
+}
+
+
+def _section_option_menu_icon(section: str) -> str:
+    return _OPTION_MENU_ICON_BY_SECTION.get(section, "grid")
+
+
+def _apply_sidebar_option_menu_iframe_height(n_items: int) -> None:
+    """
+    streamlit-option-menu renders inside stIFrame with a default height that can clip
+    the last items. Re-apply each run (Streamlit does not persist prior st.html nodes).
+    """
+    # ~52px per row (icon + wrapped uppercase labels) + chrome; cap for very tall viewports.
+    px = max(420, min(1600, n_items * 52 + 120))
+    inject_style_block(
+        f"""
+        [data-testid="stSidebar"] iframe[data-testid="stIFrame"] {{
+          min-height: {px}px !important;
+          max-height: none !important;
+        }}
+        """
+    )
+
+
+def render_sidebar_option_menu(menu_keys: list[str], current_choice: str) -> str:
+    """
+    Render sidebar navigation via streamlit-option-menu.
+    This bypasses Streamlit built-in radio/page nav internals for full styling control.
+    """
+    if current_choice not in menu_keys:
+        current_choice = menu_keys[0]
+    display_options = [section.upper() for section in menu_keys]
+    display_to_section = {section.upper(): section for section in menu_keys}
+    with st.sidebar:
+        selected = option_menu(
+            menu_title=None,
+            options=display_options,
+            icons=[_section_option_menu_icon(section) for section in menu_keys],
+            default_index=menu_keys.index(current_choice),
+            orientation="vertical",
+            key="farnda_main_option_menu",
+            styles={
+                "container": {
+                    "padding": "0 !important",
+                    "margin": "1.2rem 0 0 0 !important",
+                    "background-color": "transparent",
+                },
+                "icon": {
+                    "color": "#002147",
+                    "font-size": "0.9rem",
+                },
+                "nav-link": {
+                    "font-size": "0.86rem",
+                    "font-weight": "500",
+                    "text-align": "left",
+                    "margin": "0",
+                    "padding": "0.5rem 0.55rem",
+                    "border-radius": "0",
+                    "line-height": "1.25",
+                    "min-height": "2.5rem",
+                    "border-bottom": "1px solid rgba(0, 33, 71, 0.14)",
+                    "white-space": "normal",
+                },
+                "nav-link:hover": {
+                    "background-color": "rgba(0, 33, 71, 0.05)",
+                    "color": "#0f172a",
+                },
+                "nav-link-selected": {
+                    "background-color": "#dbeafe",
+                    "color": "#1e3a8a",
+                    "font-weight": "600",
+                },
+            },
+        )
+    section = display_to_section.get(selected, current_choice)
+    return section if section in menu_keys else current_choice
 
 
 def borrower_home():
@@ -638,27 +739,21 @@ def main():
         return
 
     render_sidebar_branding()
-    st.sidebar.divider()
-    st.sidebar.markdown(
-        "<div style='font-weight:700; font-size:125%; margin-bottom:0.15rem;'>Navigation</div>",
-        unsafe_allow_html=True,
-    )
-    choice = st.sidebar.radio(
-        "Navigation",
-        list(menu.keys()),
-        format_func=format_navigation_label,
-        label_visibility="collapsed",
-        key="farnda_main_nav_choice",
-    )
-    st.sidebar.divider()
+    nav_key = "farnda_main_nav_choice"
+    menu_keys = list(menu.keys())
+    current_choice = st.session_state.get(nav_key)
+    if current_choice not in menu:
+        current_choice = menu_keys[0]
+        st.session_state[nav_key] = current_choice
+    _apply_sidebar_option_menu_iframe_height(len(menu_keys))
+    choice = render_sidebar_option_menu(menu_keys=menu_keys, current_choice=current_choice)
+    st.session_state[nav_key] = choice
     render_sidebar_user_meta(user=user, system_date=system_date)
 
     # Global guard to ensure we never render a page without a user
     require_login()
     page_fn = menu[choice]
     page_fn()
-    st.sidebar.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
-    st.sidebar.divider()
     if st.sidebar.button("Log out", key="sidebar_logout", type="primary", use_container_width=True):
         clear_current_user()
         st.rerun()

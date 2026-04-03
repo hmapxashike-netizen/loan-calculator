@@ -483,6 +483,20 @@ def render_capture_loan_ui(
         st.session_state["capture_flash_message"] = _msg
         st.rerun()
 
+    def _load_staged_draft_by_id(sid: int) -> None:
+        draft_s = get_loan_approval_draft(sid)
+        if not draft_s:
+            st.error(f"Draft #{sid} not found.")
+        else:
+            _apply_staged_draft_from_row(draft_s)
+
+    def _load_rework_draft_by_id(rid: int) -> None:
+        draft = get_loan_approval_draft(rid)
+        if not draft:
+            st.error(f"Draft #{rid} not found.")
+        else:
+            _apply_rework_draft_from_row(draft)
+
     flash_msg = st.session_state.pop("capture_flash_message", None)
     if flash_msg:
         st.success(str(flash_msg))
@@ -554,18 +568,27 @@ def render_capture_loan_ui(
                 hide_index=True,
                 height=min(160, 40 + min(len(rework_rows), 12) * 28),
             )
+            st.caption("Click **Customer** ID or **Load** to open the same rework draft.")
             for r in rework_rows:
                 rid = int(r["id"])
+                _rw_cust = r.get("customer_id")
+                _rw_cust_lbl = str(_rw_cust) if _rw_cust is not None else "—"
                 _rw_lbl = (
-                    f"Load Draft #{rid} · Customer {r.get('customer_id')} · "
+                    f"Load Draft #{rid} · Customer {_rw_cust_lbl} · "
                     f"{r.get('product_code', '—')} · {r.get('loan_type', '—')}"
                 )
-                if st.button(_rw_lbl, key=f"cap_rework_row_{rid}"):
-                    draft = get_loan_approval_draft(rid)
-                    if not draft:
-                        st.error(f"Draft #{rid} not found.")
-                    else:
-                        _apply_rework_draft_from_row(draft)
+                _rwc1, _rwc2 = st.columns([1.05, 3.95], gap="small", vertical_alignment="center")
+                with _rwc1:
+                    if st.button(
+                        _rw_cust_lbl,
+                        key=f"cap_rework_cust_{rid}",
+                        type="tertiary",
+                        help=f"Load rework draft #{rid} (same as Load row)",
+                    ):
+                        _load_rework_draft_by_id(rid)
+                with _rwc2:
+                    if st.button(_rw_lbl, key=f"cap_rework_row_{rid}"):
+                        _load_rework_draft_by_id(rid)
 
     if st.session_state.get("capture_open_draft_panel") == "staged":
         st.subheader("Resume Capture Draft")
@@ -599,18 +622,27 @@ def render_capture_loan_ui(
                 hide_index=True,
                 height=min(140, 36 + min(len(staged_rows), 10) * 28),
             )
+            st.caption("Click **Customer** ID or **Load** to resume the same staged draft.")
             for r in staged_rows:
                 sid = int(r["id"])
+                _st_cust = r.get("customer_id")
+                _st_cust_lbl = str(_st_cust) if _st_cust is not None else "—"
                 _st_lbl = (
-                    f"Load Staged Draft #{sid} · Customer {r.get('customer_id')} · "
+                    f"Load Staged Draft #{sid} · Customer {_st_cust_lbl} · "
                     f"{r.get('product_code', '—')} · {r.get('loan_type', '—')}"
                 )
-                if st.button(_st_lbl, key=f"cap_staged_row_{sid}"):
-                    draft_s = get_loan_approval_draft(sid)
-                    if not draft_s:
-                        st.error(f"Draft #{sid} not found.")
-                    else:
-                        _apply_staged_draft_from_row(draft_s)
+                _stc1, _stc2 = st.columns([1.05, 3.95], gap="small", vertical_alignment="center")
+                with _stc1:
+                    if st.button(
+                        _st_cust_lbl,
+                        key=f"cap_staged_cust_{sid}",
+                        type="tertiary",
+                        help=f"Resume staged draft #{sid} (same as Load row)",
+                    ):
+                        _load_staged_draft_by_id(sid)
+                with _stc2:
+                    if st.button(_st_lbl, key=f"cap_staged_row_{sid}"):
+                        _load_staged_draft_by_id(sid)
 
     # -------- Loan capture: flat panel (details → schedule → review → actions) --------
     with st.container(border=True):

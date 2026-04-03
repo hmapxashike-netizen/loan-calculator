@@ -2,10 +2,10 @@
 Farnda Cred global theme: soft glassmorphism, nav tiles, custom ring cursor, Inter typography.
 
 Inject once per session via :func:`inject_farnda_global_styles_once` using :func:`inject_style_block`
-(``st.html``) so CSS is not shown as plain text. Navigation icons use
-Unicode symbols / emoji in :func:`format_navigation_label` because Streamlit ``st.radio``
-options are plain text (Font Awesome / Lucide markup is not rendered there). Font Awesome
-is still loaded for optional use in :func:`create_card` via ``icon_html``.
+(``st.html`` + hidden span + ``unsafe_allow_javascript=True`` on Streamlit 1.54+ so DOMPurify keeps
+``<style>``). Sidebar styling covers legacy ``st.sidebar.radio`` (``stRadioGroup``) and
+``st.navigation`` / multipage (``stSidebarNavItems``). Font Awesome is loaded for
+:func:`create_card` via ``icon_html``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import urllib.parse
 
 import streamlit as st
 
-_SESSION_FLAG = "_farnda_global_style_v7"
+_SESSION_FLAG = "_farnda_global_style_v22"
 
 # Pre-encoded SVG cursors (hotspot at geometric center).
 _CURSOR_DEFAULT_SVG = """<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><circle cx='16' cy='16' r='10' fill='none' stroke='rgba(0,33,71,0.3)' stroke-width='1'/><circle cx='16' cy='16' r='2' fill='%23002147'/></svg>"""
@@ -69,11 +69,67 @@ html, body, input, button, textarea, select {
   background: #FFFFFF !important;
 }
 
+/* streamlit-option-menu: custom component iframe default height can clip last rows */
+[data-testid="stSidebar"] iframe[data-testid="stIFrame"] {
+  min-height: max(360px, calc(100dvh - 300px)) !important;
+  max-height: none !important;
+}
+
 [data-testid="stSidebar"] h1,
 [data-testid="stSidebar"] h2,
 [data-testid="stSidebar"] h3 {
   color: #002147 !important;
   font-weight: 700 !important;
+}
+
+/* Custom sidebar nav tiles (pure HTML anchors, no radio/button widgets). */
+[data-testid="stSidebar"] .farnda-nav-stack {
+  display: block !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 1px solid rgba(0, 33, 71, 0.2) !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+}
+
+[data-testid="stSidebar"] .farnda-nav-tile {
+  display: block !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  clear: both !important;
+  float: none !important;
+  margin: 0 !important;
+  padding: 0.48rem 0.6rem !important;
+  border-bottom: 1px solid rgba(0, 33, 71, 0.14) !important;
+  color: #0f172a !important;
+  text-decoration: none !important;
+  text-align: left !important;
+  line-height: 1.12 !important;
+  font-size: 0.86rem !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.03em !important;
+  white-space: normal !important;
+}
+
+[data-testid="stSidebar"] .farnda-nav-stack .farnda-nav-tile:last-child {
+  border-bottom: none !important;
+}
+
+[data-testid="stSidebar"] .farnda-nav-tile:hover {
+  background: rgba(0, 33, 71, 0.05) !important;
+  color: #0f172a !important;
+  text-decoration: none !important;
+}
+
+[data-testid="stSidebar"] .farnda-nav-tile.farnda-nav-tile--active {
+  background: #dbeafe !important;
+  color: #1e3a8a !important;
+  font-weight: 600 !important;
+}
+
+[data-testid="stSidebar"] .farnda-nav-tile:visited {
+  color: inherit !important;
 }
 
 /* Headings */
@@ -102,18 +158,168 @@ html, body, input, button, textarea, select {
   """ + f"cursor: {CURSOR_POINTER} !important;" + """
 }
 
-/* Sidebar primary (e.g. Log out): bright blue; main content keeps navy primary above */
-[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"] {
+/* Sidebar buttons: Streamlit 1.54 wrapper spacing + compact stacked tiles */
+.stApp [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+  gap: 0 !important;
+  row-gap: 0 !important;
+}
+
+.stApp [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.stApp [data-testid="stSidebar"] [data-testid="stButton"] {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.stApp [data-testid="stSidebar"] .stButton {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.stApp [data-testid="stSidebar"] [data-testid="stButton"] > div {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.stApp [data-testid="stSidebar"] [data-testid="stElementContainer"] {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+.stApp [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Sidebar buttons: blue primary (override theme red), left-aligned label + emoji */
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-primary"],
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] {
   width: 100% !important;
+  min-height: 1.6rem !important;
+  margin: 0 !important;
+  padding: 0.14rem 0.45rem !important;
+  border-radius: 6px !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  text-align: left !important;
+  line-height: 1.2 !important;
+  letter-spacing: 0.03em !important;
+  background-image: none !important;
+}
+
+/* Streamlit 1.54 fallback: sidebar buttons may be emitted as BaseWeb kind buttons without testids */
+.stApp [data-testid="stSidebar"] button[kind="primary"],
+.stApp [data-testid="stSidebar"] button[kind="secondary"] {
+  width: 100% !important;
+  min-height: 1.6rem !important;
+  margin: 0 !important;
+  padding: 0.14rem 0.45rem !important;
+  border-radius: 6px !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  text-align: left !important;
+  line-height: 1.2 !important;
+}
+
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-primary"] > div,
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] > div,
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-primary"] > span,
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] > span {
+  width: 100% !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  text-align: left !important;
+}
+
+.stApp [data-testid="stSidebar"] button[kind="primary"] > div,
+.stApp [data-testid="stSidebar"] button[kind="secondary"] > div,
+.stApp [data-testid="stSidebar"] button[kind="primary"] > span,
+.stApp [data-testid="stSidebar"] button[kind="secondary"] > span {
+  width: 100% !important;
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  text-align: left !important;
+}
+
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-primary"] p,
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] p {
+  text-align: left !important;
+  width: 100% !important;
+  margin: 0 !important;
+}
+
+.stApp [data-testid="stSidebar"] button[kind="primary"] p,
+.stApp [data-testid="stSidebar"] button[kind="secondary"] p {
+  text-align: left !important;
+  width: 100% !important;
+  margin: 0 !important;
+}
+
+.stApp [data-testid="stSidebar"] button[data-testid^="stBaseButton"] [data-testid="stMarkdownContainer"] {
+  width: 100% !important;
+  text-align: left !important;
+}
+
+.stApp [data-testid="stSidebar"] button[data-testid^="stBaseButton"] [data-testid="stMarkdownContainer"] p {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 0.25rem !important;
+  margin: 0 !important;
+}
+
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-primary"] {
   background-color: #2563eb !important;
   color: #ffffff !important;
   border: none !important;
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.32) !important;
+  box-shadow: none !important;
 }
 
-[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]:hover {
+.stApp [data-testid="stSidebar"] button[kind="primary"] {
+  background-color: #2563eb !important;
+  color: #ffffff !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]:hover,
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-primary"]:focus-visible {
   background-color: #1d4ed8 !important;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4) !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.stApp [data-testid="stSidebar"] button[kind="primary"]:hover,
+.stApp [data-testid="stSidebar"] button[kind="primary"]:focus-visible {
+  background-color: #1d4ed8 !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-secondary"] {
+  background-color: #ffffff !important;
+  color: #002147 !important;
+  box-shadow: none !important;
+}
+
+.stApp [data-testid="stSidebar"] button[kind="secondary"] {
+  background-color: #ffffff !important;
+  color: #002147 !important;
+  box-shadow: none !important;
+  border: 1px solid rgba(0, 33, 71, 0.35) !important;
 }
 
 .stApp button[data-testid="stBaseButton-secondary"] {
@@ -149,6 +355,13 @@ html, body, input, button, textarea, select {
   display: none !important;
 }
 
+/* Extra safety for 1.54 variants: suppress any pseudo radio marker drawn on the label. */
+[data-testid="stSidebar"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]::before,
+[data-testid="stSidebar"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]::after {
+  display: none !important;
+  content: none !important;
+}
+
 /* 1.54.x fallback: any vector ring inside the option label */
 [data-testid="stSidebar"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] svg {
   display: none !important;
@@ -168,6 +381,12 @@ html, body, input, button, textarea, select {
   display: none !important;
 }
 
+[data-testid="stSidebar"] .stRadio > div > label::before,
+[data-testid="stSidebar"] .stRadio > div > label::after {
+  display: none !important;
+  content: none !important;
+}
+
 [data-testid="stSidebar"] .stRadio svg {
   display: none !important;
 }
@@ -184,20 +403,30 @@ html, body, input, button, textarea, select {
 [data-testid="stSidebar"] [data-testid="stRadioGroup"] {
   display: flex !important;
   flex-direction: column !important;
-  gap: 0.2rem !important;
+  gap: 0 !important;
+  border: 1px solid rgba(0, 33, 71, 0.2) !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
 }
 
 [data-testid="stSidebar"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] {
   display: flex !important;
   align-items: center !important;
+  justify-content: flex-start !important;
   margin: 0 !important;
-  padding: 0.62rem 0.75rem 0.62rem 0.65rem !important;
-  border-radius: 8px !important;
-  border-left: 4px solid transparent !important;
+  padding: 0.46rem 0.62rem 0.46rem 0.55rem !important;
+  border-radius: 0 !important;
+  border-left: none !important;
+  border-bottom: 1px solid rgba(0, 33, 71, 0.14) !important;
   transition: background-color 0.15s ease, border-color 0.15s ease !important;
   font-weight: 500 !important;
-  font-size: 0.94rem !important;
+  font-size: 0.86rem !important;
+  line-height: 1.1 !important;
   color: #0f172a !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:last-child {
+  border-bottom: none !important;
 }
 
 [data-testid="stSidebar"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:hover {
@@ -205,30 +434,45 @@ html, body, input, button, textarea, select {
 }
 
 [data-testid="stSidebar"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) {
-  background-color: #E3F2FD !important;
-  border-left-color: #002147 !important;
-  color: #002147 !important;
+  background-color: #dbeafe !important;
+  color: #1e3a8a !important;
   font-weight: 600 !important;
+}
+
+[data-testid="stSidebar"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] p {
+  margin: 0 !important;
+  width: 100% !important;
+  text-align: left !important;
 }
 
 /* Pre-1.43: options lived under .stRadio > div with role radiogroup */
 [data-testid="stSidebar"] .stRadio > div[role="radiogroup"] {
   display: flex !important;
   flex-direction: column !important;
-  gap: 0.2rem !important;
+  gap: 0 !important;
+  border: 1px solid rgba(0, 33, 71, 0.2) !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
 }
 
 [data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label {
   display: flex !important;
   align-items: center !important;
+  justify-content: flex-start !important;
   margin: 0 !important;
-  padding: 0.62rem 0.75rem 0.62rem 0.65rem !important;
-  border-radius: 8px !important;
-  border-left: 4px solid transparent !important;
+  padding: 0.46rem 0.62rem 0.46rem 0.55rem !important;
+  border-radius: 0 !important;
+  border-left: none !important;
+  border-bottom: 1px solid rgba(0, 33, 71, 0.14) !important;
   transition: background-color 0.15s ease, border-color 0.15s ease !important;
   font-weight: 500 !important;
-  font-size: 0.94rem !important;
+  font-size: 0.86rem !important;
+  line-height: 1.1 !important;
   color: #0f172a !important;
+}
+
+[data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:last-child {
+  border-bottom: none !important;
 }
 
 [data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:hover {
@@ -236,10 +480,120 @@ html, body, input, button, textarea, select {
 }
 
 [data-testid="stSidebar"] .stRadio > div[role="radiogroup"] > label:has(input:checked) {
+  background-color: #dbeafe !important;
+  color: #1e3a8a !important;
+  font-weight: 600 !important;
+}
+
+/* ---- Streamlit 1.54+ st.navigation sidebar (data-testid stSidebarNav / stSidebarNavItems) ---- */
+/* No .st-emotion-cache-* (hashes change). Do not hide stMarkdownContainer here — it can remove real labels. */
+[data-testid="stSidebarNav"] input[type="radio"],
+[data-testid="stSidebarNavItems"] input[type="radio"],
+[data-testid="stSidebarNavItems"] [role="radiogroup"] input[type="radio"] {
+  display: none !important;
+  position: absolute !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  clip: rect(0, 0, 0, 0) !important;
+  pointer-events: none !important;
+}
+
+/* Base Web disk: div immediately after the hidden radio (same idea as stRadioGroup). */
+[data-testid="stSidebarNavItems"] label[data-baseweb="radio"] > input[type="radio"] + div,
+[data-testid="stSidebarNavItems"] label > input[type="radio"] + div {
+  display: none !important;
+}
+
+/* Radio-style nav only — do not hide SVGs on <a> multipage links (material icons). */
+[data-testid="stSidebarNavItems"] [role="radiogroup"] label svg,
+[data-testid="stSidebarNavItems"] label[data-baseweb="radio"] svg {
+  display: none !important;
+}
+
+[data-testid="stSidebarNavItems"] [role="radiogroup"] label,
+[data-testid="stSidebarNavItems"] label[data-baseweb="radio"] {
+  display: flex !important;
+  align-items: center !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  margin: 0.1rem 0 0.1rem -12px !important;
+  padding: 0.62rem 0.75rem 0.62rem 10px !important;
+  border-radius: 8px !important;
+  border-left: 4px solid transparent !important;
+  cursor: pointer !important;
+  transition: background-color 0.2s ease, border-color 0.2s ease !important;
+  font-weight: 500 !important;
+  font-size: 0.94rem !important;
+  background: transparent !important;
+}
+
+[data-testid="stSidebarNavItems"] [role="radiogroup"] label:hover,
+[data-testid="stSidebarNavItems"] label[data-baseweb="radio"]:hover {
+  background-color: #f0f2f6 !important;
+}
+
+[data-testid="stSidebarNavItems"] [role="radiogroup"] label:has(input:checked) {
   background-color: #E3F2FD !important;
   border-left-color: #002147 !important;
   color: #002147 !important;
   font-weight: 600 !important;
+}
+
+/* Base Web may set aria-checked on an inner node instead of :has(checked) */
+[data-testid="stSidebarNavItems"] [aria-checked="true"] {
+  background-color: rgba(30, 136, 229, 0.1) !important;
+  border-left: 5px solid #002147 !important;
+  font-weight: 700 !important;
+  color: #002147 !important;
+}
+
+[data-testid="stSidebarNavItems"] > li {
+  margin: 0 !important;
+  padding: 0 !important;
+  list-style: none !important;
+}
+
+[data-testid="stSidebarNavLinkContainer"] {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+[data-testid="stSidebarNavItems"] a[href] {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  border-radius: 8px !important;
+  padding: 0.62rem 0.75rem !important;
+  margin: 0.12rem 0 !important;
+  border-left: 4px solid transparent !important;
+  text-decoration: none !important;
+  transition: background-color 0.15s ease, border-color 0.15s ease !important;
+  font-weight: 500 !important;
+  font-size: 0.94rem !important;
+  color: inherit !important;
+}
+
+[data-testid="stSidebarNavItems"] a[href]:hover {
+  background-color: #f0f2f6 !important;
+}
+
+[data-testid="stSidebarNavItems"] a[href][aria-current="page"] {
+  background-color: #E3F2FD !important;
+  border-left-color: #002147 !important;
+  font-weight: 600 !important;
+  color: #002147 !important;
+}
+
+[data-testid="stSidebarNavItems"] svg {
+  flex-shrink: 0 !important;
 }
 
 /* Sidebar: sticky compact logo (nav list scrolls beneath) */
@@ -248,9 +602,9 @@ html, body, input, button, textarea, select {
   top: 0 !important;
   z-index: 100 !important;
   background: #ffffff !important;
-  padding-bottom: 0.35rem !important;
-  margin: 0 0 0.2rem 0 !important;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.07) !important;
+  padding-bottom: 0 !important;
+  margin: 0 !important;
+  border-bottom: none !important;
 }
 
 [data-testid="stSidebar"] .farnda-sidebar-logo-wrap {
@@ -279,6 +633,15 @@ html, body, input, button, textarea, select {
   color: #002147 !important;
   font-size: 0.95rem !important;
   text-align: center !important;
+}
+
+/* Login / register: wordmark if image files are absent */
+.farnda-auth-wordmark-fallback {
+  text-align: center !important;
+  font-weight: 700 !important;
+  font-size: 1.75rem !important;
+  color: #002147 !important;
+  margin: 0.25rem 0 0.5rem 0 !important;
 }
 
 /* Login / register: slogan under hero logo */
@@ -335,19 +698,25 @@ def inject_style_block(css_rules: str) -> None:
     """
     Inject a ``<style>`` block using ``st.html``.
 
-    Streamlit's markdown renderer sanitizes ``st.markdown(..., unsafe_allow_html=True)``
-    and can strip ``<style>``, leaving raw CSS visible as page text. ``st.html`` applies
-    the stylesheet without that leak; style-only payloads use the event container (no layout gap).
+    Streamlit 1.54+ (DOMPurify): (1) ``st.markdown`` can strip ``<style>`` or show CSS as text.
+    (2) **Style-only** ``st.html`` is sent via the event container **without**
+    ``unsafe_allow_javascript``, so ``<style>`` is removed and **no global CSS applies** (sidebar
+    radios stay visible, theme lost). (3) Non-style-only HTML + ``unsafe_allow_javascript=True``
+    uses a sanitizer profile that **keeps** ``<style>``. We add a hidden span so the payload is
+    not "style-only", then pass ``unsafe_allow_javascript=True`` (trusted static CSS only).
     """
     text = css_rules.strip()
     if not text:
         return
-    body = f"<style>\n{text}\n</style>"
+    body = (
+        f"<style>\n{text}\n</style>"
+        '<span style="display:none" aria-hidden="true"></span>'
+    )
     html_fn = getattr(st, "html", None)
     if html_fn is not None:
-        html_fn(body)
+        html_fn(body, unsafe_allow_javascript=True)
     else:
-        st.markdown(body, unsafe_allow_html=True)
+        st.markdown(f"<style>\n{text}\n</style>", unsafe_allow_html=True)
 
 
 def inject_farnda_global_styles_once() -> None:

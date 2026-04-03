@@ -1,5 +1,6 @@
 # Primary dev/test runtime: Streamlit 1.54.0
 streamlit>=1.43.0
+streamlit-option-menu
 numpy-financial
 psycopg2-binary
 openpyxl
