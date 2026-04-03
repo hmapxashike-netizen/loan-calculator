@@ -34,7 +34,7 @@ import urllib.parse
 import streamlit as st
 
 # Session stores this **integer**; bump when global/brand heading CSS must refresh in the browser.
-_FARNDA_CSS_BUNDLE_VERSION = 45
+_FARNDA_CSS_BUNDLE_VERSION = 46
 _SESSION_FLAG = "_farnda_global_css_bundle_version"
 
 # Heading scale: 15% softer than prior (multiply size by 0.85; weights stepped to valid CSS values)
@@ -506,9 +506,9 @@ html, body, input, button, textarea, select {
   background: #FFFFFF !important;
 }
 
-/* streamlit-option-menu: custom component iframe default height can clip last rows */
+/* streamlit-option-menu: baseline iframe height; main._apply_sidebar_option_menu_iframe_height tightens per menu count */
 [data-testid="stSidebar"] iframe[data-testid="stIFrame"] {
-  min-height: max(360px, calc(100dvh - 300px)) !important;
+  min-height: max(520px, calc(100dvh - 200px)) !important;
   max-height: none !important;
 }
 
@@ -888,6 +888,11 @@ html, body, input, button, textarea, select {
   margin: 0 !important;
   width: 100% !important;
   text-align: left !important;
+}
+
+/* app.py “Section” nav: space under tile stack so last row (e.g. Subscription) is not tight to divider */
+[data-testid="stSidebar"] .stRadio {
+  margin-bottom: 0.85rem !important;
 }
 
 /* Pre-1.43: options lived under .stRadio > div with role radiogroup */
@@ -1295,6 +1300,7 @@ NAV_LABEL_ICONS: dict[str, str] = {
     "Document Management": "\U0001F4C1",
     "End of day": "\U0001F319",
     "System configurations": "\u2699\uFE0F",
+    "Subscription": "\U0001F4B3",
     "View Schedule": "\U0001F4C5",
     "Loan Calculators": "\U0001F9EE",
     "Update Loans": "\U0001F504",

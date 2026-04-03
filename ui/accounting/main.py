@@ -12,20 +12,28 @@ def render_accounting_ui(
     get_system_config,
     get_system_date,
     money_df_column_config,
+    show_bank_reconciliation_tab: bool = True,
 ) -> None:
     from services.accounting_ui import build_accounting_ui_bundle
 
     bundle = build_accounting_ui_bundle()
 
-    tab_coa, tab_templates, tab_mapping, tab_manual, tab_reports = st.tabs(
-        [
-            "Chart of Accounts",
-            "Transaction Templates",
-            "Receipt → GL Mapping",
-            "Manual Journals",
-            "Financial Reports",
-        ]
-    )
+    tab_labels = [
+        "Chart of Accounts",
+        "Transaction Templates",
+        "Receipt → GL Mapping",
+        "Manual Journals",
+        "Financial Reports",
+    ]
+    if show_bank_reconciliation_tab:
+        tab_labels.append("Bank reconciliation")
+    tabs = st.tabs(tab_labels)
+    tab_coa = tabs[0]
+    tab_templates = tabs[1]
+    tab_mapping = tabs[2]
+    tab_manual = tabs[3]
+    tab_reports = tabs[4]
+    tab_bank_recon = tabs[5] if show_bank_reconciliation_tab else None
 
     with tab_coa:
         from ui.accounting.coa_tab import render_accounting_coa_tab
@@ -60,3 +68,9 @@ def render_accounting_ui(
             get_system_date=get_system_date,
             money_df_column_config=money_df_column_config,
         )
+
+    if tab_bank_recon is not None:
+        with tab_bank_recon:
+            from ui.accounting.bank_reconciliation_tab import render_bank_reconciliation_tab
+
+            render_bank_reconciliation_tab()

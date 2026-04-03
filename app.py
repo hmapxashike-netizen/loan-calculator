@@ -200,12 +200,18 @@ def _source_cash_gl_cache_empty_warning() -> None:
 # --- App state & global settings (UI) ---
 
 def _get_system_date():
+    from datetime import date as _date
+
     try:
         from eod.system_business_date import get_effective_date
 
-        return get_effective_date()
+        d = get_effective_date()
     except ImportError:
-        return datetime.now().date()
+        d = datetime.now().date()
+    fz = st.session_state.get("subscription_frozen_effective_date")
+    if fz is not None and isinstance(fz, _date):
+        return min(d, fz)
+    return d
 
 
 def _schedule_export_downloads(df: pd.DataFrame, *, file_stem: str, key_prefix: str) -> None:
@@ -996,12 +1002,20 @@ def accounting_ui():
     """Database-backed Accounting Module."""
     from ui.accounting import render_accounting_ui
 
+    try:
+        from subscription.access import premium_bank_reconciliation_enabled
+
+        _show_bank_recon = premium_bank_reconciliation_enabled()
+    except Exception:
+        _show_bank_recon = True
+
     render_accounting_ui(
         loan_management_available=_loan_management_available,
         list_products=globals().get("list_products") or (lambda **k: []),
         get_system_config=_get_system_config,
         get_system_date=_get_system_date,
         money_df_column_config=_money_df_column_config,
+        show_bank_reconciliation_tab=_show_bank_recon,
     )
 
 
@@ -1072,6 +1086,7 @@ LOAN_APP_SECTIONS = [
     "Document Management",
     "End of day",
     "System configurations",
+    "Subscription",
 ]
 
 
@@ -1081,7 +1096,16 @@ def get_loan_app_sections() -> list[str]:
 
 def render_loan_app_section(nav: str) -> None:
     _get_global_loan_settings()  # ensure defaults exist
+    from subscription.access import check_access, get_subscription_snapshot
+
+    check_access(nav_section=nav, snapshot=get_subscription_snapshot())
     render_main_page_title(nav)
+    if nav == "Subscription":
+        from middleware import get_current_user as _gcu
+        from ui.subscription_user import render_subscription_user_ui
+
+        render_subscription_user_ui(get_current_user=_gcu)
+        return
     if nav == "Customers":
         customers_ui()
     elif nav == "Teller":
@@ -1131,6 +1155,14 @@ def render_loan_app_section(nav: str) -> None:
         ) = st.tabs(_lm_sections, default=_lm_default)
 
         with t_capture:
+            try:
+                from subscription.access import basic_tier_hide_loan_capture
+
+                if basic_tier_hide_loan_capture():
+                    st.warning("Loan capture (origination) requires a **Premium** subscription.")
+                    return
+            except Exception:
+                pass
             inject_tertiary_hyperlink_css_once()
             st.session_state.setdefault("capture_open_draft_panel", None)
             _cap_panel = st.session_state.get("capture_open_draft_panel")

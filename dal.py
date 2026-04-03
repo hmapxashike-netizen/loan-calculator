@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
+import bcrypt
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -13,6 +14,32 @@ from config import get_database_url
 def get_conn():
     """Create a new psycopg2 connection using config.get_database_url()."""
     return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+
+
+def ensure_user_totp_backup_codes_table(conn) -> None:
+    """
+    Ensure TOTP backup-code storage exists (idempotent).
+    Same structure as schema/70_totp_superadmin_backup_codes.sql; does not COMMIT.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS public.user_totp_backup_codes (
+              id           BIGSERIAL PRIMARY KEY,
+              user_id      UUID NOT NULL REFERENCES public.users (id) ON DELETE CASCADE,
+              code_hash    TEXT NOT NULL,
+              used_at      TIMESTAMPTZ NULL,
+              created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_totp_backup_user_unused
+              ON public.user_totp_backup_codes (user_id)
+              WHERE used_at IS NULL
+            """
+        )
 
 
 @dataclass
@@ -27,6 +54,8 @@ class User:
     locked_until: Optional[datetime]
     last_login: Optional[datetime]
     created_at: datetime
+    two_factor_enabled: bool = False
+    two_factor_secret: Optional[str] = None
 
 
 class UserRepository:
@@ -45,7 +74,15 @@ class UserRepository:
             locked_until=row["locked_until"],
             last_login=row["last_login"],
             created_at=row["created_at"],
+            two_factor_enabled=bool(row.get("two_factor_enabled")),
+            two_factor_secret=row.get("two_factor_secret"),
         )
+
+    def get_by_id(self, user_id: str) -> Optional[User]:
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+            row = cur.fetchone()
+        return self._row_to_user(row) if row else None
 
     def get_by_email(self, email: str) -> Optional[User]:
         with self.conn.cursor() as cur:
@@ -122,6 +159,108 @@ class UserRepository:
             )
         self.conn.commit()
 
+    def set_two_factor(self, user_id: str, *, secret: str, enabled: bool) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET two_factor_secret = %s,
+                    two_factor_enabled = %s
+                WHERE id = %s
+                """,
+                (secret, enabled, user_id),
+            )
+        self.conn.commit()
+
+    def clear_two_factor(self, user_id: str) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET two_factor_secret = NULL,
+                    two_factor_enabled = FALSE
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+        self.conn.commit()
+
+    def replace_totp_backup_codes(self, user_id: str, normalized_codes: list[str]) -> None:
+        """Store bcrypt hashes of recovery codes (each string already normalized, no spaces/dashes)."""
+        ensure_user_totp_backup_codes_table(self.conn)
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM public.user_totp_backup_codes WHERE user_id = %s AND used_at IS NULL",
+                (user_id,),
+            )
+            for norm in normalized_codes:
+                if not norm:
+                    continue
+                h = bcrypt.hashpw(norm.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+                cur.execute(
+                    """
+                    INSERT INTO public.user_totp_backup_codes (user_id, code_hash)
+                    VALUES (%s, %s)
+                    """,
+                    (user_id, h),
+                )
+        self.conn.commit()
+
+    def try_consume_backup_code(self, user_id: str, plain_normalized: str) -> bool:
+        """
+        If plain matches an unused backup code, mark it used and return True.
+        ``plain_normalized`` must be uppercase, no spaces/dashes (see auth.totp.normalize_backup_code).
+        """
+        if not plain_normalized:
+            return False
+        ensure_user_totp_backup_codes_table(self.conn)
+        candidate = plain_normalized.encode("utf-8")
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, code_hash
+                FROM public.user_totp_backup_codes
+                WHERE user_id = %s AND used_at IS NULL
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+        for row in rows:
+            ch = str(row["code_hash"])
+            try:
+                if bcrypt.checkpw(candidate, ch.encode("utf-8")):
+                    with self.conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE public.user_totp_backup_codes
+                            SET used_at = NOW()
+                            WHERE id = %s AND used_at IS NULL
+                            """,
+                            (row["id"],),
+                        )
+                        ok = cur.rowcount == 1
+                    if ok:
+                        self.conn.commit()
+                        return True
+                    self.conn.rollback()
+            except Exception:
+                continue
+        return False
+
+    def count_unused_backup_codes(self, user_id: str) -> int:
+        ensure_user_totp_backup_codes_table(self.conn)
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM public.user_totp_backup_codes
+                WHERE user_id = %s AND used_at IS NULL
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
     def increment_failed_attempts(self, user_id: str, *, lockout: bool) -> None:
         with self.conn.cursor() as cur:
             if lockout:
@@ -174,15 +313,16 @@ class SecurityAuditLogRepository:
         success: bool,
         ip_address: Optional[str],
         user_agent: Optional[str],
+        event_type: str = "LOGIN",
     ) -> None:
         with self.conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO security_audit_log
                     (user_id, email_used, success, ip_address, user_agent, event_type)
-                VALUES (%s, %s, %s, %s::inet, %s, 'LOGIN')
+                VALUES (%s, %s, %s, %s::inet, %s, %s)
                 """,
-                (user_id, email_used, success, ip_address, user_agent),
+                (user_id, email_used, success, ip_address, user_agent, event_type),
             )
         self.conn.commit()
 

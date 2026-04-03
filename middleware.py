@@ -19,12 +19,14 @@ def set_current_user(user: Any) -> None:
     Store only non-sensitive user fields in session_state.
     Accepts a DAL User object or a compatible mapping.
     """
+    two_fa = getattr(user, "two_factor_enabled", None) if not isinstance(user, dict) else user.get("two_factor_enabled")
     data = {
         "id": getattr(user, "id", None) if not isinstance(user, dict) else user.get("id"),
         "email": getattr(user, "email", None) if not isinstance(user, dict) else user.get("email"),
         "full_name": getattr(user, "full_name", None) if not isinstance(user, dict) else user.get("full_name"),
         "role": getattr(user, "role", None) if not isinstance(user, dict) else user.get("role"),
         "is_active": getattr(user, "is_active", None) if not isinstance(user, dict) else user.get("is_active"),
+        "two_factor_enabled": bool(two_fa) if two_fa is not None else False,
     }
     last_login = getattr(user, "last_login", None) if not isinstance(user, dict) else user.get("last_login")
     if last_login is not None:
@@ -38,6 +40,10 @@ def set_current_user(user: Any) -> None:
 def clear_current_user() -> None:
     st.session_state.pop("current_user", None)
     st.session_state.pop("_farnda_tenant_bind_message", None)
+    st.session_state.pop("_farnda_totp_pending", None)
+    st.session_state.pop("_farnda_regen_backup_codes", None)
+    st.session_state.pop("_farnda_enrollment_recovery_codes", None)
+    st.session_state.pop("_farnda_auth_panel", None)
     try:
         from db.tenant_registry import clear_tenant_context
 

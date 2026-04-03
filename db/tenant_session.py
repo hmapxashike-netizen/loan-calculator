@@ -133,6 +133,9 @@ def _register_search_path_pool_reset(engine: Engine) -> None:
         if dbapi_connection is None:
             return
         try:
+            # Close any open DBAPI transaction before RESET so pool_pre_ping / set_session
+            # does not hit psycopg2 "set_session cannot be used inside a transaction".
+            dbapi_connection.rollback()
             cur = dbapi_connection.cursor()
             cur.execute("RESET search_path")
             cur.close()
@@ -168,6 +171,30 @@ def get_tenant_engine() -> Engine:
     return engine
 
 
+def connect_autocommit_psycopg2() -> Any:
+    """
+    psycopg2 connection with ``autocommit=True`` and :class:`~psycopg2.extras.RealDictCursor`.
+
+    Use for **public** metadata queries (e.g. ``public.tenants``) so they do not share the
+    SQLAlchemy pool. Pool checkout + ``pool_pre_ping`` can otherwise trigger psycopg2
+    ``set_session cannot be used inside a transaction`` when combined with autobegin.
+    """
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    cfg = _read_postgres_secrets()
+    conn = psycopg2.connect(
+        host=cfg.host,
+        port=int(cfg.port),
+        user=cfg.user,
+        password=cfg.password,
+        dbname=cfg.database,
+        cursor_factory=RealDictCursor,
+    )
+    conn.autocommit = True
+    return conn
+
+
 def get_db_session(tenant_schema: str) -> Session:
     """
     Open a new SQLAlchemy session and set PostgreSQL ``search_path`` to the tenant schema.
@@ -193,7 +220,9 @@ def get_db_session(tenant_schema: str) -> Session:
     _, SessionLocal = _tenant_engine_and_session_factory()
     session = SessionLocal()
     try:
-        # Identifier is strictly validated; safe to embed as literal in SET.
+        # First statement on this connection: SET runs inside the normal autobegin transaction.
+        # Avoid execution_options isolation_level AUTOCOMMIT here — it triggers psycopg2
+        # "set_session cannot be used inside a transaction" with pool_pre_ping / pooled connections.
         session.execute(text(f"SET search_path TO {validated}"))
     except Exception:
         session.close()
@@ -223,6 +252,7 @@ __all__ = [
     "PostgresSecrets",
     "validate_tenant_schema_name",
     "get_tenant_engine",
+    "connect_autocommit_psycopg2",
     "get_db_session",
     "tenant_session_scope",
 ]

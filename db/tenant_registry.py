@@ -16,14 +16,12 @@ from contextlib import contextmanager
 from typing import Any, Generator
 
 import streamlit as st
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from db.tenant_session import (
     TenantSchemaValidationError,
+    connect_autocommit_psycopg2,
     get_db_session,
-    get_tenant_engine,
     tenant_session_scope,
     validate_tenant_schema_name,
 )
@@ -41,19 +39,15 @@ class TenantAmbiguousCompanyError(RuntimeError):
     """More than one active row matched the company name (data integrity)."""
 
 
-def get_tenant_schema(company_name: str, *, engine: Engine | None = None) -> str:
+def get_tenant_schema(company_name: str) -> str:
     """
     Resolve an active tenant's PostgreSQL ``schema_name`` from ``public.tenants`` by company name.
 
     Match is **case-insensitive** on trimmed ``company_name``. Only rows with ``is_active = TRUE``
     are considered.
 
-    Parameters
-    ----------
-    company_name
-        Human-entered or UI-selected company label (must be non-empty after strip).
-    engine
-        Optional SQLAlchemy engine (defaults to cached :func:`db.tenant_session.get_tenant_engine`).
+    Uses a direct psycopg2 autocommit connection (not the SQLAlchemy pool) to avoid
+    ``set_session cannot be used inside a transaction`` with pool pre-ping.
 
     Returns
     -------
@@ -75,19 +69,22 @@ def get_tenant_schema(company_name: str, *, engine: Engine | None = None) -> str
     if not cn:
         raise ValueError("company_name must be a non-empty string")
 
-    eng = engine or get_tenant_engine()
-    sql = text(
-        """
-        SELECT trim(both from schema_name) AS schema_name
-        FROM public.tenants
-        WHERE lower(trim(both from company_name)) = lower(:company_trim)
-          AND is_active IS TRUE
-        LIMIT 2
-        """
-    )
-
-    with eng.connect() as conn:
-        rows = conn.execute(sql, {"company_trim": cn}).fetchall()
+    conn = connect_autocommit_psycopg2()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT trim(both from schema_name) AS schema_name
+                FROM public.tenants
+                WHERE lower(trim(both from company_name)) = lower(%s)
+                  AND is_active IS TRUE
+                LIMIT 2
+                """,
+                (cn,),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
 
     if not rows:
         raise TenantCompanyNotFoundError(f"No active tenant found for company name: {cn!r}")
@@ -96,39 +93,45 @@ def get_tenant_schema(company_name: str, *, engine: Engine | None = None) -> str
             f"Multiple active tenants matched company name {cn!r}; check public.tenants data and indexes."
         )
 
-    raw_schema = rows[0][0]
+    raw_schema = rows[0]["schema_name"]
     if raw_schema is None or str(raw_schema).strip() == "":
         raise TenantSchemaValidationError("Tenant row has empty schema_name")
 
     return validate_tenant_schema_name(str(raw_schema))
 
 
-def list_active_tenants(*, engine: Engine | None = None) -> list[dict[str, Any]]:
+def list_active_tenants() -> list[dict[str, Any]]:
     """
     Return active tenants for pickers: ``[{"id", "company_name", "schema_name"}, ...]`` ordered by company.
+
+    Uses psycopg2 autocommit (see :func:`get_tenant_schema`).
     """
-    eng = engine or get_tenant_engine()
-    sql = text(
-        """
-        SELECT id, trim(both from company_name) AS company_name, trim(both from schema_name) AS schema_name
-        FROM public.tenants
-        WHERE is_active IS TRUE
-        ORDER BY lower(company_name)
-        """
-    )
-    with eng.connect() as conn:
-        result = conn.execute(sql)
-        cols = result.keys()
-        return [dict(zip(cols, row)) for row in result.fetchall()]
+    conn = connect_autocommit_psycopg2()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id,
+                       trim(both from company_name) AS company_name,
+                       trim(both from schema_name) AS schema_name
+                FROM public.tenants
+                WHERE is_active IS TRUE
+                ORDER BY lower(company_name)
+                """
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
 
 
-def remember_tenant_context(company_name: str, *, engine: Engine | None = None) -> str:
+def remember_tenant_context(company_name: str) -> str:
     """
     Look up ``schema_name`` and persist **company** + **schema** in ``st.session_state``.
 
     Returns the resolved schema name. Raises the same exceptions as :func:`get_tenant_schema`.
     """
-    schema = get_tenant_schema(company_name, engine=engine)
+    schema = get_tenant_schema(company_name)
     st.session_state[SESSION_TENANT_COMPANY] = (company_name or "").strip()
     st.session_state[SESSION_TENANT_SCHEMA] = schema
     return schema

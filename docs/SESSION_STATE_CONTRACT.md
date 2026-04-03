@@ -16,9 +16,16 @@ This document lists the `st.session_state` keys used by the Streamlit app, group
 
 - **`loan_mgmt_subnav`**: Loan management sub-section (segmented bar; Title Case labels; kept across actions/reruns).
 
+## Subscription / LendFlow access (`subscription_*`)
+
+**Entry:** `main.py` refreshes access for `ADMIN` / `LOAN_OFFICER` after `build_menu_for_role`; `subscription/access.py` owns computation and session keys.
+
+- **`subscription_access_snapshot`**: `SubscriptionAccessSnapshot` dataclass (frozen): band, tier, overdue days, period dates, `restricted_nav`, `terminated`, `basic_tier`, `grace_access_active` (when `tenant_subscription.grace_access_until` covers today), message, etc. Populated by `subscription.access.refresh_subscription_access_snapshot` (uses DB via `subscription/repository.py`).
+- **`subscription_frozen_effective_date`**: `datetime.date` or unset. When set, `app._get_system_date()` returns `min(get_effective_date(), frozen)` for view-only delinquency (8–30 days overdue).
+
 ## System configurations UI (`syscfg_*`)
 
-**Package:** `ui/system_configurations/` — `main.render_system_configurations_ui` orchestrates tabs; submodules are `sectors_tab`, `eod_tab`, `accounting_tab`, `consumer_schemes_tab`, `products_tab`, `loan_purposes_tab`, `grade_scales_tab`, `ifrs_provision_tab`, `display_tab`. **Shell:** `app.py:system_configurations_ui` builds safe DAL lambdas and delegates.
+**Package:** `ui/system_configurations/` — `main.render_system_configurations_ui` orchestrates tabs; submodules include `sectors_tab`, `eod_tab`, `accounting_tab`, `consumer_schemes_tab`, `products_tab`, `loan_purposes_tab`, `grade_scales_tab`, `ifrs_provision_tab`, `display_tab`, `subscription_vendor_tab`. **Shell:** `app.py:system_configurations_ui` builds safe DAL lambdas and delegates.
 
 These keys back widgets and edit panels under **System configurations**.
 

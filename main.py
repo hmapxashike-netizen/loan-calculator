@@ -12,7 +12,7 @@ import pandas as pd
 from streamlit_option_menu import option_menu
 
 from middleware import get_current_user, clear_current_user, require_login
-from auth.ui import auth_page
+from auth.ui import auth_page, render_totp_recovery_regeneration_sidebar
 from dal import get_conn, UserRepository, SecurityAuditLogRepository
 from auth.service import AuthService
 from style import (
@@ -23,6 +23,19 @@ from style import (
     render_sub_sub_header,
 )
 from ui.components import inject_tertiary_hyperlink_css_once
+
+
+def _privileged_roles_touch(old_role: str, new_role: str) -> bool:
+    pr = frozenset({"VENDOR", "SUPERADMIN"})
+    return old_role in pr or new_role in pr
+
+
+def _user_role_edit_allowed(actor_role: str | None, old_role: str, new_role: str) -> tuple[bool, str]:
+    if not _privileged_roles_touch(old_role, new_role):
+        return True, ""
+    if actor_role == "SUPERADMIN":
+        return True, ""
+    return False, "Only a super administrator can assign or remove vendor or super-admin roles."
 
 
 def _load_loan_ui_module():
@@ -225,6 +238,7 @@ _OPTION_MENU_ICON_BY_SECTION: dict[str, str] = {
     "Document Management": "folder",
     "End of day": "moon-stars",
     "System configurations": "gear",
+    "Subscription": "credit-card",
     "View Schedule": "calendar3",
     "Loan Calculators": "calculator",
     "Update Loans": "arrow-clockwise",
@@ -242,13 +256,22 @@ def _apply_sidebar_option_menu_iframe_height(n_items: int) -> None:
     streamlit-option-menu renders inside stIFrame with a default height that can clip
     the last items. Re-apply each run (Streamlit does not persist prior st.html nodes).
     """
-    # ~52px per row (icon + wrapped uppercase labels) + chrome; cap for very tall viewports.
-    px = max(420, min(1600, n_items * 52 + 120))
+    # Uppercase labels often wrap to two lines; last row (e.g. Subscription) was getting clipped.
+    row_px = 84
+    chrome = 420
+    tail_pad = 72
+    px = max(640, min(2800, n_items * row_px + chrome + tail_pad))
+    vh_floor = "max(520px, calc(100dvh - 200px))"
     inject_style_block(
         f"""
         [data-testid="stSidebar"] iframe[data-testid="stIFrame"] {{
-          min-height: {px}px !important;
+          height: max({px}px, {vh_floor}) !important;
+          min-height: max({px}px, {vh_floor}) !important;
           max-height: none !important;
+        }}
+        [data-testid="stSidebar"] [data-testid="stElementContainer"]:has(iframe[data-testid="stIFrame"]) {{
+          overflow: visible !important;
+          min-height: max({px}px, {vh_floor}) !important;
         }}
         """
     )
@@ -292,6 +315,7 @@ def render_sidebar_option_menu(menu_keys: list[str], current_choice: str) -> str
                     "min-height": "2.5rem",
                     "border-bottom": "1px solid rgba(0, 33, 71, 0.14)",
                     "white-space": "normal",
+                    "overflow-wrap": "anywhere",
                 },
                 "nav-link:hover": {
                     "background-color": "rgba(0, 33, 71, 0.05)",
@@ -322,15 +346,15 @@ def admin_home():
     render_main_page_title("Admin Dashboard")
     st.session_state.setdefault("admin_users_panel", None)
 
+    inject_tertiary_hyperlink_css_once()
+    if msg := st.session_state.pop("admin_ok_msg", None):
+        st.success(msg)
+    if msg := st.session_state.pop("admin_info_msg", None):
+        st.info(msg)
+
     tab_users, tab_audit = st.tabs(["User Management", "Security Audit Log"])
 
     with tab_users:
-        inject_tertiary_hyperlink_css_once()
-        if msg := st.session_state.pop("admin_ok_msg", None):
-            st.success(msg)
-        if msg := st.session_state.pop("admin_info_msg", None):
-            st.info(msg)
-
         # Admin User Management: align text inputs and Role select height; keep checkboxes on same baseline.
         st.markdown(
             """
@@ -436,10 +460,16 @@ def admin_home():
                 selected_email = st.selectbox("Select User", email_choices, key="adm_pick_user")
             selected_user = next(u for u in users if u.email == selected_email)
             with role_col:
+                _manage_roles = ["ADMIN", "LOAN_OFFICER", "BORROWER", "SUPERADMIN", "VENDOR"]
+                _mr_idx = (
+                    _manage_roles.index(selected_user.role)
+                    if selected_user.role in _manage_roles
+                    else 0
+                )
                 new_role = st.selectbox(
                     "Role",
-                    ["ADMIN", "LOAN_OFFICER", "BORROWER"],
-                    index=["ADMIN", "LOAN_OFFICER", "BORROWER"].index(selected_user.role),
+                    _manage_roles,
+                    index=_mr_idx,
                     key=f"adm_role_{selected_user.id}",
                 )
 
@@ -464,32 +494,52 @@ def admin_home():
                 )
 
             if st.button("Apply Changes", type="primary", key=f"adm_apply_{selected_user.id}"):
-                try:
-                    conn_apply = get_conn()
+                cu = get_current_user()
+                ok_role, role_err = _user_role_edit_allowed(
+                    (cu or {}).get("role"),
+                    str(selected_user.role),
+                    str(new_role),
+                )
+                if not ok_role:
+                    st.error(role_err)
+                else:
                     try:
-                        repo = UserRepository(conn_apply)
-                        if selected_user.role != new_role:
-                            repo.update_role(selected_user.id, new_role)
-                        if selected_user.is_active != is_active:
-                            repo.set_active(selected_user.id, is_active)
+                        conn_apply = get_conn()
                         temp_password = None
-                        if reset_pw:
-                            import secrets
+                        changed = False
+                        try:
+                            repo = UserRepository(conn_apply)
+                            if selected_user.role != new_role:
+                                repo.update_role(selected_user.id, new_role)
+                                changed = True
+                            if selected_user.is_active != is_active:
+                                repo.set_active(selected_user.id, is_active)
+                                changed = True
+                            if reset_pw:
+                                import secrets
 
-                            temp_password = secrets.token_urlsafe(12)
-                            auth = AuthService(conn_apply)
-                            pw_hash = auth.hash_password(temp_password)
-                            repo.update_password(selected_user.id, pw_hash)
-                        if unlock:
-                            repo.unlock_account(selected_user.id)
-                    finally:
-                        conn_apply.close()
-                    st.success("Changes applied.")
-                    if temp_password:
-                        st.info(f"Temporary password for {selected_email}: `{temp_password}`")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to apply changes: {e}")
+                                temp_password = secrets.token_urlsafe(12)
+                                auth = AuthService(conn_apply)
+                                pw_hash = auth.hash_password(temp_password)
+                                repo.update_password(selected_user.id, pw_hash)
+                                changed = True
+                            if unlock:
+                                repo.unlock_account(selected_user.id)
+                                changed = True
+                        finally:
+                            conn_apply.close()
+                        if changed:
+                            # Persist via session state so messages survive st.rerun() (same pattern as Create User).
+                            st.session_state["admin_ok_msg"] = "Changes applied."
+                            if temp_password:
+                                st.session_state["admin_info_msg"] = (
+                                    f"Temporary password for {selected_email}: `{temp_password}`"
+                                )
+                            st.rerun()
+                        else:
+                            st.info("No changes to apply.")
+                    except Exception as e:
+                        st.error(f"Failed to apply changes: {e}")
 
         elif panel == "create":
             hdr_l, hdr_r = st.columns([8, 1], gap="small", vertical_alignment="center")
@@ -509,7 +559,7 @@ def admin_home():
             with r2c1:
                 new_role = st.selectbox(
                     "Role",
-                    ["BORROWER", "LOAN_OFFICER", "ADMIN"],
+                    ["BORROWER", "LOAN_OFFICER", "ADMIN", "VENDOR", "SUPERADMIN"],
                     index=0,
                     key="adm_new_role",
                 )
@@ -521,39 +571,43 @@ def admin_home():
                 )
 
             if st.button("Create User", type="primary", key="adm_create_user"):
-                try:
-                    conn_c = get_conn()
+                cu = get_current_user()
+                ok_cr, cr_err = _user_role_edit_allowed((cu or {}).get("role"), "BORROWER", str(new_role))
+                if not ok_cr:
+                    st.error(cr_err)
+                else:
                     try:
-                        users_repo = UserRepository(conn_c)
-                        if users_repo.get_by_email(new_email):
-                            st.error("A user with that email already exists.")
-                        else:
-                            import secrets
+                        conn_c = get_conn()
+                        try:
+                            users_repo = UserRepository(conn_c)
+                            if users_repo.get_by_email(new_email):
+                                st.error("A user with that email already exists.")
+                            else:
+                                import secrets
 
-                            raw_password = new_password or secrets.token_urlsafe(12)
-                            auth = AuthService(conn_c)
-                            pw_hash = auth.hash_password(raw_password)
-                            user = users_repo.create_user(
-                                email=new_email,
-                                password_hash=pw_hash,
-                                full_name=new_full_name,
-                                role=new_role,
-                            )
-                            st.session_state["admin_ok_msg"] = f"User {user.email} created."
-                            if not new_password:
-                                st.session_state["admin_info_msg"] = (
-                                    f"Temporary password for {user.email}: `{raw_password}`"
+                                raw_password = new_password or secrets.token_urlsafe(12)
+                                auth = AuthService(conn_c)
+                                pw_hash = auth.hash_password(raw_password)
+                                user = users_repo.create_user(
+                                    email=new_email,
+                                    password_hash=pw_hash,
+                                    full_name=new_full_name,
+                                    role=new_role,
                                 )
-                            st.session_state["admin_users_panel"] = None
-                            st.rerun()
-                    finally:
-                        conn_c.close()
-                except Exception as e:
-                    st.error(f"Failed to create user: {e}")
+                                st.session_state["admin_ok_msg"] = f"User {user.email} created."
+                                if not new_password:
+                                    st.session_state["admin_info_msg"] = (
+                                        f"Temporary password for {user.email}: `{raw_password}`"
+                                    )
+                                st.session_state["admin_users_panel"] = None
+                                st.rerun()
+                        finally:
+                            conn_c.close()
+                    except Exception as e:
+                        st.error(f"Failed to create user: {e}")
 
     with tab_audit:
         render_sub_sub_header("Recent login activity")
-        inject_tertiary_hyperlink_css_once()
         _to_d = date.today()
         _from_d = _to_d - timedelta(days=30)
         # One row: From + control | To + control | CSV | PDF (wider) | flexible space — all top-aligned
@@ -705,6 +759,12 @@ def build_menu_for_role(role: str) -> dict[str, callable]:
 
     loan_sections = loan_app.get_loan_app_sections()
 
+    if role == "VENDOR":
+        # Least privilege: vendor staff only reach subscription (vendor) operations for the active tenant.
+        return {
+            "Subscription": lambda: loan_app.render_loan_app_section("Subscription"),
+        }
+
     if role == "LOAN_OFFICER":
         allowed = [s for s in loan_sections if s != "System configurations"]
         menu: dict[str, callable] = {"Officer Dashboard": officer_home}
@@ -718,11 +778,21 @@ def build_menu_for_role(role: str) -> dict[str, callable]:
             menu[section] = lambda section_name=section: loan_app.render_loan_app_section(section_name)
         return menu
 
+    if role == "SUPERADMIN":
+        menu = {"Admin Dashboard": admin_home}
+        for section in loan_sections:
+            menu[section] = lambda section_name=section: loan_app.render_loan_app_section(section_name)
+        return menu
+
     return {}
 
 
 def main():
-    st.set_page_config(page_title="FarndaCred – Secure", layout="wide")
+    st.set_page_config(
+        page_title="FarndaCred – Secure",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
     inject_farnda_global_styles_once()
 
     user = get_current_user()
@@ -732,14 +802,61 @@ def main():
         render_footer()
         return
 
+    enroll_codes = st.session_state.get("_farnda_enrollment_recovery_codes")
+    if (
+        isinstance(enroll_codes, list)
+        and enroll_codes
+        and (user.get("role") or "") in ("SUPERADMIN", "VENDOR")
+    ):
+        render_main_page_title("Save your recovery codes")
+        st.warning(
+            "**Copy the codes below** and store them somewhere safe (password manager or printout). "
+            "They are not shown again after you continue. "
+            "If the menu on the left is hidden, click the **>** control at the top-left to open the sidebar."
+        )
+        st.text_area(
+            "Recovery codes (one per line)",
+            value="\n".join(enroll_codes),
+            height=240,
+            key="farnda_enrollment_codes_gate",
+        )
+        if st.button(
+            "I have saved these codes — continue to the app",
+            type="primary",
+            key="farnda_enrollment_codes_dismiss",
+        ):
+            st.session_state.pop("_farnda_enrollment_recovery_codes", None)
+            st.rerun()
+        render_footer()
+        st.stop()
+
     # Logged in: show role-filtered sidebar
     try:
         from eod.system_business_date import get_effective_date
+
         system_date = get_effective_date()
     except ImportError:
         system_date = datetime.now().date()
 
     menu = build_menu_for_role(user["role"])
+    if user["role"] in ("ADMIN", "LOAN_OFFICER", "VENDOR", "SUPERADMIN"):
+        from subscription.access import (
+            filter_menu_for_subscription,
+            refresh_subscription_access_snapshot,
+        )
+
+        snap = refresh_subscription_access_snapshot(user)
+        if snap.terminated and not snap.enforcement_skipped:
+            st.error(
+                "Your organisation's subscription has been terminated. Contact your administrator."
+            )
+            st.stop()
+        menu = filter_menu_for_subscription(menu, snap, role=user["role"])
+
+    fz = st.session_state.get("subscription_frozen_effective_date")
+    if fz is not None and isinstance(fz, date):
+        system_date = min(system_date, fz)
+
     if not menu:
         st.error("No pages available for your role.")
         return
@@ -755,11 +872,16 @@ def main():
     choice = render_sidebar_option_menu(menu_keys=menu_keys, current_choice=current_choice)
     st.session_state[nav_key] = choice
     render_sidebar_user_meta(user=user, system_date=system_date)
+    render_totp_recovery_regeneration_sidebar(user)
     if msg := st.session_state.pop("_farnda_tenant_bind_message", None):
         st.sidebar.warning(str(msg))
 
     # Global guard to ensure we never render a page without a user
     require_login()
+    if user["role"] in ("ADMIN", "LOAN_OFFICER", "SUPERADMIN"):
+        from subscription.access import get_subscription_snapshot, render_subscription_banners
+
+        render_subscription_banners(get_subscription_snapshot())
     page_fn = menu[choice]
     page_fn()
     if st.sidebar.button("Log out", key="sidebar_logout", type="primary", use_container_width=True):
