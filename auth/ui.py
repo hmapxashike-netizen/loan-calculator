@@ -25,11 +25,10 @@ def _logo_path() -> Path:
 
 
 def login_form():
-    render_sub_sub_header("Login")
     email = st.text_input("Email", key="login_email")
     password = st.text_input("Password", type="password", key="login_password")
 
-    if st.button("Login", type="primary"):
+    if st.button("Sign in", type="primary"):
         if not email or not password:
             st.error("Please enter both email and password.")
             return
@@ -111,7 +110,7 @@ def registration_form():
         finally:
             conn.close()
 
-        st.success("Account created. You can now log in.")
+        st.success("Account created. You can now sign in.")
 
 
 def auth_page():
@@ -136,12 +135,7 @@ def auth_page():
                 st.rerun()
             return
 
-        st.markdown(
-            '<p class="farnda-auth-slogan">Calculated Value, Unmatched Trust</p>',
-            unsafe_allow_html=True,
-        )
-
-        tab_login, tab_register = st.tabs(["Login", "Register"])
+        tab_login, tab_register = st.tabs(["Sign in", "Register"])
         with tab_login:
             login_form()
         with tab_register:
