@@ -41,8 +41,13 @@ from core.config_manager import (
 )
 from utils.formatters import parse_display_substrings_csv as _parse_display_substrings_csv
 from utils.rates import pct_to_monthly as _pct_to_monthly
-from style import format_navigation_label, inject_farnda_global_styles_once
-from ui.components import inject_tertiary_hyperlink_css_once, render_green_page_title
+from style import (
+    format_navigation_label,
+    inject_farnda_global_styles_once,
+    render_main_page_title,
+    render_sub_header,
+)
+from ui.components import inject_tertiary_hyperlink_css_once
 from ui.system_configurations import render_system_configurations_ui
 
 try:
@@ -1043,7 +1048,7 @@ def main():
     if not _nav_sections:
         st.error("Navigation is not configured (no sections).")
         st.stop()
-    st.sidebar.header("Navigation")
+    render_sub_header("Navigation", sidebar=True)
     nav = st.sidebar.radio(
         "Section",
         _nav_sections,
@@ -1076,6 +1081,7 @@ def get_loan_app_sections() -> list[str]:
 
 def render_loan_app_section(nav: str) -> None:
     _get_global_loan_settings()  # ensure defaults exist
+    render_main_page_title(nav)
     if nav == "Customers":
         customers_ui()
     elif nav == "Teller":
@@ -1089,66 +1095,9 @@ def render_loan_app_section(nav: str) -> None:
 
         render_portfolio_reports_ui()
     elif nav == "Loan management":
-        render_green_page_title("Loan Management")
-        # Emit every run: Streamlit replaces the document each rerun; gating on session state
-        # removed the <style> block after the first button click/navigation.
-        st.markdown(
-            """
-<style>
-/* Loan Management — blue segmented bar (high specificity so Loan Capture / fcapture-scope CSS cannot override). */
-.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) {
-  background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%) !important;
-  border-radius: 10px !important;
-  padding: 4px !important;
-  gap: 0 !important;
-  margin: 0.12rem 0 0.9rem 0 !important;
-  box-shadow: 0 2px 10px rgba(29, 78, 216, 0.22) !important;
-  border: 1px solid #1e40af !important;
-  align-items: stretch !important;
-}
-.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) > div[data-testid="column"] {
-  border-right: 1px solid rgba(255, 255, 255, 0.22) !important;
-}
-.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) > div[data-testid="column"]:last-child {
-  border-right: none !important;
-}
-.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) button {
-  border-radius: 7px !important;
-  font-weight: 600 !important;
-  min-height: 2.6rem !important;
-}
-.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) button[kind="secondary"] {
-  background: transparent !important;
-  color: #f1f5f9 !important;
-  border: none !important;
-  box-shadow: none !important;
-}
-.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) button[kind="secondary"]:hover {
-  background: rgba(255, 255, 255, 0.14) !important;
-  color: #ffffff !important;
-}
-.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) button[kind="primary"] {
-  background: #f8fafc !important;
-  color: #1e3a8a !important;
-  border: none !important;
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12) !important;
-}
-.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) button[kind="primary"]:hover {
-  background: #ffffff !important;
-  color: #172554 !important;
-}
-.stApp main .block-container [data-testid="stHorizontalBlock"]:has(.farnda-lm-segbar-root) [data-testid="stMarkdownContainer"]:has(.farnda-lm-segbar-root) {
-  margin: 0 !important;
-  padding: 0 !important;
-  min-height: 0 !important;
-  max-height: 0 !important;
-  line-height: 0 !important;
-  overflow: hidden !important;
-}
-</style>
-            """,
-            unsafe_allow_html=True,
-        )
+        # Use ``st.tabs`` (Baseweb tab list), not ``st.segmented_control``: theme styles on the
+        # button-group widget override global CSS, so the segmented bar stayed “boxed”. Tabs share
+        # the same underline rules as the rest of the app (see ``style.FARNDA_GLOBAL_CSS``).
         _lm_sections = [
             "Loan Capture",
             "View Schedule",
@@ -1171,30 +1120,57 @@ def render_loan_app_section(nav: str) -> None:
         st.session_state.setdefault("loan_mgmt_subnav", "Loan Capture")
         if st.session_state["loan_mgmt_subnav"] not in _lm_sections:
             st.session_state["loan_mgmt_subnav"] = "Loan Capture"
-        _nav_cols = st.columns(len(_lm_sections), gap=None, vertical_alignment="center")
-        for i, sec in enumerate(_lm_sections):
-            with _nav_cols[i]:
-                _is_sel = st.session_state["loan_mgmt_subnav"] == sec
+        _lm_default = st.session_state["loan_mgmt_subnav"]
+        (
+            t_capture,
+            t_schedule,
+            t_calc,
+            t_update,
+            t_suspense,
+            t_approve,
+        ) = st.tabs(_lm_sections, default=_lm_default)
+
+        with t_capture:
+            inject_tertiary_hyperlink_css_once()
+            st.session_state.setdefault("capture_open_draft_panel", None)
+            _cap_panel = st.session_state.get("capture_open_draft_panel")
+            st.markdown(
+                '<span class="farnda-lm-subnav-secondary" aria-hidden="true"></span>',
+                unsafe_allow_html=True,
+            )
+            _sc1, _sc2, _sc_sp = st.columns([1.35, 1.45, 4], gap="small")
+            with _sc1:
                 if st.button(
-                    sec,
-                    key=f"loan_mgmt_subnav_{i}",
-                    use_container_width=True,
-                    type="primary" if _is_sel else "secondary",
+                    "See Loans for Rework",
+                    key="cap_open_rework_panel",
+                    type="primary",
+                    icon=":material/assignment_return:",
+                    help="Open the list of drafts returned for rework",
                 ):
-                    if st.session_state["loan_mgmt_subnav"] != sec:
-                        st.session_state["loan_mgmt_subnav"] = sec
-                        st.rerun()
-                # Marker after button so every segment top-aligns; :has still matches the row.
-                st.markdown(
-                    '<span class="farnda-lm-segbar-root" aria-hidden="true" style="display:none"></span>',
-                    unsafe_allow_html=True,
-                )
-        _lm_pick = st.session_state["loan_mgmt_subnav"]
-        if _lm_pick == "Loan Capture":
+                    st.session_state["capture_open_draft_panel"] = (
+                        None if _cap_panel == "rework" else "rework"
+                    )
+                    st.rerun()
+            with _sc2:
+                if st.button(
+                    "Resume Capture Draft",
+                    key="cap_open_staged_panel",
+                    type="primary",
+                    icon=":material/edit_note:",
+                    help="Open staged drafts to resume capture",
+                ):
+                    st.session_state["capture_open_draft_panel"] = (
+                        None if _cap_panel == "staged" else "staged"
+                    )
+                    st.rerun()
+            with _sc_sp:
+                st.empty()
             capture_loan_ui()
-        elif _lm_pick == "View Schedule":
+
+        with t_schedule:
             view_schedule_ui()
-        elif _lm_pick == "Loan Calculators":
+
+        with t_calc:
             _calc_types = [
                 "Consumer Loan",
                 "Term Loan",
@@ -1228,13 +1204,16 @@ def render_loan_app_section(nav: str) -> None:
                 bullet_loan_ui()
             else:
                 customised_repayments_ui()
-        elif _lm_pick == "Update Loans":
+
+        with t_update:
             update_loans_ui()
-        elif _lm_pick == "Interest In Suspense":
+
+        with t_suspense:
             from interest_suspense_ui import render_suspense_ui
 
             render_suspense_ui()
-        else:
+
+        with t_approve:
             approve_loans_ui()
     elif nav == "Accounting":
         accounting_ui()

@@ -6,6 +6,9 @@ import pandas as pd
 import streamlit as st
 
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 def render_loan_purposes_tab(
     *,
     loan_management_available: bool,
@@ -18,7 +21,7 @@ def render_loan_purposes_tab(
     count_loan_purposes_rows,
     clear_all_loan_purposes,
 ) -> None:
-    st.subheader("Loan purposes")
+    render_sub_sub_header("Loan purposes")
     st.caption(
         "Single source of truth: table **`loan_purposes`** in the database (not JSON system config). "
         "**Loan capture** reads the same table. Do not add a **duplicate name** (case-insensitive); use **Activate** or **Edit** instead."

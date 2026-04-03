@@ -5,7 +5,10 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from ui.components import render_centered_html_table, render_green_page_title
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
+from ui.components import render_centered_html_table
 
 from constants import (
     AGENT_CORPORATE_DOC_TYPES,
@@ -94,7 +97,7 @@ def render_add_individual_tab(
     list_document_categories,
     upload_document,
 ) -> None:
-    st.subheader("New Individual Customer")
+    render_sub_sub_header("New Individual Customer")
     with st.form("individual_form", clear_on_submit=True):
         ir1a, ir1b, ir1c, ir1d = st.columns(4)
         with ir1a:
@@ -285,7 +288,7 @@ def render_add_corporate_tab(
     list_document_categories,
     upload_document,
 ) -> None:
-    st.subheader("New Corporate Customer")
+    render_sub_sub_header("New Corporate Customer")
     with st.form("corporate_form", clear_on_submit=True):
         ct1, ct2, ct3, ct4 = st.columns(4)
         with ct1:
@@ -663,7 +666,7 @@ def render_view_manage_customers_tab(
     upload_document,
 ) -> None:
 
-    st.subheader("View & Manage Customers & Agents")
+    render_sub_sub_header("View & Manage Customers & Agents")
     vm_c1, vm_c2, vm_c3, vm_c4, vm_c5 = st.columns(5)
     with vm_c1:
         status_filter = st.selectbox(
@@ -768,7 +771,7 @@ def render_view_manage_customers_tab(
             if not arec:
                 st.warning("Agent Not Found.")
             else:
-                st.subheader(f"Agent #{real_agent_id}")
+                render_sub_sub_header(f"Agent #{real_agent_id}")
                 st.markdown(f"**Name:** {arec.get('name')}")
                 st.caption(f"Status: {arec.get('status')}")
 
@@ -887,7 +890,7 @@ def render_view_manage_customers_tab(
                 st.warning("Customer Not Found.")
                 st.session_state.pop("cust_loaded_id", None)
             else:
-                st.subheader(f"Customer #{loaded_id}")
+                render_sub_sub_header(f"Customer #{loaded_id}")
                 # Human-readable profile view (avoid dumping raw JSON/object repr in UI).
                 ctype = rec.get("type") or "—"
                 cstatus = rec.get("status") or "—"
@@ -956,7 +959,7 @@ def render_view_manage_customers_tab(
 
                 if show_edit_customer:
                     from customers.approval import save_approval_draft
-                    st.subheader("Edit Customer Details")
+                    render_sub_sub_header("Edit Customer Details")
                     with st.form(f"edit_customer_form_{loaded_id}"):
                         if ctype == "individual":
                             ecu1, ecu2, ecu3, ecu4 = st.columns(4)
@@ -1117,7 +1120,7 @@ def render_view_manage_customers_tab(
                         dir_list = rec.get("directors") or []
 
                         if cp_list:
-                            st.subheader("Contact Person Documents")
+                            render_sub_sub_header("Contact Person Documents")
                             cp_options = [(cp["id"], cp.get("full_name") or f"Contact #{cp['id']}") for cp in cp_list]
                             cdp_a, cdp_b, cdp_c, cdp_d = st.columns(4)
                             with cdp_a:
@@ -1167,7 +1170,7 @@ def render_view_manage_customers_tab(
                                 st.success("Contact Person Document Uploaded.")
 
                         if dir_list:
-                            st.subheader("Director Documents")
+                            render_sub_sub_header("Director Documents")
                             dir_options = [(d["id"], d.get("full_name") or f"Director #{d['id']}") for d in dir_list]
                             ddp_a, ddp_b, ddp_c, ddp_d = st.columns(4)
                             with ddp_a:
@@ -1241,7 +1244,7 @@ def render_agents_tab(
     upload_document,
 ) -> None:
 
-    st.subheader("Agents")
+    render_sub_sub_header("Agents")
     if not agents_available:
         st.error(f"Agents Module Is Not Available. ({agents_error})")
     else:
@@ -1299,7 +1302,7 @@ def render_agents_tab(
             )
 
         if show_add_agent:
-            st.subheader("Add Agent")
+            render_sub_sub_header("Add Agent")
             with st.form("add_agent_form", clear_on_submit=True):
                 col_a1, col_a2 = st.columns(2)
                 with col_a1:
@@ -1420,7 +1423,7 @@ def render_agents_tab(
                     st.warning("Please Enter Agent Name.")
 
         if show_edit_agent:
-            st.subheader("Edit Agent")
+            render_sub_sub_header("Edit Agent")
             edit_agent_id = st.number_input("Agent ID To Edit", min_value=1, value=1, step=1, key="edit_agent_id")
             if st.button("Load Agent", key="agent_load_btn"):
                 st.session_state["agent_edit_loaded_id"] = edit_agent_id
@@ -1540,8 +1543,6 @@ def render_customers_ui(
             f"({customers_error})"
         )
         return
-
-    render_green_page_title("Customers", compact=True)
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(
         ["Add Individual", "Add Corporate", "View & Manage", "Agents", "Approvals"]

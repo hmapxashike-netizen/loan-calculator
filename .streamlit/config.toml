@@ -1,4 +1,10 @@
-# Global typography: +25% vs Streamlit default (16px → 20px).
-# Affects headers, subheaders, widget labels, dataframe text, and other themed UI.
+# Streamlit UI theme — FarndaCred brand (Navy #113C7A, Green #5CC346).
+# File lives under the repo’s .streamlit/ folder (Streamlit’s standard config location).
+
 [theme]
 baseFontSize = 20
+primaryColor = "#5CC346"
+# Body / widget default text: neutral slate (navy reserved for brand headings & chrome)
+textColor = "#1e293b"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8FAFC"

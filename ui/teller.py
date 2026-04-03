@@ -8,8 +8,10 @@ from decimal import Decimal
 import pandas as pd
 import streamlit as st
 
-from ui.components import render_green_page_title
 
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
+from ui.streamlit_feedback import run_with_spinner
 
 def render_teller_ui(
     *,
@@ -34,8 +36,6 @@ def render_teller_ui(
     from accounting.service import AccountingService
     from services import teller_service
 
-    render_green_page_title("Teller")
-
     acct_svc = AccountingService()
 
     tab_single, tab_batch, tab_reverse, tab_borrowing_payment, tab_writeoff_recovery = st.tabs(
@@ -49,7 +49,7 @@ def render_teller_ui(
     )
 
     with tab_single:
-        st.subheader("Single repayment capture")
+        render_sub_sub_header("Single repayment capture")
         customers_list = list_customers(status="active") or []
         if not customers_list:
             st.info("No active customers. Add customers first.")
@@ -138,16 +138,19 @@ def render_teller_ui(
                                     )
                                 else:
                                     try:
-                                        rid = teller_service.record_repayment_with_allocation(
-                                            loan_id=loan_id,
-                                            amount=amount,
-                                            payment_date=value_date,
-                                            source_cash_gl_account_id=_src_cash_gl,
-                                            customer_reference=customer_ref.strip() or None,
-                                            company_reference=company_ref.strip() or None,
-                                            value_date=value_date,
-                                            system_date=datetime.combine(system_date, now.time()),
-                                        )
+                                        def _record_repayment():
+                                            return teller_service.record_repayment_with_allocation(
+                                                loan_id=loan_id,
+                                                amount=amount,
+                                                payment_date=value_date,
+                                                source_cash_gl_account_id=_src_cash_gl,
+                                                customer_reference=customer_ref.strip() or None,
+                                                company_reference=company_ref.strip() or None,
+                                                value_date=value_date,
+                                                system_date=datetime.combine(system_date, now.time()),
+                                            )
+
+                                        rid = run_with_spinner("Recording repayment…", _record_repayment)
                                         st.success(
                                             f"Repayment recorded. **Repayment ID: {rid}**. "
                                             "Any overpayment was credited to Unapplied Funds."
@@ -157,7 +160,7 @@ def render_teller_ui(
                                         st.exception(e)
 
     with tab_batch:
-        st.subheader("Batch payments")
+        render_sub_sub_header("Batch payments")
         st.caption(
             "Upload an Excel file with repayment rows. **source_cash_gl_account_id** must be a UUID that appears in the "
             "**source cash account cache** (same list as Teller — leaves under **A100000**). Rebuild the cache under "
@@ -208,7 +211,10 @@ def render_teller_ui(
                         if not valid_rows:
                             st.error("No valid rows to process. Ensure loan_id and amount are numeric and positive.")
                         else:
-                            success, fail, errors = teller_service.run_batch_repayments(valid_rows)
+                            success, fail, errors = run_with_spinner(
+                                "Processing batch repayments…",
+                                lambda: teller_service.run_batch_repayments(valid_rows),
+                            )
                             st.success(f"Batch complete: **{success}** repaid, **{fail}** failed.")
                             if errors:
                                 with st.expander("Processing errors"):
@@ -219,7 +225,7 @@ def render_teller_ui(
                 st.exception(e)
 
     with tab_reverse:
-        st.subheader("Reverse receipt")
+        render_sub_sub_header("Reverse receipt")
         st.caption("Select a customer and loan, then enter a receipt ID or choose one from the list to reverse it.")
 
         customers_list = list_customers(status="active") or []
@@ -335,7 +341,7 @@ def render_teller_ui(
                                     st.exception(e)
 
     with tab_borrowing_payment:
-        st.subheader("Payment of borrowings")
+        render_sub_sub_header("Payment of borrowings")
         st.caption(
             "Use this tab to post payments made to external lenders/borrowings. "
             "This uses the configured 'BORROWING_REPAYMENT' journal template."
@@ -371,21 +377,25 @@ def render_teller_ui(
             submitted = st.form_submit_button("Post borrowing payment")
             if submitted:
                 try:
-                    teller_service.post_borrowing_repayment_journal(
-                        acct_svc,
-                        value_date=value_date,
-                        amount=Decimal(str(amount)),
-                        reference=reference,
-                        description=description.strip() or "Payment of borrowings",
-                        created_by="teller_ui",
-                    )
+
+                    def _post_borrowing():
+                        teller_service.post_borrowing_repayment_journal(
+                            acct_svc,
+                            value_date=value_date,
+                            amount=Decimal(str(amount)),
+                            reference=reference,
+                            description=description.strip() or "Payment of borrowings",
+                            created_by="teller_ui",
+                        )
+
+                    run_with_spinner("Posting borrowing payment…", _post_borrowing)
                     st.success("Borrowing payment journal posted successfully.")
                 except Exception as e:
                     st.error(f"Error posting borrowing payment journal: {e}")
                     st.exception(e)
 
     with tab_writeoff_recovery:
-        st.subheader("Receipt from a fully written-off loan")
+        render_sub_sub_header("Receipt from a fully written-off loan")
         st.caption(
             "Use this tab when you receive a recovery on a loan that has been fully written off. "
             "This uses the configured 'WRITEOFF_RECOVERY' journal template "
@@ -467,15 +477,19 @@ def render_teller_ui(
 
                             if submitted and amount > 0:
                                 try:
-                                    teller_service.post_writeoff_recovery_journal(
-                                        acct_svc,
-                                        loan_id=int(loan_id),
-                                        value_date=value_date,
-                                        amount=Decimal(str(amount)),
-                                        customer_reference=customer_ref,
-                                        company_reference=company_ref,
-                                        created_by="teller_ui",
-                                    )
+
+                                    def _post_writeoff_recovery():
+                                        teller_service.post_writeoff_recovery_journal(
+                                            acct_svc,
+                                            loan_id=int(loan_id),
+                                            value_date=value_date,
+                                            amount=Decimal(str(amount)),
+                                            customer_reference=customer_ref,
+                                            company_reference=company_ref,
+                                            created_by="teller_ui",
+                                        )
+
+                                    run_with_spinner("Posting recovery receipt…", _post_writeoff_recovery)
                                     st.success(
                                         f"Recovery receipt posted successfully for loan #{loan_id}. "
                                         "The GL will debit CASH AND CASH EQUIVALENTS and credit BAD DEBTS RECOVERED."

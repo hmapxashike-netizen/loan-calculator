@@ -12,6 +12,9 @@ from decimal import Decimal
 import pandas as pd
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from decimal_utils import as_10dp
 from display_formatting import format_display_amount
 from loan_management import get_loan, get_loan_daily_state_balances
@@ -74,7 +77,7 @@ def render_provisions_config_tables() -> None:
         update_security_subtype,
     )
 
-    st.subheader("Security subtypes & haircuts")
+    render_sub_sub_header("Security subtypes & haircuts")
     st.caption("Collateral sub-types and typical haircuts (applied to min(charge, valuation) for IFRS provision).")
     rows = list_security_subtypes(active_only=False)
     if rows:
@@ -151,7 +154,7 @@ def render_provisions_config_tables() -> None:
                         st.error(str(ex))
 
     st.divider()
-    st.subheader("Probability of default by DPD band")
+    render_sub_sub_header("Probability of default by DPD band")
     st.caption("Editable **PD %** per status. DPD comes from `loan_daily_state.days_overdue`.")
     bands = list_pd_bands(active_only=False)
     if bands:

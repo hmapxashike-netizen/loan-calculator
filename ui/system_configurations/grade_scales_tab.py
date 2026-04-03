@@ -5,8 +5,11 @@ from __future__ import annotations
 import streamlit as st
 
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 def render_grade_scales_tab() -> None:
-    st.subheader("Loan grade scales")
+    render_sub_sub_header("Loan grade scales")
     st.caption(
         "Maps **days past due** to **grade** and **performing / non-performing**. "
         "**Standard** DPD columns drive IFRS-facing labels (ECL report and single-loan IFRS tool). "

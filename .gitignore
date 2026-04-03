@@ -13,6 +13,9 @@ db.sqlite3
 # Environment variables (Where we will eventually hide passwords)
 .env
 
+# Streamlit secrets (use .streamlit/secrets.toml.example as template)
+.streamlit/secrets.toml
+
 # Windows system files
 Thumbs.db
 desktop.ini

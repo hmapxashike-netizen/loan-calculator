@@ -5,6 +5,10 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
+from ui.components import inject_tertiary_hyperlink_css_once
 from ui.journals.posting_leaves import clear_posting_leaf_accounts_cache
 
 
@@ -33,7 +37,7 @@ def render_accounting_coa_tab(
                 st.success(_btext)
             else:
                 st.info(_btext)
-        st.subheader("Chart of Accounts")
+        render_sub_sub_header("Chart of Accounts")
         if not coa.is_coa_initialized():
             st.warning("Chart of Accounts is not initialized.")
             if st.button("Initialize Default Chart of Accounts"):
@@ -57,16 +61,51 @@ def render_accounting_coa_tab(
             st.dataframe(df_accounts, use_container_width=True, hide_index=True)
     
         _coa_rows = list(accounts or [])
-    
-        _show_sub_wiz = st.checkbox(
-            "Add or edit subaccounts",
-            value=False,
-            key="coa_subwiz_show",
-            help="Create posting subaccounts under a tagged parent, choose how the system resolves the leaf, "
-            "or edit names and soft-deactivate existing subaccounts. Codes cannot be changed after creation.",
-        )
+
+        st.session_state.setdefault("coa_subwiz_show", False)
+        st.session_state.setdefault("acco_coa_show_add_account", False)
+        st.session_state.setdefault("acco_coa_show_edit_parent", False)
+        inject_tertiary_hyperlink_css_once()
+        _coa_tool_c1, _coa_tool_c2, _coa_tool_c3 = st.columns(3, gap="small")
+        with _coa_tool_c1:
+            if st.button(
+                "Add or edit subaccounts",
+                type="tertiary",
+                key="coa_toggle_subwiz",
+                use_container_width=True,
+                help="Create posting subaccounts under a tagged parent, choose how the system resolves the leaf, "
+                "or edit names and soft-deactivate existing subaccounts. Codes cannot be changed after creation.",
+            ):
+                st.session_state["coa_subwiz_show"] = not bool(st.session_state.get("coa_subwiz_show"))
+                st.rerun()
+        with _coa_tool_c2:
+            if st.button(
+                "Show Add Custom Account",
+                type="tertiary",
+                key="coa_toggle_add_account",
+                use_container_width=True,
+                help="Create a new GL account. Hidden by default to reduce clutter.",
+            ):
+                st.session_state["acco_coa_show_add_account"] = not bool(
+                    st.session_state.get("acco_coa_show_add_account")
+                )
+                st.rerun()
+        with _coa_tool_c3:
+            if st.button(
+                "Show Edit account parent",
+                type="tertiary",
+                key="coa_toggle_edit_parent",
+                use_container_width=True,
+                help="Change the parent of an existing account. Hidden by default to reduce clutter.",
+            ):
+                st.session_state["acco_coa_show_edit_parent"] = not bool(
+                    st.session_state.get("acco_coa_show_edit_parent")
+                )
+                st.rerun()
+
+        _show_sub_wiz = bool(st.session_state.get("coa_subwiz_show"))
         if _show_sub_wiz:
-            st.subheader("Subaccount setup")
+            render_sub_sub_header("Subaccount setup")
             _wiz_create, _wiz_edit = st.tabs(["Create subaccounts", "Edit or deactivate"])
             with _wiz_create:
                 _sw_banner = st.session_state.pop("coa_subwiz_save_banner", None)
@@ -679,15 +718,9 @@ def render_accounting_coa_tab(
                             "Enter a code/label from the selected tag branch, or a suffix like 03 when unambiguous."
                         )
     
-        st.divider()
-        _show_add_acct = st.checkbox(
-            "Show **Add Custom Account**",
-            value=False,
-            key="acco_coa_show_add_account",
-            help="Create a new GL account. Hidden by default to reduce clutter.",
-        )
+        _show_add_acct = bool(st.session_state.get("acco_coa_show_add_account"))
         if _show_add_acct:
-            st.subheader("Add Custom Account")
+            render_sub_sub_header("Add Custom Account")
             _coa_accounts = coa.list_accounts() or []
             _parent_labels = ["(None — top level)"]
             _parent_ids: list = [None]
@@ -752,15 +785,9 @@ def render_accounting_coa_tab(
                     else:
                         st.error("Code and Name are required.")
     
-        st.divider()
-        _show_edit_parent = st.checkbox(
-            "Show **Edit account parent**",
-            value=False,
-            key="acco_coa_show_edit_parent",
-            help="Change the parent of an existing account. Hidden by default to reduce clutter.",
-        )
+        _show_edit_parent = bool(st.session_state.get("acco_coa_show_edit_parent"))
         if _show_edit_parent:
-            st.subheader("Edit account parent")
+            render_sub_sub_header("Edit account parent")
             st.caption(
                 "Set or change the parent for an **existing** account. "
                 "This account and its descendants cannot be chosen as parent (prevents cycles)."

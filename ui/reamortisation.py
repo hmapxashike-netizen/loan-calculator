@@ -9,6 +9,9 @@ import pandas as pd
 import streamlit as st
 
 
+
+from style import render_sub_sub_header
+
 def render_reamortisation_ui(
     *,
     loan_management_available: bool,
@@ -21,13 +24,6 @@ def render_reamortisation_ui(
     schedule_export_downloads,
     apply_unapplied_funds_recast,
 ) -> None:
-    st.markdown(
-        "<div style='background-color: #1E40AF; color: white; padding: 8px 12px; "
-        "font-weight: bold; font-size: 1.375rem;'>Reamortisation</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
-    
     if not loan_management_available:
         st.error(loan_management_error or "Loan management not available.")
         return
@@ -52,7 +48,7 @@ def render_reamortisation_ui(
     customers = list_customers() if customers_available else []
     
     with tab_mod:
-        st.subheader("Loan Modification (New Terms / Agreement)")
+        render_sub_sub_header("Loan Modification (New Terms / Agreement)")
         st.caption(
             "Select an existing loan and apply new terms (rate, term, loan type). "
             "Restructure date cannot be in the future or before the last due date. "
@@ -145,7 +141,7 @@ def render_reamortisation_ui(
     
                         if st.session_state.get(preview_key) and st.session_state[preview_key].get("loan_id") == loan_id:
                             pr = st.session_state[preview_key]
-                            st.subheader("Proposed schedule (inspect before commit)")
+                            render_sub_sub_header("Proposed schedule (inspect before commit)")
                             cap = f"New principal: **{pr['new_principal']:,.2f}**"
                             if pr.get("new_installment") is not None:
                                 cap += f" | New instalment: **{pr['new_installment']:,.2f}**"
@@ -182,7 +178,7 @@ def render_reamortisation_ui(
                                 st.rerun()
     
     with tab_recast:
-        st.subheader("Loan Recast (Prepayment → New Instalment)")
+        render_sub_sub_header("Loan Recast (Prepayment → New Instalment)")
         st.caption(
             "Re-amortise the loan from a given date to original maturity with a new principal balance. "
             "Same rate and type; only the instalment changes. Use when the borrower has made a lump-sum payment."
@@ -227,7 +223,7 @@ def render_reamortisation_ui(
     
                     if st.session_state.get(recast_preview_key) and st.session_state[recast_preview_key].get("loan_id") == loan_id_r:
                         rp = st.session_state[recast_preview_key]
-                        st.subheader("Proposed recast schedule (inspect before commit)")
+                        render_sub_sub_header("Proposed recast schedule (inspect before commit)")
                         st.caption(f"New instalment: **{rp['new_installment']:,.2f}**")
                         st.dataframe(
                             format_schedule_df(rp["schedule_df"]),
@@ -258,7 +254,7 @@ def render_reamortisation_ui(
                             st.rerun()
     
     with tab_unapplied:
-        st.subheader("Unapplied Funds (Suspense)")
+        render_sub_sub_header("Unapplied Funds (Suspense)")
         st.caption("Overpayments credited here. Apply to the loan via recast (reclassify accrued→arrears, principal not due→arrears, then apply). Recast is only available after funds are in Unapplied.")
         rows = list_unapplied_funds(status="pending")
         if not rows:

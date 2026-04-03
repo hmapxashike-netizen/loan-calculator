@@ -5,6 +5,9 @@ from __future__ import annotations
 import streamlit as st
 
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 def render_products_tab(
     *,
     loan_management_available: bool,
@@ -19,7 +22,7 @@ def render_products_tab(
     save_product_config_to_db,
     cfg: dict,
 ) -> None:
-    st.subheader("Products")
+    render_sub_sub_header("Products")
     st.caption(
         "Products own loan config, currency, waterfall, suspension & curing. Loan type (on product) drives amortisation. System references products by code."
     )

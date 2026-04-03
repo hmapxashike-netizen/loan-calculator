@@ -5,6 +5,9 @@ from __future__ import annotations
 import streamlit as st
 
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 def render_sectors_tab(
     *,
     customers_available: bool,
@@ -13,7 +16,7 @@ def render_sectors_tab(
     create_sector,
     create_subsector,
 ) -> None:
-    st.subheader("Sectors & subsectors")
+    render_sub_sub_header("Sectors & subsectors")
     st.caption("Configure sectors and subsectors for customer classification.")
     if customers_available:
         sectors_list = list_sectors()

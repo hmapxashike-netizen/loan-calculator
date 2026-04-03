@@ -8,11 +8,14 @@ import pandas as pd
 import streamlit as st
 
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def render_receipt_gl_mapping_tab(*, receipt_gl) -> None:
-    st.subheader("Receipt Allocation → Accounting Events")
+    render_sub_sub_header("Receipt Allocation → Accounting Events")
     if st.session_state.pop("acco_rgl_restored_ok", None):
         st.success("Receipt → GL mappings were updated from bundled defaults.")
 
@@ -93,7 +96,7 @@ def render_receipt_gl_mapping_tab(*, receipt_gl) -> None:
         help="Create or update receipt → GL mapping rows. Hidden by default to reduce clutter.",
     )
     if _show_rgl_form:
-        st.subheader("Add / Edit Mapping")
+        render_sub_sub_header("Add / Edit Mapping")
 
         # Dropdown options from DB for Receipt GL Mapping form
         _templates_for_events = receipt_gl.list_all_transaction_templates()

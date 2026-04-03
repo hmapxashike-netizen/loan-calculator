@@ -1,0 +1,51 @@
+"""Database helpers (multi-tenant SQLAlchemy session layer)."""
+
+from db.tenant_registry import (
+    SESSION_TENANT_COMPANY,
+    SESSION_TENANT_SCHEMA,
+    TenantAmbiguousCompanyError,
+    TenantCompanyNotFoundError,
+    bind_default_tenant_context_safely,
+    clear_tenant_context,
+    get_stored_tenant_company,
+    get_stored_tenant_schema,
+    get_tenant_schema,
+    list_active_tenants,
+    open_session_for_current_tenant,
+    remember_tenant_context,
+    require_tenant_schema_in_session,
+    tenant_session_scope_current,
+)
+from db.tenant_session import (
+    PostgresSecrets,
+    TenantDatabaseConfigError,
+    TenantSchemaValidationError,
+    get_db_session,
+    get_tenant_engine,
+    tenant_session_scope,
+    validate_tenant_schema_name,
+)
+
+__all__ = [
+    "SESSION_TENANT_COMPANY",
+    "SESSION_TENANT_SCHEMA",
+    "PostgresSecrets",
+    "TenantAmbiguousCompanyError",
+    "TenantCompanyNotFoundError",
+    "TenantDatabaseConfigError",
+    "TenantSchemaValidationError",
+    "bind_default_tenant_context_safely",
+    "clear_tenant_context",
+    "get_db_session",
+    "get_stored_tenant_company",
+    "get_stored_tenant_schema",
+    "get_tenant_engine",
+    "get_tenant_schema",
+    "list_active_tenants",
+    "open_session_for_current_tenant",
+    "remember_tenant_context",
+    "require_tenant_schema_in_session",
+    "tenant_session_scope",
+    "tenant_session_scope_current",
+    "validate_tenant_schema_name",
+]

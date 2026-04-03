@@ -6,6 +6,7 @@ from html import escape
 from typing import Any
 
 import pandas as pd
+from pandas.io.formats.style import Styler
 import streamlit as st
 
 from style import inject_style_block
@@ -68,7 +69,7 @@ def _html_table_cell(v: object) -> str:
 
 def _unwrap_styler_to_dataframe(obj: Any) -> tuple[pd.DataFrame, bool]:
     """Return (DataFrame, was_styler). ``format_schedule_display`` returns a pandas Styler."""
-    if isinstance(obj, pd.io.formats.style.Styler):
+    if isinstance(obj, Styler):
         return obj.data.copy(), True
     if isinstance(obj, pd.DataFrame):
         return obj, False
@@ -111,10 +112,8 @@ def render_centered_html_table(df: pd.DataFrame | Any, headers: list[str]) -> No
 
 
 def render_green_page_title(title: str, *, compact: bool = False) -> None:
-    """Primary section heading (green, 2rem) used across main navigation destinations."""
-    safe = escape(str(title).strip() or "—")
-    mt, mb = ("0.08rem", "0.3rem") if compact else ("0.25rem", "0.75rem")
-    st.markdown(
-        f"<div style='color:#16A34A; font-weight:700; font-size:2.5rem; margin:{mt} 0 {mb} 0;'>{safe}</div>",
-        unsafe_allow_html=True,
-    )
+    """Deprecated alias: use :func:`style.render_main_page_title` (navy, subheader scale, uppercase)."""
+    _ = compact  # kept for call-site compatibility
+    from style import render_main_page_title
+
+    render_main_page_title(title)

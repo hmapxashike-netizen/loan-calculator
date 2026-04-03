@@ -15,7 +15,13 @@ from middleware import get_current_user, clear_current_user, require_login
 from auth.ui import auth_page
 from dal import get_conn, UserRepository, SecurityAuditLogRepository
 from auth.service import AuthService
-from style import inject_farnda_global_styles_once, inject_style_block
+from style import (
+    inject_farnda_global_styles_once,
+    inject_style_block,
+    render_main_page_title,
+    render_sub_header,
+    render_sub_sub_header,
+)
 from ui.components import inject_tertiary_hyperlink_css_once
 
 
@@ -303,17 +309,17 @@ def render_sidebar_option_menu(menu_keys: list[str], current_choice: str) -> str
 
 
 def borrower_home():
-    st.header("Borrower Home")
+    render_main_page_title("Home")
     st.write("Borrower self-service pages can go here (loan applications, statements, etc.).")
 
 
 def officer_home():
-    st.header("Loan Officer Dashboard")
+    render_main_page_title("Officer Dashboard")
     st.write("Loan officer workspace. Use the 'FarndaCred App' entry for full calculators.")
 
 
 def admin_home():
-    st.header("Admin Dashboard")
+    render_main_page_title("Admin Dashboard")
     st.session_state.setdefault("admin_users_panel", None)
 
     tab_users, tab_audit = st.tabs(["User Management", "Security Audit Log"])
@@ -329,16 +335,16 @@ def admin_home():
         st.markdown(
             """
             <style>
-              section[data-testid="stMain"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-              section[data-testid="stMain"] div[data-testid="stTextInput"] input {
+              [data-testid="stMain"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+              [data-testid="stMain"] div[data-testid="stTextInput"] input {
                 min-height: 2.75rem !important;
                 box-sizing: border-box !important;
               }
-              section[data-testid="stMain"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div {
+              [data-testid="stMain"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div {
                 padding-top: 2px !important;
                 padding-bottom: 2px !important;
               }
-              section[data-testid="stMain"] div[data-testid="stCheckbox"] label {
+              [data-testid="stMain"] div[data-testid="stCheckbox"] label {
                 min-height: 2.75rem !important;
                 display: flex !important;
                 align-items: center !important;
@@ -349,7 +355,7 @@ def admin_home():
             unsafe_allow_html=True,
         )
 
-        st.subheader("Users")
+        render_sub_header("Users")
         try:
             conn = get_conn()
         except Exception as e:
@@ -418,7 +424,7 @@ def admin_home():
         if panel == "manage" and users:
             hdr_l, hdr_r = st.columns([8, 1], gap="small", vertical_alignment="center")
             with hdr_l:
-                st.subheader("Manage Selected User")
+                render_sub_sub_header("Manage Selected User")
             with hdr_r:
                 if st.button("✕", key="adm_close_manage", help="Close"):
                     st.session_state["admin_users_panel"] = None
@@ -488,7 +494,7 @@ def admin_home():
         elif panel == "create":
             hdr_l, hdr_r = st.columns([8, 1], gap="small", vertical_alignment="center")
             with hdr_l:
-                st.subheader("Create New User")
+                render_sub_sub_header("Create New User")
             with hdr_r:
                 if st.button("✕", key="adm_close_create", help="Close"):
                     st.session_state["admin_users_panel"] = None
@@ -546,7 +552,7 @@ def admin_home():
                     st.error(f"Failed to create user: {e}")
 
     with tab_audit:
-        st.subheader("Recent login activity")
+        render_sub_sub_header("Recent login activity")
         inject_tertiary_hyperlink_css_once()
         _to_d = date.today()
         _from_d = _to_d - timedelta(days=30)
@@ -556,7 +562,7 @@ def admin_home():
             _fl, _fi = st.columns([0.5, 1.5], gap="xsmall", vertical_alignment="top")
             with _fl:
                 st.markdown(
-                    '<p style="margin:0;padding-top:0.15rem;font-weight:600;">From (dd/mm/yyyy)</p>',
+                    '<p style="margin:0;padding-top:0.15rem;font-weight:600;">From</p>',
                     unsafe_allow_html=True,
                 )
             with _fi:
@@ -571,7 +577,7 @@ def admin_home():
             _tl, _ti = st.columns([0.45, 1.55], gap="xsmall", vertical_alignment="top")
             with _tl:
                 st.markdown(
-                    '<p style="margin:0;padding-top:0.15rem;font-weight:600;">To (dd/mm/yyyy)</p>',
+                    '<p style="margin:0;padding-top:0.15rem;font-weight:600;">To</p>',
                     unsafe_allow_html=True,
                 )
             with _ti:
@@ -749,6 +755,8 @@ def main():
     choice = render_sidebar_option_menu(menu_keys=menu_keys, current_choice=current_choice)
     st.session_state[nav_key] = choice
     render_sidebar_user_meta(user=user, system_date=system_date)
+    if msg := st.session_state.pop("_farnda_tenant_bind_message", None):
+        st.sidebar.warning(str(msg))
 
     # Global guard to ensure we never render a page without a user
     require_login()

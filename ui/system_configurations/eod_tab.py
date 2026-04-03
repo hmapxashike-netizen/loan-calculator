@@ -7,6 +7,9 @@ from typing import Any, NamedTuple
 
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from accrual_convention import (
     ACCRUAL_START_EFFECTIVE_DAY,
     ACCRUAL_START_NEXT_DAY,
@@ -33,7 +36,7 @@ def render_eod_config_tab(
     advance_date_on_degraded: bool,
     accrual_start_convention_selected,
 ) -> EodConfigSnapshot:
-    st.subheader("System business date")
+    render_sub_sub_header("System business date")
     st.caption("Accruals and Amount Due use the system date, not the calendar.")
     try:
         from eod.system_business_date import (
@@ -83,7 +86,7 @@ def render_eod_config_tab(
         st.warning(f"System business config not available (run migration 26): {ex}")
 
     st.divider()
-    st.subheader("End of day (EOD) settings")
+    render_sub_sub_header("End of day (EOD) settings")
     st.caption(
         "Configure how and when EOD runs, and which high-level tasks should be included. "
         "The detailed orchestration is fixed in code for safety and auditability."

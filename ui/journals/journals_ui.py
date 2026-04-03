@@ -10,6 +10,9 @@ import psycopg2
 import psycopg2.extras
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from accounting.service import AccountingService
 from config import get_database_url
 from ui.journals.helpers import (
@@ -25,14 +28,7 @@ from ui.journals.posting_leaves import (
 
 def render_journals_ui(*, get_system_date) -> None:
     svc = AccountingService()
-    
-    st.markdown(
-        "<div style='background-color: #0F766E; color: white; padding: 8px 12px; "
-        "font-weight: bold; font-size: 1.375rem;'>Journals</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
-    
+
     try:
         bad_journals = svc.list_unbalanced_journal_entries()
         if bad_journals:
@@ -68,7 +64,7 @@ def render_journals_ui(*, get_system_date) -> None:
     tab_manual, tab_adjust = st.tabs(["Manual Journals", "Balance Adjustments"])
     
     with tab_manual:
-        st.subheader("Post Manual Journal")
+        render_sub_sub_header("Post Manual Journal")
         with st.form("journals_manual_journal_form"):
             templates_all = svc.list_all_transaction_templates()
             event_types = sorted({t["event_type"] for t in templates_all})
@@ -282,7 +278,7 @@ def render_journals_ui(*, get_system_date) -> None:
                             st.error(f"Error posting journal: {e}")
     
     with tab_adjust:
-        st.subheader("Balance Adjustment Journal")
+        render_sub_sub_header("Balance Adjustment Journal")
         st.info(
             "One-off GL corrections. Only **posting accounts** are listed: active accounts with **no** "
             "active subaccounts (the youngest nodes in each branch — e.g. A700000 alone if it has no children; "

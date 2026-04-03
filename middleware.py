@@ -37,6 +37,13 @@ def set_current_user(user: Any) -> None:
 
 def clear_current_user() -> None:
     st.session_state.pop("current_user", None)
+    st.session_state.pop("_farnda_tenant_bind_message", None)
+    try:
+        from db.tenant_registry import clear_tenant_context
+
+        clear_tenant_context()
+    except Exception:
+        pass
 
 
 def require_login() -> Dict[str, Any]:

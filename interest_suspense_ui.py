@@ -3,6 +3,9 @@ import psycopg2.extras
 import pandas as pd
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from config import get_database_url
 from display_formatting import format_display_currency
 
@@ -14,7 +17,7 @@ def _format_loan_status(status: object) -> str:
 
 
 def render_suspense_ui():
-    st.header("Interest in Suspense Management")
+    render_sub_sub_header("Interest in Suspense Management")
     
     conn = psycopg2.connect(get_database_url(), cursor_factory=psycopg2.extras.RealDictCursor)
     try:

@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import base64
+import html as html_module
+import json
+import uuid
+from datetime import datetime
 from io import BytesIO
 
 import pandas as pd
 import streamlit as st
 
 from display_formatting import format_display_amount
+
+from ui.streamlit_feedback import run_with_spinner
 
 def _make_statement_pdf(df, customer_name, cust_id, loan_id, start_fmt, end_fmt, statement_title):
     """Build PDF bytes for statement with header (customer, ID, period) and table. statement_title e.g. 'Loan Statement (Internal – Daily)' or 'Customer loan statement'."""
@@ -59,34 +66,163 @@ def _statement_table_html(
     """Build a full-width HTML table from the statement dataframe. display_headers maps column name -> display label.
     center_columns: optional list of column names to center (e.g. last 4 columns for customer statement)."""
     import html
+
     center_set = set(center_columns or [])
-    def cell(v):
+
+    def _cell_html(v, col_name: str) -> str:
         if v is None or (isinstance(v, float) and pd.isna(v)):
             return ""
+        if col_name == "Due Date":
+            if hasattr(v, "strftime"):
+                return html.escape(v.strftime("%d %b %y"))
+            s = str(v).strip()
+            if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+                try:
+                    from datetime import date as _date
+
+                    d = _date.fromisoformat(s[:10])
+                    return html.escape(d.strftime("%d %b %y"))
+                except ValueError:
+                    pass
+            return html.escape(s[:16] if len(s) > 16 else s)
         if isinstance(v, (int, float)):
             try:
                 return format_display_amount(float(v), system_config=get_system_config())
             except (TypeError, ValueError):
-                return str(v)
+                return html.escape(str(v))
         return html.escape(str(v))
+
+    def _th_td_classes(col_name: str) -> str:
+        parts: list[str] = []
+        if col_name in center_set:
+            parts.append("center")
+        if col_name == "Due Date":
+            parts.append("stmt-due-date")
+        return f' class="{" ".join(parts)}"' if parts else ""
+
     cols = df.columns.tolist()
     headers = [display_headers.get(c, c) for c in cols]
     th_parts = []
     for i, h in enumerate(headers):
         cname = cols[i] if i < len(cols) else None
-        cls = ' class="center"' if cname and cname in center_set else ""
+        cls = _th_td_classes(cname) if cname else ""
         th_parts.append(f"<th{cls}>{html.escape(h)}</th>")
     th = "".join(th_parts)
     rows = []
     for _, r in df.iterrows():
         td_parts = []
-        for i, c in enumerate(cols):
-            cls = ' class="center"' if c in center_set else ""
-            td_parts.append(f"<td{cls}>{cell(r.get(c))}</td>")
+        for c in cols:
+            cls = _th_td_classes(c)
+            td_parts.append(f"<td{cls}>{_cell_html(r.get(c), c)}</td>")
         rows.append(f"<tr>{''.join(td_parts)}</tr>")
     tbody = "\n".join(rows)
     return f'<table class="stmt-table"><thead><tr>{th}</tr></thead><tbody>{tbody}</tbody></table>'
 
+
+_STMT_PRINT_WINDOW_CSS = (
+    "body{margin:0;padding:12px;font-family:system-ui,Segoe UI,sans-serif;color:#0f172a;}"
+    ".stmt-header{margin-bottom:0.5rem;padding:0.5rem 0.75rem;border:1px solid #e2e8f0;border-radius:4px;"
+    "background:#f8fafc;font-size:1.05rem;}"
+    ".stmt-table{width:100%;border-collapse:collapse;font-size:0.95rem;background:#fff;table-layout:auto;}"
+    ".stmt-table th,.stmt-table td{border:1px solid #e2e8f0;padding:0.35rem 0.45rem;text-align:left;}"
+    ".stmt-table th{background:#f1f5f9;font-weight:600;}"
+    ".stmt-table td.num,.stmt-table th.num{text-align:right;}"
+    ".stmt-table td.center,.stmt-table th.center{text-align:center;}"
+    ".stmt-table th.stmt-due-date,.stmt-table td.stmt-due-date{width:1%;white-space:nowrap;max-width:5.75rem;"
+    "font-size:0.88rem;text-align:center;vertical-align:middle;}"
+    ".stmt-table tbody tr:nth-child(even){background:#f8fafc;}"
+    ".stmt-closing{margin-top:0.75rem;text-align:center;font-size:1rem;padding:0.5rem;"
+    "border-top:1px solid #e2e8f0;color:#334155;}"
+    "@media print{body{padding:0}@page{margin:12mm}}"
+)
+
+
+def _statement_export_bar_html(
+    *,
+    csv_bytes: bytes,
+    pdf_bytes: bytes | None,
+    print_inner_html: str,
+    csv_file_name: str,
+    pdf_file_name: str,
+) -> str:
+    """Single-row HTML: equal-width green Download CSV / Download PDF / Print (statement-only print)."""
+    csv_b64 = base64.standard_b64encode(csv_bytes).decode("ascii")
+    print_b64 = base64.standard_b64encode(print_inner_html.encode("utf-8")).decode("ascii")
+    uid = uuid.uuid4().hex[:12]
+    csv_fn = html_module.escape(csv_file_name, quote=True)
+    pdf_fn = html_module.escape(pdf_file_name, quote=True)
+    if pdf_bytes:
+        pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
+        pdf_el = (
+            f'<a class="stmt-exp" href="data:application/pdf;base64,{pdf_b64}" '
+            f'download="{pdf_fn}">Download PDF</a>'
+        )
+    else:
+        pdf_el = '<span class="stmt-exp stmt-exp--disabled">Download PDF</span>'
+    css_js = json.dumps(_STMT_PRINT_WINDOW_CSS)
+    return f"""<div style="width:100%;box-sizing:border-box;">
+<style>
+.stmt-exp-wrap {{ display:flex; gap:0.65rem; width:100%; align-items:stretch; box-sizing:border-box; }}
+.stmt-exp {{
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.85rem;
+  padding: 0.45rem 0.5rem;
+  box-sizing: border-box;
+  background: #16a34a;
+  color: #fff !important;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none !important;
+  font-family: system-ui, Segoe UI, sans-serif;
+}}
+.stmt-exp:hover {{ background: #15803d !important; color: #fff !important; }}
+.stmt-exp--disabled {{
+  background: #94a3b8 !important;
+  cursor: not-allowed;
+  pointer-events: none;
+  color: #fff !important;
+}}
+.stmt-exp--disabled:hover {{ background: #94a3b8 !important; color: #fff !important; }}
+</style>
+<div class="stmt-exp-wrap">
+<a class="stmt-exp" href="data:text/csv;charset=utf-8;base64,{csv_b64}" download="{csv_fn}">Download CSV</a>
+{pdf_el}
+<button type="button" class="stmt-exp" id="stmt-print-{uid}">Print</button>
+</div>
+<textarea id="stmt-b64-{uid}" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none" aria-hidden="true" readonly>{print_b64}</textarea>
+<script>
+(function() {{
+  var btn = document.getElementById('stmt-print-{uid}');
+  var ta = document.getElementById('stmt-b64-{uid}');
+  if (!btn || !ta) return;
+  var printCss = {css_js};
+  btn.addEventListener('click', function() {{
+    var b64 = ta.value.trim();
+    var binary = atob(b64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    var h = new TextDecoder('utf-8').decode(bytes);
+    var w = window.open('', '_blank');
+    if (!w) return;
+    w.document.open();
+    w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Statement</title><style>' + printCss + '</style></head><body>');
+    w.document.write(h);
+    w.document.write('</body></html>');
+    w.document.close();
+    w.focus();
+    setTimeout(function() {{ w.print(); w.close(); }}, 400);
+  }});
+}})();
+</script>
+</div>"""
 
 
 def render_statements_ui(
@@ -107,12 +243,7 @@ def render_statements_ui(
         GL / ledger statements (later).
         """
         import pandas as pd
-        st.markdown(
-            "<div style='background-color: #0F766E; color: white; padding: 4px 8px; "
-            "font-weight: 600; font-size: 1.1875rem;'>Statements</div>",
-            unsafe_allow_html=True,
-        )
-    
+
         if not loan_management_available:
             st.error(loan_management_error or "Loan management not available.")
             return
@@ -131,7 +262,7 @@ def render_statements_ui(
             "Portion of Credit Allocated to Interest": "Credit to Interest",
             "Credit Allocated to Fees": "Credit to Fees",
             "Credit Allocated to Capital": "Credit to Principal",
-            "Arrears": "Arrears (total delinquency, incl. fees)",
+            "Arrears": "Arrears",
         }
     
         def _normalize_customer_id(v):
@@ -164,42 +295,37 @@ def render_statements_ui(
         tab_loan, tab_gl = st.tabs(["Customer loan statement", "General Ledger"])
         with tab_loan:
             st.markdown("##### Customer loan statement")
-            st.caption(
-                "Name/Loan ID → customer & loan → period & options → **Generate**. "
-                "**Arrears** = delinquency buckets; **Balance** = facility outstanding (per stored schedule close); **Unapplied** = cash pending allocation."
-            )
-    
+
             customers = list_customers() if customers_available else []
-            st.markdown(
-                "<span style='font-size:0.975rem;color:#64748b;'>Search · Customer · Loan</span>",
-                unsafe_allow_html=True,
-            )
-            fc0, fc1, fc2 = st.columns([1.05, 1.2, 1.2])
+            fc0, fc1, fc2 = st.columns([1.05, 1.2, 1.2], gap="xsmall")
             with fc0:
                 _stmt_search_raw = st.text_input(
-                    "Search",
+                    "Search by name or Loan ID",
                     placeholder="Name / Loan ID",
                     key="stmt_search",
-                    label_visibility="collapsed",
                 )
             search = (_stmt_search_raw or "").strip()
-    
+            _loan_id_token = search.lstrip("#").strip() if search else ""
+
             preselect_cust_id = None
             preselect_loan_id = None
-    
+
+            from loan_management import get_loan
+
             if search:
-                try:
-                    lid = int(search)
-                    from loan_management import get_loan
+                if _loan_id_token.isdigit():
+                    lid = int(_loan_id_token)
                     loan = get_loan(lid)
                     if loan and loan.get("customer_id"):
                         preselect_cust_id = _normalize_customer_id(loan["customer_id"])
                         preselect_loan_id = lid
-                except ValueError:
-                    pass
-                if preselect_loan_id is None:
+                    else:
+                        st.warning(f"No loan found with ID **{lid}**.")
+                if preselect_loan_id is None and not _loan_id_token.isdigit():
                     search_lower = search.lower()
-                    customers = [c for c in customers if search_lower in _customer_label(c.get("id")).lower()]
+                    customers = [
+                        c for c in customers if search_lower in _customer_label(c.get("id")).lower()
+                    ]
     
             if not customers and preselect_cust_id is None:
                 st.info("No customers found. Create a customer or enter a valid Loan ID.")
@@ -215,13 +341,20 @@ def render_statements_ui(
                         cust_options.insert(0, (preselect_cust_id, _customer_label(preselect_cust_id)))
                         cust_labels.insert(0, cust_options[0][1])
                         default_idx = 0
+                # Drive selectbox only via session_state (never mix index= with Session State API).
+                if cust_labels:
+                    if (
+                        preselect_cust_id is not None
+                        and 0 <= default_idx < len(cust_labels)
+                    ):
+                        st.session_state["stmt_cust"] = cust_labels[default_idx]
+                    elif st.session_state.get("stmt_cust") not in cust_labels:
+                        st.session_state["stmt_cust"] = cust_labels[default_idx]
                 with fc1:
                     cust_sel = st.selectbox(
                         "Customer",
                         cust_labels,
-                        index=default_idx,
                         key="stmt_cust",
-                        label_visibility="collapsed",
                     )
                 cust_id = cust_options[cust_labels.index(cust_sel)][0]
     
@@ -229,7 +362,12 @@ def render_statements_ui(
                 loans = get_loans_by_customer(cust_id)
                 if not loans:
                     with fc2:
-                        st.caption("—")
+                        st.selectbox(
+                            "Loan",
+                            options=["—"],
+                            key="stmt_loan_empty",
+                            disabled=True,
+                        )
                     st.info("No loans for this customer.")
                 else:
                     loan_options = [
@@ -243,17 +381,22 @@ def render_statements_ui(
                             default_loan_idx = next(i for i, t in enumerate(loan_options) if t[0] == preselect_loan_id)
                         except StopIteration:
                             default_loan_idx = 0
+                    if loan_labels:
+                        if (
+                            preselect_loan_id is not None
+                            and 0 <= default_loan_idx < len(loan_labels)
+                        ):
+                            st.session_state["stmt_loan"] = loan_labels[default_loan_idx]
+                        elif st.session_state.get("stmt_loan") not in loan_labels:
+                            st.session_state["stmt_loan"] = loan_labels[default_loan_idx]
                     with fc2:
                         loan_sel = st.selectbox(
                             "Loan",
                             loan_labels,
-                            index=default_loan_idx,
                             key="stmt_loan",
-                            label_visibility="collapsed",
                         )
                     loan_id = loan_options[loan_labels.index(loan_sel)][0]
-    
-                    from loan_management import get_loan
+
                     loan_info = get_loan(loan_id)
                     disbursement = loan_info.get("disbursement_date") or loan_info.get("start_date")
                     if hasattr(disbursement, "date"):
@@ -261,215 +404,226 @@ def render_statements_ui(
                     elif isinstance(disbursement, str):
                         disbursement = datetime.fromisoformat(disbursement[:10]).date()
                     start_default = disbursement or get_system_date()
-                    st.markdown(
-                        "<span style='font-size:0.975rem;color:#64748b;'>From · To · View · Generate</span>",
-                        unsafe_allow_html=True,
+                    dr0, dr1, dr2, dr3, dr4, dr5 = st.columns(
+                        [0.95, 0.95, 0.55, 0.55, 0.55, 1.05],
+                        gap="xsmall",
                     )
-                    dr0, dr1, dr2, dr3, dr4, dr5 = st.columns([0.95, 0.95, 0.55, 0.55, 0.55, 1.05])
                     with dr0:
                         start_date = st.date_input(
-                            "From",
+                            "Period start (disbursement)",
                             value=start_default,
                             key=f"stmt_start_{loan_id}",
                             disabled=True,
-                            help="Disbursement (fixed).",
+                            help="Fixed to loan disbursement date.",
                         )
                     with dr1:
                         end_date = st.date_input(
-                            "To",
+                            "Period end",
                             value=get_system_date(),
                             key="stmt_end",
+                            help="Statement runs through this date.",
                         )
                     with dr2:
                         show_pa_billing = st.checkbox(
-                            "PA bill.",
+                            "Principal arrears billing",
                             value=True,
                             key="stmt_show_pa_billing",
-                            help="Principal arrears billing (informational lines).",
+                            help="Include principal arrears billing (informational) lines.",
                         )
                     with dr3:
                         show_arrears_col = st.checkbox(
-                            "Arrears",
+                            "Arrears column",
                             value=True,
                             key="stmt_show_arrears_col",
-                            help="Show arrears column.",
+                            help="Show arrears column on the statement.",
                         )
                     with dr4:
                         show_unapplied_col = st.checkbox(
-                            "Unapp.",
+                            "Unapplied funds column",
                             value=True,
                             key="stmt_show_unapplied_col",
-                            help="Show unapplied funds column.",
+                            help="Show unapplied funds column on the statement.",
                         )
                     with dr5:
-                        gen_stmt = st.button("Generate", type="primary", key="stmt_gen", use_container_width=True)
+                        gen_stmt = st.button(
+                            "Generate statement",
+                            type="primary",
+                            key="stmt_gen",
+                            use_container_width=True,
+                        )
     
                     if gen_stmt:
                         try:
-                            rows, meta = generate_customer_facing_statement(
-                                loan_id,
-                                start_date=start_date,
-                                end_date=end_date,
-                                include_principal_arrears_billing=show_pa_billing,
-                            )
-                            if not rows:
-                                st.info("No statement lines for this period.")
-                            else:
-                                df = pd.DataFrame(rows)
-                                start = meta.get("start_date")
-                                end = meta.get("end_date")
-                                cust_id = _normalize_customer_id(meta.get("customer_id"))
-                                customer_name = _customer_label(cust_id) if cust_id is not None else "—"
-                                start_fmt = start.strftime("%d%b%Y") if hasattr(start, "strftime") else str(start)
-                                end_fmt = end.strftime("%d%b%Y") if hasattr(end, "strftime") else str(end)
-                                gen = meta.get("generated_at")
-                                generated_fmt = gen.strftime("%d %b %Y, %H:%M:%S") if gen and hasattr(gen, "strftime") else (str(gen) if gen else "")
-    
-                                statement_title = "Customer loan statement"
-                                numeric_cols = ["Debits", "Credits", "Balance", "Arrears", "Unapplied funds"]
-                                for c in numeric_cols:
-                                    if c in df.columns:
-                                        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-    
-                                visible_df = df.copy()
-                                if not show_arrears_col and "Arrears" in visible_df.columns:
-                                    visible_df = visible_df.drop(columns=["Arrears"])
-                                if not show_unapplied_col and "Unapplied funds" in visible_df.columns:
-                                    visible_df = visible_df.drop(columns=["Unapplied funds"])
-    
-                                # Full-width statement: HTML table (no Streamlit dataframe width limits)
-                                display_headers = {**_alloc_display}
-                                closing_row = None
-                                if len(visible_df) > 0:
-                                    last_narr = str(visible_df.iloc[-1].get("Narration") or "")
-                                    if "Total outstanding" in last_narr:
-                                        closing_row = visible_df.iloc[-1]
-                                        stmt_df = visible_df.iloc[:-1]
+                            def _do_generate_statement() -> None:
+                                rows, meta = generate_customer_facing_statement(
+                                    loan_id,
+                                    start_date=start_date,
+                                    end_date=end_date,
+                                    include_principal_arrears_billing=show_pa_billing,
+                                )
+                                if not rows:
+                                    st.info("No statement lines for this period.")
+                                else:
+                                    df = pd.DataFrame(rows)
+                                    start = meta.get("start_date")
+                                    end = meta.get("end_date")
+                                    cust_id = _normalize_customer_id(meta.get("customer_id"))
+                                    customer_name = _customer_label(cust_id) if cust_id is not None else "—"
+                                    start_fmt = start.strftime("%d%b%Y") if hasattr(start, "strftime") else str(start)
+                                    end_fmt = end.strftime("%d%b%Y") if hasattr(end, "strftime") else str(end)
+                                    gen = meta.get("generated_at")
+                                    generated_fmt = (
+                                        gen.strftime("%d %b %Y, %H:%M:%S")
+                                        if gen and hasattr(gen, "strftime")
+                                        else (str(gen) if gen else "")
+                                    )
+
+                                    statement_title = "Customer loan statement"
+                                    numeric_cols = ["Debits", "Credits", "Balance", "Arrears", "Unapplied funds"]
+                                    for c in numeric_cols:
+                                        if c in df.columns:
+                                            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+                                    visible_df = df.copy()
+                                    if not show_arrears_col and "Arrears" in visible_df.columns:
+                                        visible_df = visible_df.drop(columns=["Arrears"])
+                                    if not show_unapplied_col and "Unapplied funds" in visible_df.columns:
+                                        visible_df = visible_df.drop(columns=["Unapplied funds"])
+
+                                    # Full-width statement: HTML table (no Streamlit dataframe width limits)
+                                    display_headers = {**_alloc_display}
+                                    closing_row = None
+                                    if len(visible_df) > 0:
+                                        last_narr = str(visible_df.iloc[-1].get("Narration") or "")
+                                        if "Total outstanding" in last_narr:
+                                            closing_row = visible_df.iloc[-1]
+                                            stmt_df = visible_df.iloc[:-1]
+                                        else:
+                                            stmt_df = visible_df
                                     else:
                                         stmt_df = visible_df
-                                else:
-                                    stmt_df = visible_df
-                                center_cols = [
-                                    c for c in ["Debits", "Credits", "Balance", "Arrears", "Unapplied funds"]
-                                    if c in stmt_df.columns
-                                ]
-                                table_html = _statement_table_html(
-                                stmt_df,
-                                display_headers,
-                                center_columns=center_cols,
-                                get_system_config=get_system_config,
-                            )
-                                closing_html = ""
-                                if closing_row is not None:
-                                    due_d = closing_row.get("Due Date")
-                                    bal = closing_row.get("Balance")
-                                    unapp = closing_row.get("Unapplied funds")
-                                    due_fmt = due_d.strftime("%d %b %Y") if due_d and hasattr(due_d, "strftime") else str(due_d or "")
-                                    try:
-                                        bal_fmt = f"{float(bal):,.2f}" if bal is not None else "0.00"
-                                        unapp_fmt = f"{float(unapp):,.2f}" if unapp is not None else "0.00"
-                                    except (TypeError, ValueError):
-                                        bal_fmt = str(bal or "0.00")
-                                        unapp_fmt = str(unapp or "0.00")
-                                    if show_unapplied_col:
-                                        closing_html = f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}  &nbsp;|&nbsp;  <strong>Unapplied funds:</strong> {unapp_fmt}</div>"
-                                    else:
-                                        closing_html = f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}</div>"
-                                stmt_html = (
-                                    "<style>"
-                                    "main .block-container { max-width: 100% !important; padding-left: 1.5rem; padding-right: 1.5rem; } "
-                                    "[data-testid='stSidebar'] { width: 16rem !important; } "
-                                    ".stmt-view { width: 100%; max-width: 100%; overflow-x: auto; margin-top: 1rem; } "
-                                    ".stmt-view .stmt-header { margin-bottom: 0.5rem; padding: 0.5rem 0.75rem; border: 1px solid #e2e8f0; border-radius: 4px; background: #f8fafc; font-size: 1.1rem; } "
-                                    ".stmt-view .stmt-table { width: 100%; border-collapse: collapse; font-size: 1.1rem; background: #fff; } "
-                                    ".stmt-view .stmt-table th, .stmt-view .stmt-table td { border: 1px solid #e2e8f0; padding: 0.35rem 0.45rem; text-align: left; } "
-                                    ".stmt-view .stmt-table th { background: #f1f5f9; font-weight: 600; } "
-                                    ".stmt-view .stmt-table td.num, .stmt-view .stmt-table th.num { text-align: right; } "
-                                    ".stmt-view .stmt-table td.center, .stmt-view .stmt-table th.center { text-align: center; } "
-                                    ".stmt-view .stmt-table tbody tr:nth-child(even) { background: #f8fafc; } "
-                                    ".stmt-closing { margin-top: 0.75rem; text-align: center; font-size: 1.1rem; padding: 0.5rem; border-top: 1px solid #e2e8f0; color: #334155; } "
-                                    "</style>"
-                                    "<div class='stmt-view'>"
-                                    "<div class='stmt-header'>"
-                                    f"<strong style='font-size: 1.275rem; display: block; margin-bottom: 0.25rem;'>{statement_title}</strong>"
-                                    f"<span style='display: block;'><strong>Customer:</strong> {customer_name}</span>"
-                                    f"<span style='display: block;'><strong>Customer ID:</strong> {cust_id if cust_id is not None else '—'}</span>"
-                                    f"<span style='display: block;'><strong>Loan ID:</strong> {loan_id}</span>"
-                                    f"<span style='display: block; margin-top: 0.25rem;'><strong>Period covered:</strong> {start_fmt} to {end_fmt}</span>"
-                                    "</div>"
-                                    + table_html
-                                    + closing_html
-                                    + "</div>"
-                                )
-                                st.markdown(stmt_html, unsafe_allow_html=True)
-    
-                                for note in meta.get("notifications") or []:
-                                    st.warning(note)
-    
-                                st.markdown(
-                                    "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 1.125rem;'>"
-                                    f"For the period from {start_fmt} to {end_fmt}<br>"
-                                    f"<strong>Generated:</strong> {generated_fmt}"
-                                    "</div>",
-                                    unsafe_allow_html=True,
-                                )
-                                # CSV with header (comment lines at top) so all formats include header
-                                stmt_slug = "customer"
-                                csv_header_lines = [
-                                    f"# {statement_title}",
-                                    f"# Customer: {customer_name}",
-                                    f"# Customer ID: {cust_id if cust_id is not None else '—'}",
-                                    f"# Loan ID: {loan_id}",
-                                    f"# Period covered: {start_fmt} to {end_fmt}",
-                                    "#",
-                                ]
-                                buf = BytesIO()
-                                buf.write(("\n".join(csv_header_lines) + "\n").encode("utf-8"))
-                                visible_df.to_csv(
-                                    buf,
-                                    index=False,
-                                    date_format="%Y-%m-%d",
-                                    float_format="%.2f",
-                                )
-                                buf.seek(0)
-                                col_csv, col_pdf, col_print = st.columns([0.85, 0.85, 0.5])
-                                with col_csv:
-                                    st.download_button(
-                                        "CSV",
-                                        data=buf,
-                                        file_name=f"loan_statement_{stmt_slug}_{loan_id}_{start_date}_{end_date}.csv",
-                                        mime="text/csv",
-                                        key="stmt_download",
-                                        use_container_width=True,
+                                    center_cols = [
+                                        c
+                                        for c in ["Debits", "Credits", "Balance", "Arrears", "Unapplied funds"]
+                                        if c in stmt_df.columns
+                                    ]
+                                    table_html = _statement_table_html(
+                                        stmt_df,
+                                        display_headers,
+                                        center_columns=center_cols,
+                                        get_system_config=get_system_config,
                                     )
-                                with col_pdf:
-                                    pdf_bytes = _make_statement_pdf(visible_df, customer_name, cust_id, loan_id, start_fmt, end_fmt, statement_title)
-                                    if pdf_bytes:
-                                        st.download_button(
-                                            "PDF",
-                                            data=pdf_bytes,
-                                            file_name=f"loan_statement_{stmt_slug}_{loan_id}_{start_date}_{end_date}.pdf",
-                                            mime="application/pdf",
-                                            key="stmt_download_pdf",
-                                            use_container_width=True,
+                                    closing_html = ""
+                                    if closing_row is not None:
+                                        due_d = closing_row.get("Due Date")
+                                        bal = closing_row.get("Balance")
+                                        unapp = closing_row.get("Unapplied funds")
+                                        due_fmt = (
+                                            due_d.strftime("%d %b %Y")
+                                            if due_d and hasattr(due_d, "strftime")
+                                            else str(due_d or "")
                                         )
-                                    else:
-                                        st.caption("PDF needs reportlab.")
-                                with col_print:
-                                    st.components.v1.html(
-                                        """
-                                        <script>
-                                        function doPrint() {
-                                            try { (window.top || window.parent).print(); } catch (e) { window.print(); }
-                                        }
-                                        </script>
-                                        <button onclick="doPrint()" style="padding: 0.2rem 0.45rem; border-radius: 3px; border: 1px solid #ccc; background: #f0f0f0; color: #333; font-size: 0.9375rem; cursor: pointer;">
-                                        Print
-                                        </button>
-                                        """,
-                                        height=28,
+                                        try:
+                                            bal_fmt = f"{float(bal):,.2f}" if bal is not None else "0.00"
+                                            unapp_fmt = f"{float(unapp):,.2f}" if unapp is not None else "0.00"
+                                        except (TypeError, ValueError):
+                                            bal_fmt = str(bal or "0.00")
+                                            unapp_fmt = str(unapp or "0.00")
+                                        if show_unapplied_col:
+                                            closing_html = (
+                                                f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}  &nbsp;|&nbsp;  "
+                                                f"<strong>Unapplied funds:</strong> {unapp_fmt}</div>"
+                                            )
+                                        else:
+                                            closing_html = (
+                                                f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}</div>"
+                                            )
+                                    header_fragment = (
+                                        "<div class='stmt-header'>"
+                                        f"<strong style='font-size: 1.275rem; display: block; margin-bottom: 0.25rem;'>{statement_title}</strong>"
+                                        f"<span style='display: block;'><strong>Customer:</strong> {customer_name}</span>"
+                                        f"<span style='display: block;'><strong>Customer ID:</strong> {cust_id if cust_id is not None else '—'}</span>"
+                                        f"<span style='display: block;'><strong>Loan ID:</strong> {loan_id}</span>"
+                                        f"<span style='display: block; margin-top: 0.25rem;'><strong>Period covered:</strong> {start_fmt} to {end_fmt}</span>"
+                                        "</div>"
                                     )
-                                st.caption("Exports include header. **Print** uses the browser dialog.")
+                                    stmt_inner = header_fragment + table_html + closing_html
+                                    stmt_html = (
+                                        "<style>"
+                                        "main .block-container { max-width: 100% !important; padding-left: 1.5rem; padding-right: 1.5rem; } "
+                                        "[data-testid='stSidebar'] { width: 16rem !important; } "
+                                        ".stmt-view { width: 100%; max-width: 100%; overflow-x: auto; margin-top: 1rem; } "
+                                        ".stmt-view .stmt-header { margin-bottom: 0.5rem; padding: 0.5rem 0.75rem; border: 1px solid #e2e8f0; border-radius: 4px; background: #f8fafc; font-size: 1.1rem; } "
+                                        ".stmt-view .stmt-table { width: 100%; border-collapse: collapse; font-size: 1.1rem; background: #fff; } "
+                                        ".stmt-view .stmt-table th, .stmt-view .stmt-table td { border: 1px solid #e2e8f0; padding: 0.35rem 0.45rem; text-align: left; } "
+                                        ".stmt-view .stmt-table th { background: #f1f5f9; font-weight: 600; } "
+                                        ".stmt-view .stmt-table td.num, .stmt-view .stmt-table th.num { text-align: right; } "
+                                        ".stmt-view .stmt-table td.center, .stmt-view .stmt-table th.center { text-align: center; } "
+                                        ".stmt-view .stmt-table th.stmt-due-date, .stmt-view .stmt-table td.stmt-due-date { "
+                                        "width: 1%; white-space: nowrap; max-width: 5.75rem; font-size: 0.92rem; "
+                                        "text-align: center; vertical-align: middle; } "
+                                        ".stmt-view .stmt-table tbody tr:nth-child(even) { background: #f8fafc; } "
+                                        ".stmt-closing { margin-top: 0.75rem; text-align: center; font-size: 1.1rem; padding: 0.5rem; border-top: 1px solid #e2e8f0; color: #334155; } "
+                                        "</style>"
+                                        "<div class='stmt-view'>"
+                                        + stmt_inner
+                                        + "</div>"
+                                    )
+                                    st.markdown(stmt_html, unsafe_allow_html=True)
+
+                                    for note in meta.get("notifications") or []:
+                                        st.warning(note)
+
+                                    st.markdown(
+                                        "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 1.125rem;'>"
+                                        f"For the period from {start_fmt} to {end_fmt}<br>"
+                                        f"<strong>Generated:</strong> {generated_fmt}"
+                                        "</div>",
+                                        unsafe_allow_html=True,
+                                    )
+                                    # CSV with header (comment lines at top) so all formats include header
+                                    stmt_slug = "customer"
+                                    csv_header_lines = [
+                                        f"# {statement_title}",
+                                        f"# Customer: {customer_name}",
+                                        f"# Customer ID: {cust_id if cust_id is not None else '—'}",
+                                        f"# Loan ID: {loan_id}",
+                                        f"# Period covered: {start_fmt} to {end_fmt}",
+                                        "#",
+                                    ]
+                                    buf = BytesIO()
+                                    buf.write(("\n".join(csv_header_lines) + "\n").encode("utf-8"))
+                                    visible_df.to_csv(
+                                        buf,
+                                        index=False,
+                                        date_format="%Y-%m-%d",
+                                        float_format="%.2f",
+                                    )
+                                    buf.seek(0)
+                                    csv_raw = buf.getvalue()
+                                    pdf_bytes = _make_statement_pdf(
+                                        visible_df,
+                                        customer_name,
+                                        cust_id,
+                                        loan_id,
+                                        start_fmt,
+                                        end_fmt,
+                                        statement_title,
+                                    )
+                                    _csv_name = f"loan_statement_{stmt_slug}_{loan_id}_{start_date}_{end_date}.csv"
+                                    _pdf_name = f"loan_statement_{stmt_slug}_{loan_id}_{start_date}_{end_date}.pdf"
+                                    st.components.v1.html(
+                                        _statement_export_bar_html(
+                                            csv_bytes=csv_raw,
+                                            pdf_bytes=pdf_bytes,
+                                            print_inner_html=stmt_inner,
+                                            csv_file_name=_csv_name,
+                                            pdf_file_name=_pdf_name,
+                                        ),
+                                        height=96,
+                                    )
+
+                            run_with_spinner("Generating statement…", _do_generate_statement)
                         except Exception as ex:
                             st.error(str(ex))
                             st.exception(ex)

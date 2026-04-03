@@ -5,8 +5,11 @@ from __future__ import annotations
 import streamlit as st
 
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 def render_ifrs_provision_tab() -> None:
-    st.subheader("IFRS provision configuration")
+    render_sub_sub_header("IFRS provision configuration")
     st.caption(
         "Collateral security subtypes, haircuts, and **PD bands by DPD** (fallback when no IFRS grade applies). "
         "Used by **Portfolio reports** (ECL / IFRS view and single-loan IFRS Provisions). "

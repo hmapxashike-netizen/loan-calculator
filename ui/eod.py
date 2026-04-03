@@ -8,10 +8,10 @@ from typing import Any
 
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from services import eod_service
-from ui.components import render_green_page_title
-
-
 def render_eod_ui(
     *,
     get_system_config: Callable[[], dict[str, Any]],
@@ -20,8 +20,6 @@ def render_eod_ui(
     load_system_config_from_db: Callable[[], dict | None] | None,
 ) -> None:
     """EOD page: business context from ``eod_service``; config from injected ``get_system_config``."""
-    render_green_page_title("End of day")
-
     ctx = eod_service.get_eod_business_context()
     current_system_date = ctx["current_system_date"]
     next_date = ctx["next_system_date"]
@@ -67,7 +65,7 @@ def render_eod_ui(
                 "so stale DB sessions release the advisory lock."
             )
 
-        st.subheader("Run EOD (advance system date)")
+        render_sub_sub_header("Run EOD (advance system date)")
         st.caption(
             "Runs EOD for the current system date. On success, system date advances by +1 day. "
             "Accruals and Amount Due logic use the system date, not the calendar."
@@ -167,7 +165,7 @@ def render_eod_ui(
                 st.rerun()
 
         if fix_eod_issues:
-            st.subheader("Backfill EOD (specific date, no system date advance)")
+            render_sub_sub_header("Backfill EOD (specific date, no system date advance)")
             st.caption("Backfill only. Does not advance system date.")
             backfill_date = st.date_input("EOD as-of date", current_system_date, key="eod_backfill_date")
             if st.button(
@@ -190,7 +188,7 @@ def render_eod_ui(
                 except Exception as e:
                     st.error(f"EOD run failed: {e}")
     else:
-        st.subheader("Manual EOD run")
+        render_sub_sub_header("Manual EOD run")
         st.info(
             "EOD is configured for **automatic** mode. Manual runs are disabled here. "
             "Use your scheduling/ops tooling to trigger EOD."
@@ -198,7 +196,7 @@ def render_eod_ui(
 
     if fix_eod_issues:
         # Available in both manual and automatic EOD modes — does not advance system date.
-        st.subheader("Reallocate receipts")
+        render_sub_sub_header("Reallocate receipts")
         st.caption(
             "Re-runs waterfall allocation for selected **posted** receipts and **writes results to the database**: "
             "`loan_repayment_allocation` (updated in place) and `loan_daily_state` for each receipt’s **value date**, "

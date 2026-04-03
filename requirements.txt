@@ -2,6 +2,7 @@
 streamlit>=1.43.0
 streamlit-option-menu
 numpy-financial
+sqlalchemy>=2.0
 psycopg2-binary
 openpyxl
 reportlab

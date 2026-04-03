@@ -50,11 +50,6 @@ def render_system_configurations_ui(
     _loan_management_available = loan_management_available
     _loan_management_error = loan_management_error
 
-    st.markdown(
-        "<div style='background-color: #16A34A; color: white; padding: 8px 12px; font-weight: bold; font-size: 1.375rem;'>System configurations</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
     cfg = _get_system_config()
 
     eod_cfg = cfg.get("eod_settings", {}) or {}

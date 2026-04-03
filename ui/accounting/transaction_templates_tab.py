@@ -5,8 +5,11 @@ from __future__ import annotations
 import streamlit as st
 
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 def render_transaction_templates_tab(*, templates_ui) -> None:
-    st.subheader("Transaction Templates (Journal Links)")
+    render_sub_sub_header("Transaction Templates (Journal Links)")
 
     if st.session_state.pop("acco_tt_restored_ok", None):
         st.success("Transaction templates were replaced from bundled defaults.")
@@ -153,7 +156,7 @@ def render_transaction_templates_tab(*, templates_ui) -> None:
         help="Adds a debit and credit template row for one event type. Hidden by default to reduce clutter.",
     )
     if _show_link_journal:
-        st.subheader("Link New Journal (Double Entry)")
+        render_sub_sub_header("Link New Journal (Double Entry)")
         st.caption(
             "Adds one **debit** and one **credit** template row for an **event_type**. "
             "Posting code (e.g. `AccountingService.post_event`) must use the **exact same** event type string. "

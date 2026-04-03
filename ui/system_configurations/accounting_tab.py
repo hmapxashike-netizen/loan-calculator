@@ -7,6 +7,9 @@ from typing import Any, NamedTuple
 import streamlit as st
 
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 class AccountingPeriodsSnapshot(NamedTuple):
     month_mode: str
     month_day: int
@@ -15,7 +18,7 @@ class AccountingPeriodsSnapshot(NamedTuple):
 
 
 def render_accounting_config_tab(*, cfg: dict[str, Any]) -> AccountingPeriodsSnapshot:
-    st.subheader("Accounting periods")
+    render_sub_sub_header("Accounting periods")
     st.caption(
         "Define accounting month-end and fiscal year-end. The system uses this for EOM/EOY decisions in EOD and financial reporting."
     )

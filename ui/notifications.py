@@ -8,14 +8,15 @@ import pandas as pd
 import streamlit as st
 
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 def render_notifications_ui(
     *,
     customers_available: bool,
     list_customers,
     get_display_name,
 ) -> None:
-    st.header("Notifications Module")
-
     tab_send, tab_templates, tab_history = st.tabs(
         [
             "Send Notification",
@@ -25,7 +26,7 @@ def render_notifications_ui(
     )
 
     with tab_send:
-        st.subheader("Send a Notification")
+        render_sub_sub_header("Send a Notification")
         with st.form("send_notification_form"):
             recipient_type = st.radio(
                 "Send to",
@@ -100,7 +101,7 @@ def render_notifications_ui(
                     )
 
     with tab_templates:
-        st.subheader("Manage Templates")
+        render_sub_sub_header("Manage Templates")
         st.info(
             "Here you can define and edit standard templates to use for bulk or automated notifications."
         )
@@ -139,7 +140,7 @@ def render_notifications_ui(
         st.dataframe(mock_templates, hide_index=True, use_container_width=True)
 
     with tab_history:
-        st.subheader("Notification History")
+        render_sub_sub_header("Notification History")
 
         col1, col2 = st.columns(2)
         with col1:

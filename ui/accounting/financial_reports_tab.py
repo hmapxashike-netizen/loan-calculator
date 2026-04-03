@@ -5,6 +5,9 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from display_formatting import format_display_amount
 
 
@@ -15,7 +18,7 @@ def render_financial_reports_tab(
     get_system_date,
     money_df_column_config,
 ) -> None:
-    st.subheader("Financial Reports")
+    render_sub_sub_header("Financial Reports")
     try:
         from accounting.periods import (
             normalize_accounting_period_config,

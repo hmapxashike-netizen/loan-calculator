@@ -6,8 +6,12 @@ from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from display_formatting import format_display_amount
 from ui.components import inject_tertiary_hyperlink_css_once, render_centered_html_table
+from ui.streamlit_feedback import run_with_spinner
 
 from loans import (
     add_months,
@@ -102,9 +106,9 @@ def _render_capture_loan_documents_staging(
 
 def _fcapture_inject_css_once() -> None:
     """Loan capture only: scoped via :has(.fcapture-scope). Bump _fcapture_panel_css_v* when CSS changes."""
-    if st.session_state.get("_fcapture_panel_css_v10"):
+    if st.session_state.get("_fcapture_panel_css_v11"):
         return
-    st.session_state["_fcapture_panel_css_v10"] = True
+    st.session_state["_fcapture_panel_css_v11"] = True
     _g = _FCAP_BRAND_GREEN
     _t = _FCAP_BRAND_TEAL
     st.markdown(
@@ -175,8 +179,7 @@ main .block-container:has(.fcapture-scope) [data-testid="stVerticalBlockBorderWr
 main .block-container:has(.fcapture-scope) [data-testid="stVerticalBlock"] > div {{
   gap: 0.22rem !important;
 }}
-/* Do not restyle Loan Management segmented subnav (same block-container once .fcapture-scope exists). */
-main .block-container:has(.fcapture-scope) [data-testid="stHorizontalBlock"]:not(:has(.farnda-lm-segbar-root)) {{
+main .block-container:has(.fcapture-scope) [data-testid="stHorizontalBlock"] {{
   gap: 0.35rem !important;
 }}
 /* Draft panel triggers: hyperlink-style tertiary buttons */
@@ -194,6 +197,41 @@ main .block-container:has(.fcapture-scope) button[data-testid="baseButton-tertia
 main .block-container:has(.fcapture-scope) button[data-testid="baseButton-tertiary"]:hover {{
   color: #1e40af !important;
 }}
+/* Primary actions on Loan Capture tab: brand green (toolbar + Actions row) */
+main .block-container:has(.fcapture-scope) button[data-testid="stBaseButton-primary"],
+main .block-container:has(.fcapture-scope) button[data-testid="baseButton-primary"] {{
+  background-color: var(--fcap-green) !important;
+  border-color: var(--fcap-green) !important;
+  color: #ffffff !important;
+}}
+main .block-container:has(.fcapture-scope) button[data-testid="stBaseButton-primary"]:hover,
+main .block-container:has(.fcapture-scope) button[data-testid="stBaseButton-primary"]:focus-visible,
+main .block-container:has(.fcapture-scope) button[data-testid="baseButton-primary"]:hover,
+main .block-container:has(.fcapture-scope) button[data-testid="baseButton-primary"]:focus-visible {{
+  background-color: #15803d !important;
+  border-color: #15803d !important;
+  color: #ffffff !important;
+}}
+main .block-container:has(.fcapture-scope) button[data-testid="stBaseButton-primary"] p,
+main .block-container:has(.fcapture-scope) button[data-testid="stBaseButton-primary"] span,
+main .block-container:has(.fcapture-scope) button[data-testid="baseButton-primary"] p,
+main .block-container:has(.fcapture-scope) button[data-testid="baseButton-primary"] span {{
+  color: #ffffff !important;
+}}
+/* Compact staged / rework draft panels (~50% visual weight vs prior subheader + table) */
+main .block-container:has(.fcapture-scope) p.fcapture-draft-panel-title {{
+  font-size: 0.72rem !important;
+  font-weight: 600 !important;
+  margin: 0 0 0.12rem 0 !important;
+  color: #334155 !important;
+  line-height: 1.2 !important;
+}}
+main .block-container:has(.fcapture-scope) p.fcapture-draft-panel-hint {{
+  font-size: 0.65rem !important;
+  margin: 0 0 0.2rem 0 !important;
+  color: #64748b !important;
+  line-height: 1.25 !important;
+}}
 </style>
         """,
         unsafe_allow_html=True,
@@ -206,7 +244,7 @@ def _fcapture_clear_session_after_submit() -> None:
     Drops ``cap_*`` / ``capture_*`` widget keys and ``loan_doc_*`` document staging keys so
     Streamlit recreates controls with defaults on the next run.
     """
-    _preserve = frozenset({"capture_flash_message", "_fcapture_panel_css_v10"})
+    _preserve = frozenset({"capture_flash_message", "_fcapture_panel_css_v11"})
     for k in list(st.session_state.keys()):
         if k in _preserve:
             continue
@@ -303,14 +341,18 @@ def render_capture_loan_ui(
             return
         df_sched = st.session_state.get("capture_loan_schedule_df")
         details_to_save = _capture_details_for_queue()
-        result = capture_service.persist_staged_capture_draft(
-            customer_id=int(st.session_state.get("capture_customer_id")),
-            loan_type=str(st.session_state.get("capture_loan_type")),
-            product_code=st.session_state.get("capture_product_code"),
-            details_to_save=details_to_save,
-            schedule_df=df_sched,
-            existing_stage1_draft_id=st.session_state.get("capture_stage1_draft_id"),
-        )
+
+        def _persist_staged():
+            return capture_service.persist_staged_capture_draft(
+                customer_id=int(st.session_state.get("capture_customer_id")),
+                loan_type=str(st.session_state.get("capture_loan_type")),
+                product_code=st.session_state.get("capture_product_code"),
+                details_to_save=details_to_save,
+                schedule_df=df_sched,
+                existing_stage1_draft_id=st.session_state.get("capture_stage1_draft_id"),
+            )
+
+        result = run_with_spinner("Saving staged draft…", _persist_staged)
         if not result.ok:
             st.error(result.error or "Save failed.")
             return
@@ -337,21 +379,29 @@ def render_capture_loan_ui(
             details_to_queue = _capture_details_for_queue()
             source_draft_id = st.session_state.get("capture_rework_source_draft_id")
             stage1_draft_id = st.session_state.get("capture_stage1_draft_id")
-            draft_id = capture_service.resolve_and_submit_approval_draft(
-                customer_id=int(cid),
-                loan_type=str(ltype),
-                product_code=pcode,
-                details_to_queue=details_to_queue,
-                df_schedule=df_schedule,
-                source_rework_draft_id=int(source_draft_id) if source_draft_id is not None else None,
-                stage1_draft_id=int(stage1_draft_id) if stage1_draft_id is not None else None,
-            )
-            upload_fn = upload_document if documents_available else None
-            staged_loan_docs = list(st.session_state.get("loan_docs_staged") or [])
-            doc_count, doc_errs = capture_service.attach_loan_draft_documents_from_staging(
-                int(draft_id),
-                staged_loan_docs,
-                upload_document_fn=upload_fn,
+
+            def _resolve_submit_and_attach():
+                did = capture_service.resolve_and_submit_approval_draft(
+                    customer_id=int(cid),
+                    loan_type=str(ltype),
+                    product_code=pcode,
+                    details_to_queue=details_to_queue,
+                    df_schedule=df_schedule,
+                    source_rework_draft_id=int(source_draft_id) if source_draft_id is not None else None,
+                    stage1_draft_id=int(stage1_draft_id) if stage1_draft_id is not None else None,
+                )
+                upload_fn = upload_document if documents_available else None
+                staged_loan_docs = list(st.session_state.get("loan_docs_staged") or [])
+                doc_count, doc_errs = capture_service.attach_loan_draft_documents_from_staging(
+                    int(did),
+                    staged_loan_docs,
+                    upload_document_fn=upload_fn,
+                )
+                return did, doc_count, doc_errs
+
+            draft_id, doc_count, doc_errs = run_with_spinner(
+                "Submitting for approval…",
+                _resolve_submit_and_attach,
             )
             for de in doc_errs:
                 st.error(de)
@@ -512,141 +562,111 @@ def render_capture_loan_ui(
         '<span class="fcapture-scope" aria-hidden="true"></span>',
         unsafe_allow_html=True,
     )
-    st.session_state.setdefault("capture_open_draft_panel", None)
-    _open_panel = st.session_state.get("capture_open_draft_panel")
-    _lnk1, _lnk2, _lnk_sp = st.columns([1.15, 1.25, 3])
-    with _lnk1:
-        if st.button(
-            "See Loans for Rework",
-            key="cap_open_rework_panel",
-            type="tertiary",
-        ):
-            st.session_state["capture_open_draft_panel"] = (
-                None if _open_panel == "rework" else "rework"
-            )
-            st.rerun()
-    with _lnk2:
-        if st.button(
-            "Resume Capture Draft",
-            key="cap_open_staged_panel",
-            type="tertiary",
-        ):
-            st.session_state["capture_open_draft_panel"] = (
-                None if _open_panel == "staged" else "staged"
-            )
-            st.rerun()
-
     if st.session_state.get("capture_open_draft_panel") == "rework":
-        st.subheader("See Loans For Rework")
+        _rw_hdr_l, _rw_hdr_r = st.columns([6, 0.55], gap="small", vertical_alignment="center")
+        with _rw_hdr_l:
+            st.markdown(
+                '<p class="fcapture-draft-panel-title">See loans for rework</p>',
+                unsafe_allow_html=True,
+            )
+        with _rw_hdr_r:
+            if st.button(
+                "✕",
+                key="cap_close_rework_panel",
+                help="Close and return to loan capture",
+                type="tertiary",
+            ):
+                st.session_state["capture_open_draft_panel"] = None
+                st.rerun()
+        st.markdown(
+            '<p class="fcapture-draft-panel-hint">Search by draft ID, customer, product, or loan type</p>',
+            unsafe_allow_html=True,
+        )
         srch = st.text_input(
-            "Search Rework Drafts",
+            "Search rework drafts",
             placeholder="Draft ID / Customer ID / Product / Loan Type",
             key="cap_rework_search",
+            label_visibility="collapsed",
         )
         rework_rows = list_loan_approval_drafts(
             status="REWORK",
             search=srch.strip() or None,
             limit=200,
         )
-        if rework_rows:
-            rw_df = pd.DataFrame(rework_rows)
-            rw_cols = [
-                c
-                for c in [
-                    "id",
-                    "customer_id",
-                    "loan_type",
-                    "product_code",
-                    "assigned_approver_id",
-                    "submitted_at",
-                ]
-                if c in rw_df.columns
-            ]
-            st.dataframe(
-                rw_df[rw_cols],
-                width="stretch",
-                hide_index=True,
-                height=min(160, 40 + min(len(rework_rows), 12) * 28),
-            )
-            st.caption("Click **Customer** ID or **Load** to open the same rework draft.")
+        if not rework_rows:
+            if srch.strip():
+                st.info("No rework drafts match your search.")
+            else:
+                st.info("No loans for rework right now.")
+        else:
             for r in rework_rows:
                 rid = int(r["id"])
                 _rw_cust = r.get("customer_id")
                 _rw_cust_lbl = str(_rw_cust) if _rw_cust is not None else "—"
-                _rw_lbl = (
-                    f"Load Draft #{rid} · Customer {_rw_cust_lbl} · "
+                _rw_link_lbl = (
+                    f"Draft #{rid} · Customer {_rw_cust_lbl} · "
                     f"{r.get('product_code', '—')} · {r.get('loan_type', '—')}"
                 )
-                _rwc1, _rwc2 = st.columns([1.05, 3.95], gap="small", vertical_alignment="center")
-                with _rwc1:
-                    if st.button(
-                        _rw_cust_lbl,
-                        key=f"cap_rework_cust_{rid}",
-                        type="tertiary",
-                        help=f"Load rework draft #{rid} (same as Load row)",
-                    ):
-                        _load_rework_draft_by_id(rid)
-                with _rwc2:
-                    if st.button(_rw_lbl, key=f"cap_rework_row_{rid}"):
-                        _load_rework_draft_by_id(rid)
+                if st.button(
+                    _rw_link_lbl,
+                    key=f"cap_rework_row_{rid}",
+                    type="tertiary",
+                    help=f"Open rework draft #{rid}",
+                ):
+                    _load_rework_draft_by_id(rid)
 
     if st.session_state.get("capture_open_draft_panel") == "staged":
-        st.subheader("Resume Capture Draft")
+        _st_hdr_l, _st_hdr_r = st.columns([6, 0.55], gap="small", vertical_alignment="center")
+        with _st_hdr_l:
+            st.markdown(
+                '<p class="fcapture-draft-panel-title">Resume capture draft</p>',
+                unsafe_allow_html=True,
+            )
+        with _st_hdr_r:
+            if st.button(
+                "✕",
+                key="cap_close_staged_panel",
+                help="Close and return to loan capture",
+                type="tertiary",
+            ):
+                st.session_state["capture_open_draft_panel"] = None
+                st.rerun()
+        st.markdown(
+            '<p class="fcapture-draft-panel-hint">Search by draft ID, customer, or product</p>',
+            unsafe_allow_html=True,
+        )
         stg_srch = st.text_input(
-            "Search Staged Drafts",
+            "Search staged drafts",
             placeholder="Draft ID / Customer ID / Product",
             key="cap_staged_search",
+            label_visibility="collapsed",
         )
         staged_rows = list_loan_approval_drafts(
             status="STAGED",
             search=stg_srch.strip() or None,
             limit=200,
         )
-        if staged_rows:
-            stg_df = pd.DataFrame(staged_rows)
-            stg_cols = [
-                c
-                for c in [
-                    "id",
-                    "customer_id",
-                    "loan_type",
-                    "product_code",
-                    "assigned_approver_id",
-                    "submitted_at",
-                ]
-                if c in stg_df.columns
-            ]
-            st.dataframe(
-                stg_df[stg_cols],
-                width="stretch",
-                hide_index=True,
-                height=min(140, 36 + min(len(staged_rows), 10) * 28),
-            )
-            st.caption("Click **Customer** ID or **Load** to resume the same staged draft.")
+        if not staged_rows:
+            if stg_srch.strip():
+                st.info("No staged drafts match your search.")
+            else:
+                st.info("No staged drafts to resume.")
+        else:
             for r in staged_rows:
                 sid = int(r["id"])
                 _st_cust = r.get("customer_id")
                 _st_cust_lbl = str(_st_cust) if _st_cust is not None else "—"
-                _st_lbl = (
-                    f"Load Staged Draft #{sid} · Customer {_st_cust_lbl} · "
-                    f"{r.get('product_code', '—')} · {r.get('loan_type', '—')}"
-                )
-                _stc1, _stc2 = st.columns([1.05, 3.95], gap="small", vertical_alignment="center")
-                with _stc1:
-                    if st.button(
-                        _st_cust_lbl,
-                        key=f"cap_staged_cust_{sid}",
-                        type="tertiary",
-                        help=f"Resume staged draft #{sid} (same as Load row)",
-                    ):
-                        _load_staged_draft_by_id(sid)
-                with _stc2:
-                    if st.button(_st_lbl, key=f"cap_staged_row_{sid}"):
-                        _load_staged_draft_by_id(sid)
+                if st.button(
+                    _st_cust_lbl,
+                    key=f"cap_staged_cust_{sid}",
+                    type="tertiary",
+                    help=f"Resume staged draft #{sid}",
+                ):
+                    _load_staged_draft_by_id(sid)
 
     # -------- Loan capture: flat panel (details → schedule → review → actions) --------
     with st.container(border=True):
-        st.subheader("Details")
+        render_sub_sub_header("Details")
         customers_list = list_customers(status="active") or []
         if not customers_list:
             st.warning("No active customers. Add a customer first under **Customers**.")
@@ -895,7 +915,7 @@ def render_capture_loan_ui(
                                 key="capture_collateral_valuation",
                             )
 
-        st.subheader("Schedule")
+        render_sub_sub_header("Schedule")
         cid = st.session_state.get("capture_customer_id")
         ltype = st.session_state.get("capture_loan_type")
         product_code = st.session_state.get("capture_product_code") or "—"
@@ -1689,7 +1709,7 @@ def render_capture_loan_ui(
         _rv_cid = st.session_state.get("capture_customer_id")
         _rv_lt = st.session_state.get("capture_loan_type")
         if _rv_det and _rv_df is not None and _rv_cid and _rv_lt:
-            st.subheader("Review & Submit")
+            render_sub_sub_header("Review & Submit")
             sum_col1, sum_col2, sum_col3, sum_col4 = st.columns(4)
             with sum_col1:
                 st.markdown(f"**Customer:** {get_display_name(_rv_cid)} ({_rv_cid})")
@@ -1805,11 +1825,11 @@ def render_capture_loan_ui(
                     st.info("No LOAN_APPROVAL template lines.")
             except Exception as e:
                 st.warning(f"Journal preview unavailable: {e}")
-            st.subheader("Repayment Schedule")
+            render_sub_sub_header("Repayment Schedule")
             _df_rv = format_schedule_df(_rv_df)
             render_centered_html_table(_df_rv, [str(c) for c in _df_rv.columns])
 
-        st.subheader("Documents")
+        render_sub_sub_header("Documents")
         _render_capture_loan_documents_staging(
             documents_available=documents_available,
             list_document_categories=list_document_categories,
@@ -1823,12 +1843,12 @@ def render_capture_loan_ui(
             st.session_state.get("capture_loan_details") is not None
             and st.session_state.get("capture_loan_schedule_df") is not None
         )
-        st.subheader("Actions")
+        render_sub_sub_header("Actions")
         ba1, ba2, ba3, ba4 = st.columns(4)
         with ba1:
             if st.button(
                 "Clear Form",
-                type="secondary",
+                type="primary",
                 key="cap_clear_all",
             ):
                 _fcapture_clear_session_after_submit()
@@ -1837,14 +1857,14 @@ def render_capture_loan_ui(
         with ba2:
             if st.button(
                 "Save Continue Later",
-                type="secondary",
+                type="primary",
                 key="cap_save_staged_schedule",
             ):
                 _save_capture_staged_draft()
         with ba3:
             if st.button(
                 "Send for Approval",
-                type="secondary",
+                type="primary",
                 key="cap_send_for_approval",
                 disabled=not has_schedule,
             ):
@@ -1852,7 +1872,7 @@ def render_capture_loan_ui(
         with ba4:
             if st.button(
                 "Dismiss Draft",
-                type="secondary",
+                type="primary",
                 key="cap_dismiss_t3",
             ):
                 _fcapture_clear_session_after_submit()

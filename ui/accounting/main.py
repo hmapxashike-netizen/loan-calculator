@@ -17,13 +17,6 @@ def render_accounting_ui(
 
     bundle = build_accounting_ui_bundle()
 
-    st.markdown(
-        "<div style='background-color: #0F766E; color: white; padding: 8px 12px; "
-        "font-weight: bold; font-size: 1.375rem;'>Accounting Module</div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<br>", unsafe_allow_html=True)
-
     tab_coa, tab_templates, tab_mapping, tab_manual, tab_reports = st.tabs(
         [
             "Chart of Accounts",

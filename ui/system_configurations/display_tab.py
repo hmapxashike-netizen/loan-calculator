@@ -6,6 +6,9 @@ from typing import Any, NamedTuple
 
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from display_formatting import resolve_display_format
 
 
@@ -20,7 +23,7 @@ class DisplayFormatSnapshot(NamedTuple):
 
 
 def render_display_tab(*, cfg: dict[str, Any]) -> DisplayFormatSnapshot:
-    st.subheader("Display — amounts in tables and labels")
+    render_sub_sub_header("Display — amounts in tables and labels")
     st.caption(
         "Controls thousands grouping, decimals, and which dataframe columns are treated as money. "
         "New columns are picked up automatically when their names match the configured substrings."

@@ -11,6 +11,9 @@ from io import StringIO
 
 import pandas as pd
 import streamlit as st
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from psycopg2.extras import RealDictCursor
 
 from decimal_utils import as_10dp
@@ -62,7 +65,7 @@ def _df_download(df: pd.DataFrame, filename: str, *, button_key: str) -> None:
 
 
 def _shell_report(title: str, planned: list[str]) -> None:
-    st.subheader(title)
+    render_sub_sub_header(title)
     st.info("**Planned — not implemented yet.** See scope notes below.")
     for line in planned:
         st.markdown(f"- {line}")
@@ -90,7 +93,7 @@ def _bucket_summary_grid(
 
 
 def _report_arrears_aging(as_of: date, active_only: bool) -> None:
-    st.subheader("Debtor loans arrears (aging)")
+    render_sub_sub_header("Debtor loans arrears (aging)")
     try:
         df = build_arrears_aging_report(as_of, active_only=active_only)
     except Exception as ex:
@@ -118,7 +121,7 @@ def _report_arrears_aging(as_of: date, active_only: bool) -> None:
 
 
 def _report_debtor_maturity(as_of: date, active_only: bool) -> None:
-    st.subheader("Debtor maturity profile")
+    render_sub_sub_header("Debtor maturity profile")
     st.caption(
         "Principal-only: principal not due is spread across future instalments in proportion to scheduled principal. "
         "Full cash flow: scheduled principal and interest are spread across future instalments. "
@@ -159,7 +162,7 @@ def _report_debtor_maturity(as_of: date, active_only: bool) -> None:
 
 
 def _report_regulatory_maturity_profile(as_of: date, active_only: bool) -> None:
-    st.subheader("Regulatory maturity profile")
+    render_sub_sub_header("Regulatory maturity profile")
     st.caption(
         "Debtor **cash inflows** are the same engine as **Debtor maturity profile**: `principal_not_due` from "
         "latest `loan_daily_state` on/before as-of, spread across **future** instalments by scheduled principal "
@@ -248,7 +251,7 @@ def _report_regulatory_maturity_profile(as_of: date, active_only: bool) -> None:
 
 
 def _report_par(as_of: date, active_only: bool, par_threshold_days: int) -> None:
-    st.subheader("Portfolio at risk (PAR)")
+    render_sub_sub_header("Portfolio at risk (PAR)")
     st.caption(
         f"**PAR ({par_threshold_days}+)** = sum of `total_exposure` where `days_overdue` > {par_threshold_days} "
         "÷ sum of `total_exposure` for the same portfolio base. Uses latest daily state per loan."
@@ -296,7 +299,7 @@ def _report_par(as_of: date, active_only: bool, par_threshold_days: int) -> None
 
 
 def _report_master_listing(as_of: date, active_only: bool) -> None:
-    st.subheader("Master loan listing")
+    render_sub_sub_header("Master loan listing")
     st.caption("Flat snapshot: loan + customer dimensions + latest daily state on or before as-of.")
     status_clause = "AND l.status = 'active'" if active_only else ""
     sql = f"""
@@ -351,7 +354,7 @@ def _report_master_listing(as_of: date, active_only: bool) -> None:
 
 
 def _report_disbursed(period_start: date, period_end: date) -> None:
-    st.subheader("Disbursed loans (period)")
+    render_sub_sub_header("Disbursed loans (period)")
     st.caption("Loans with `disbursement_date` in the selected inclusive range (booked activation date).")
     sql = """
         SELECT
@@ -392,7 +395,7 @@ def _report_disbursed(period_start: date, period_end: date) -> None:
 
 
 def _report_iis_movement(period_start: date, period_end: date, nonzero_only: bool) -> None:
-    st.subheader("Interest in suspense (IIS) movement")
+    render_sub_sub_header("Interest in suspense (IIS) movement")
     st.caption(
         "Compare latest `loan_daily_state` on or before **period start** vs **period end** "
         "(requires EOD rows for both dates)."
@@ -449,7 +452,7 @@ def _report_iis_movement(period_start: date, period_end: date, nonzero_only: boo
 
 
 def _report_concentration(as_of: date, active_only: bool) -> None:
-    st.subheader("Portfolio concentration")
+    render_sub_sub_header("Portfolio concentration")
     st.caption("Total exposure from latest daily state, grouped by dimension.")
     st.markdown("**By product_code**")
     st.dataframe(_concentration_query(as_of, active_only, "l.product_code"), hide_index=True, width="stretch")
@@ -493,7 +496,7 @@ def _concentration_query(as_of: date, active_only: bool, dim_sql: str) -> pd.Dat
 
 
 def _report_ecl_provision(as_of: date, active_only: bool) -> None:
-    st.subheader("Expected credit loss (ECL) — provisions view")
+    render_sub_sub_header("Expected credit loss (ECL) — provisions view")
     st.caption(
         "Same logic as **IFRS Provisions (single loan)**: haircut on collateral, **provision = unsecured × PD%**. "
         "**PD%** is the **standard provision %** for the loan’s **IFRS grade** (**System configurations → Loan grade scales**). "
@@ -606,7 +609,7 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
 
 
 def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
-    st.subheader("Loan classification (regulatory scale)")
+    render_sub_sub_header("Loan classification (regulatory scale)")
     st.caption(
         "Each loan is classified using **System configurations → Loan grade scales → Regulatory** DPD bands. "
         "Exposure = `loan_daily_state.total_exposure` (latest on or before as-of). "
@@ -715,11 +718,6 @@ def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
 
 def render_portfolio_reports_ui() -> None:
     st.session_state.setdefault("portfolio_exports_visible", False)
-    st.markdown(
-        "<div style='color:#1D4ED8; font-weight:700; font-size:1.3125rem; margin:0.08rem 0 0.25rem 0;'>"
-        "Portfolio reports</div>",
-        unsafe_allow_html=True,
-    )
     report_keys = [
         ("IFRS Provisions (single loan)", "ifrs"),
         ("Debtor maturity profile", "mat_11"),
@@ -884,7 +882,7 @@ def render_portfolio_reports_ui() -> None:
 
     if st.session_state.get("portfolio_exports_visible", False):
         st.divider()
-        st.subheader("Data Export")
+        render_sub_sub_header("Data Export")
         st.caption("Export low-level database tables to CSV for external analysis or auditing.")
 
         ex_c1, ex_c2, ex_c3 = st.columns([1, 1, 2], vertical_alignment="bottom")

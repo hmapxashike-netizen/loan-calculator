@@ -1,11 +1,29 @@
 """
-Farnda Cred global theme: soft glassmorphism, nav tiles, custom ring cursor, Inter typography.
+Farnda Cred global theme + **brand heading system**.
 
-Inject once per session via :func:`inject_farnda_global_styles_once` using :func:`inject_style_block`
-(``st.html`` + hidden span + ``unsafe_allow_javascript=True`` on Streamlit 1.54+ so DOMPurify keeps
-``<style>``). Sidebar styling covers legacy ``st.sidebar.radio`` (``stRadioGroup``) and
-``st.navigation`` / multipage (``stSidebarNavItems``). Font Awesome is loaded for
+Brand colours: :data:`BRAND_NAVY` (``#113C7A``), :data:`BRAND_GREEN` (``#5CC346``).
+
+- **Headings**: use :func:`render_main_header`, :func:`render_sub_header`, :func:`render_sub_sub_header`
+  (HTML ``div`` elements with classes ``main-header``, ``sub-header``, ``sub-sub-header``). Level 2 and 3
+  share the **same** font size, weight, and navy (:data:`BRAND_NAVY`) so section titles match Admin
+  Dashboard **Users**; only ``aria-level`` differs (2 vs 3). Prefer these helpers over ``st.title`` /
+  ``st.header`` / ``st.subheader``.
+- **CSS**: Brand heading rules ship inside :func:`inject_farnda_global_styles_once` via
+  :func:`inject_style_block` (``st.html``, reliable on Streamlit 1.54+). The bundle reapplies when
+  :data:`_FARNDA_CSS_BUNDLE_VERSION` changes (session key ``_farnda_global_css_bundle_version``), so
+  heading/font tweaks are not stuck behind a one-shot flag. :func:`apply_custom_styles` injects
+  heading CSS for standalone scripts when the full bundle has not run.
+
+Sidebar styling covers ``st.sidebar.radio`` / ``stNavigation``. Font Awesome is loaded for
 :func:`create_card` via ``icon_html``.
+
+**Tabs:** All ``st.tabs`` in the main canvas use the **underline** look (see
+:data:`TABS_UNDERLINE_ACTIVE` / :data:`TABS_UNDERLINE_TRACK`; active underline thickness
+:data:`TAB_UNDERLINE_WIDTH_PX`). Loan management uses ``st.tabs`` (not ``st.segmented_control``) so
+theme styles cannot force a boxed segmented bar. ``st.segmented_control`` / ``st.pills`` in main still
+use the flat ``stButtonGroup`` overrides below. For custom HTML tab rows, use
+``<nav class="farnda-tab-bar">`` with ``<a class="farnda-tab">`` and ``farnda-tab--active`` on the
+current item.
 """
 
 from __future__ import annotations
@@ -15,7 +33,205 @@ import urllib.parse
 
 import streamlit as st
 
-_SESSION_FLAG = "_farnda_global_style_v22"
+# Session stores this **integer**; bump when global/brand heading CSS must refresh in the browser.
+_FARNDA_CSS_BUNDLE_VERSION = 45
+_SESSION_FLAG = "_farnda_global_css_bundle_version"
+
+# Heading scale: 15% softer than prior (multiply size by 0.85; weights stepped to valid CSS values)
+_HEADER_TONE = 0.85
+_MAIN_HEADER_FONT_PX = round(52.5 * _HEADER_TONE, 3)  # was 52.5
+_MAIN_HEADER_FONT_WEIGHT = 800  # was 900; ~15% lighter emphasis
+# Level-2: base 20px tuned, then +60% vs that tuned size (colour stays BRAND_NAVY)
+_SUB_HEADER_FONT_SCALE = 1.6
+_SUB_HEADER_FONT_PX = round(20 * _HEADER_TONE * _SUB_HEADER_FONT_SCALE, 3)
+_SUB_HEADER_FONT_WEIGHT = 600  # was 700
+# Level 3 uses the same size/colour as level 2 (Admin “Users” look) — ``aria-level`` stays 3 for a11y.
+_SUB_SUB_HEADER_FONT_PX = _SUB_HEADER_FONT_PX
+_SUB_SUB_HEADER_FONT_WEIGHT = _SUB_HEADER_FONT_WEIGHT
+
+# Brand palette (centralized for headings and future UI tokens)
+BRAND_NAVY = "#113C7A"
+BRAND_GREEN = "#5CC346"
+# Labels, captions, and control values (avoid washing the whole UI in theme navy)
+BRAND_TEXT_BODY = "#1e293b"
+BRAND_TEXT_MUTED = "#475569"
+BRAND_TEXT_SOFT = "#64748b"
+
+# Default underline tabs (``st.tabs`` in main + optional ``nav.farnda-tab-bar`` for custom menus)
+TABS_UNDERLINE_ACTIVE = BRAND_GREEN
+TABS_UNDERLINE_TRACK = "rgba(17, 60, 122, 0.14)"
+# Active tab underline thickness (px) for ``st.tabs`` / ``nav.farnda-tab-bar`` in main
+TAB_UNDERLINE_WIDTH_PX = 3
+# Alias for segmented/pills bar (same visual weight when those widgets are used)
+LM_SEGMENT_UNDERLINE_PX = TAB_UNDERLINE_WIDTH_PX
+
+_BRAND_STYLE_SESSION_KEY = "_farnda_brand_header_styles_v2"
+
+# Bundled into :func:`inject_farnda_global_styles_once`; also injected alone by :func:`apply_custom_styles` for demos.
+_BRAND_HEADER_CSS = f"""
+/* Strip default Streamlit spacing on markdown blocks that only wrap our heading divs */
+.stApp [data-testid="stMarkdownContainer"]:has(> div.main-header),
+.stApp [data-testid="stMarkdownContainer"]:has(> div.sub-header),
+.stApp [data-testid="stMarkdownContainer"]:has(> div.sub-sub-header),
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"]:has(> div.main-header),
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"]:has(> div.sub-header),
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"]:has(> div.sub-sub-header) {{
+  margin: 0 !important;
+  padding: 0 !important;
+  text-align: left !important;
+}}
+.stApp [data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] div.main-header),
+.stApp [data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] div.sub-header),
+.stApp [data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] div.sub-sub-header),
+[data-testid="stSidebar"] [data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] div.main-header),
+[data-testid="stSidebar"] [data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] div.sub-header),
+[data-testid="stSidebar"] [data-testid="stElementContainer"]:has([data-testid="stMarkdownContainer"] div.sub-sub-header) {{
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}}
+/* Level 1 — logo navy; size/weight toned 15% vs prior */
+.stApp div.main-header,
+.stApp [data-testid="stMarkdownContainer"] div.main-header,
+[data-testid="stSidebar"] div.main-header,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] div.main-header {{
+  color: {BRAND_NAVY} !important;
+  font-size: {_MAIN_HEADER_FONT_PX}px !important;
+  font-weight: {_MAIN_HEADER_FONT_WEIGHT} !important;
+  text-align: left !important;
+  margin: 0 !important;
+  padding: 0 0 0.5rem 0 !important;
+  line-height: 1.15 !important;
+  letter-spacing: 0.02em !important;
+  box-sizing: border-box !important;
+  -webkit-font-smoothing: antialiased !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+}}
+[data-testid="stMain"] [data-testid="stMarkdownContainer"] div.main-header {{
+  color: {BRAND_NAVY} !important;
+  font-size: {_MAIN_HEADER_FONT_PX}px !important;
+  font-weight: {_MAIN_HEADER_FONT_WEIGHT} !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+}}
+/* Level 2 — replaces st.header (navy; same brand as level 1) */
+.stApp div.sub-header,
+.stApp [data-testid="stMarkdownContainer"] div.sub-header,
+[data-testid="stSidebar"] div.sub-header,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] div.sub-header {{
+  color: {BRAND_NAVY} !important;
+  font-size: {_SUB_HEADER_FONT_PX}px !important;
+  font-weight: {_SUB_HEADER_FONT_WEIGHT} !important;
+  text-align: left !important;
+  margin: 0 !important;
+  padding: 0.35rem 0 0.25rem 0 !important;
+  line-height: 1.3 !important;
+  box-sizing: border-box !important;
+  -webkit-font-smoothing: antialiased !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+}}
+[data-testid="stMain"] [data-testid="stMarkdownContainer"] div.sub-header {{
+  color: {BRAND_NAVY} !important;
+  font-size: {_SUB_HEADER_FONT_PX}px !important;
+  font-weight: {_SUB_HEADER_FONT_WEIGHT} !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+}}
+/* Level 3 — same visual scale as level 2 (replicates Admin Dashboard “Users” across the app) */
+.stApp div.sub-sub-header,
+.stApp [data-testid="stMarkdownContainer"] div.sub-sub-header,
+[data-testid="stSidebar"] div.sub-sub-header,
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] div.sub-sub-header {{
+  color: {BRAND_NAVY} !important;
+  font-size: {_SUB_SUB_HEADER_FONT_PX}px !important;
+  font-weight: {_SUB_SUB_HEADER_FONT_WEIGHT} !important;
+  text-align: left !important;
+  margin: 0 !important;
+  padding: 0.35rem 0 0.25rem 0 !important;
+  line-height: 1.3 !important;
+  box-sizing: border-box !important;
+  -webkit-font-smoothing: antialiased !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+}}
+[data-testid="stMain"] [data-testid="stMarkdownContainer"] div.sub-sub-header {{
+  color: {BRAND_NAVY} !important;
+  font-size: {_SUB_SUB_HEADER_FONT_PX}px !important;
+  font-weight: {_SUB_SUB_HEADER_FONT_WEIGHT} !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+}}
+/* ---- Beat Streamlit theme: navy + font-size/weight on headings and descendants (st.markdown + st.html) ---- */
+html body .stApp div.main-header,
+html body .stApp [data-testid="stMarkdownContainer"] div.main-header,
+html body [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] div.main-header,
+html body [data-testid="stAppViewContainer"] > .main [data-testid="stMarkdownContainer"] div.main-header,
+html body [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] div.main-header,
+html body .stApp [data-testid="stHtml"] div.main-header,
+html body [data-testid="stAppViewContainer"] [data-testid="stHtml"] div.main-header {{
+  color: {BRAND_NAVY} !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+  font-size: {_MAIN_HEADER_FONT_PX}px !important;
+  font-weight: {_MAIN_HEADER_FONT_WEIGHT} !important;
+}}
+html body .stApp div.main-header *,
+html body .stApp [data-testid="stMarkdownContainer"] div.main-header *,
+html body [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] div.main-header *,
+html body [data-testid="stAppViewContainer"] > .main [data-testid="stMarkdownContainer"] div.main-header *,
+html body [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] div.main-header *,
+html body .stApp [data-testid="stHtml"] div.main-header *,
+html body [data-testid="stAppViewContainer"] [data-testid="stHtml"] div.main-header * {{
+  color: {BRAND_NAVY} !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+  font-size: {_MAIN_HEADER_FONT_PX}px !important;
+  font-weight: {_MAIN_HEADER_FONT_WEIGHT} !important;
+}}
+html body .stApp div.sub-header,
+html body .stApp [data-testid="stMarkdownContainer"] div.sub-header,
+html body [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] div.sub-header,
+html body [data-testid="stAppViewContainer"] > .main [data-testid="stMarkdownContainer"] div.sub-header,
+html body [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] div.sub-header,
+html body .stApp [data-testid="stHtml"] div.sub-header,
+html body [data-testid="stAppViewContainer"] [data-testid="stHtml"] div.sub-header {{
+  color: {BRAND_NAVY} !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+  font-size: {_SUB_HEADER_FONT_PX}px !important;
+  font-weight: {_SUB_HEADER_FONT_WEIGHT} !important;
+}}
+html body .stApp div.sub-header *,
+html body .stApp [data-testid="stMarkdownContainer"] div.sub-header *,
+html body [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] div.sub-header *,
+html body [data-testid="stAppViewContainer"] > .main [data-testid="stMarkdownContainer"] div.sub-header *,
+html body [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] div.sub-header *,
+html body .stApp [data-testid="stHtml"] div.sub-header *,
+html body [data-testid="stAppViewContainer"] [data-testid="stHtml"] div.sub-header * {{
+  color: {BRAND_NAVY} !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+  font-size: {_SUB_HEADER_FONT_PX}px !important;
+  font-weight: {_SUB_HEADER_FONT_WEIGHT} !important;
+}}
+html body .stApp div.sub-sub-header,
+html body .stApp [data-testid="stMarkdownContainer"] div.sub-sub-header,
+html body [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] div.sub-sub-header,
+html body [data-testid="stAppViewContainer"] > .main [data-testid="stMarkdownContainer"] div.sub-sub-header,
+html body [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] div.sub-sub-header,
+html body .stApp [data-testid="stHtml"] div.sub-sub-header,
+html body [data-testid="stAppViewContainer"] [data-testid="stHtml"] div.sub-sub-header {{
+  color: {BRAND_NAVY} !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+  font-size: {_SUB_SUB_HEADER_FONT_PX}px !important;
+  font-weight: {_SUB_SUB_HEADER_FONT_WEIGHT} !important;
+}}
+html body .stApp div.sub-sub-header *,
+html body .stApp [data-testid="stMarkdownContainer"] div.sub-sub-header *,
+html body [data-testid="stAppViewContainer"] [data-testid="stMarkdownContainer"] div.sub-sub-header *,
+html body [data-testid="stAppViewContainer"] > .main [data-testid="stMarkdownContainer"] div.sub-sub-header *,
+html body [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] div.sub-sub-header *,
+html body .stApp [data-testid="stHtml"] div.sub-sub-header *,
+html body [data-testid="stAppViewContainer"] [data-testid="stHtml"] div.sub-sub-header * {{
+  color: {BRAND_NAVY} !important;
+  -webkit-text-fill-color: {BRAND_NAVY} !important;
+  font-size: {_SUB_SUB_HEADER_FONT_PX}px !important;
+  font-weight: {_SUB_SUB_HEADER_FONT_WEIGHT} !important;
+}}
+"""
 
 # Pre-encoded SVG cursors (hotspot at geometric center).
 _CURSOR_DEFAULT_SVG = """<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><circle cx='16' cy='16' r='10' fill='none' stroke='rgba(0,33,71,0.3)' stroke-width='1'/><circle cx='16' cy='16' r='2' fill='%23002147'/></svg>"""
@@ -38,8 +254,229 @@ html, body, input, button, textarea, select {
 }
 
 .stApp {
-  color: #0f172a;
+  color: """ + BRAND_TEXT_BODY + """ !important;
   """ + f"cursor: {CURSOR_DEFAULT};" + """
+}
+
+/* Form controls: neutral greys/slate so labels & values are not tinted brand blue */
+.stApp [data-testid="stWidgetLabel"] p,
+.stApp [data-testid="stWidgetLabel"] span,
+.stApp [data-testid="stWidgetLabel"] label {
+  color: """ + BRAND_TEXT_MUTED + """ !important;
+}
+.stApp [data-testid="stTextInput"] input,
+.stApp [data-testid="stNumberInput"] input,
+.stApp [data-testid="stTextArea"] textarea,
+.stApp [data-testid="stDateInput"] input,
+.stApp [data-testid="stTimeInput"] input {
+  color: """ + BRAND_TEXT_BODY + """ !important;
+}
+.stApp [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+.stApp [data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+  color: """ + BRAND_TEXT_BODY + """ !important;
+}
+.stApp [data-testid="stCheckbox"] label,
+.stApp [data-testid="stCheckbox"] label span {
+  color: """ + BRAND_TEXT_MUTED + """ !important;
+}
+/* Horizontal radios in main (e.g. “Find loan by”) — keep readable grey; sidebar nav radios stay tiled below */
+[data-testid="stMain"] [data-testid="stRadioGroup"] label[data-baseweb="radio"],
+[data-testid="stMain"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] p {
+  color: """ + BRAND_TEXT_MUTED + """ !important;
+}
+.stApp [data-testid="stCaption"] {
+  color: """ + BRAND_TEXT_SOFT + """ !important;
+}
+.stApp [data-testid="stCaption"] * {
+  color: inherit !important;
+}
+/* ---- Underline tabs (``st.tabs`` in main + ``.farnda-tab-bar``); also ``.main`` if ``stMain`` absent ---- */
+[data-testid="stMain"] [data-baseweb="tab-list"],
+[data-testid="stAppViewContainer"] > .main [data-baseweb="tab-list"] {
+  gap: 0.45rem !important;
+  border-bottom: 1px solid """ + TABS_UNDERLINE_TRACK + """ !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  min-height: auto !important;
+}
+[data-testid="stMain"] [data-baseweb="tab-list"] button[role="tab"],
+[data-testid="stAppViewContainer"] > .main [data-baseweb="tab-list"] button[role="tab"] {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  margin: 0 0 -1px 0 !important;
+  padding: 0.48rem 0.65rem 0.42rem !important;
+  min-height: auto !important;
+  border-bottom: """ + str(TAB_UNDERLINE_WIDTH_PX) + """px solid transparent !important;
+  color: """ + BRAND_NAVY + """ !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em !important;
+}
+[data-testid="stMain"] [data-baseweb="tab-list"] button[role="tab"] p,
+[data-testid="stAppViewContainer"] > .main [data-baseweb="tab-list"] button[role="tab"] p {
+  color: inherit !important;
+}
+[data-testid="stMain"] [data-baseweb="tab-list"] button[role="tab"]:hover,
+[data-testid="stAppViewContainer"] > .main [data-baseweb="tab-list"] button[role="tab"]:hover {
+  color: """ + BRAND_NAVY + """ !important;
+  background: rgba(17, 60, 122, 0.04) !important;
+}
+[data-testid="stMain"] [data-baseweb="tab-list"] button[role="tab"][aria-selected="true"],
+[data-testid="stAppViewContainer"] > .main [data-baseweb="tab-list"] button[role="tab"][aria-selected="true"] {
+  color: """ + BRAND_NAVY + """ !important;
+  border-bottom-color: """ + BRAND_GREEN + """ !important;
+  font-weight: 600 !important;
+  background: transparent !important;
+}
+/* Custom menus: <nav class="farnda-tab-bar" aria-label="…">…</nav> with <a class="farnda-tab"> / .farnda-tab--active */
+[data-testid="stMain"] nav.farnda-tab-bar,
+.stApp main nav.farnda-tab-bar {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 0.35rem !important;
+  align-items: flex-end !important;
+  border-bottom: 1px solid """ + TABS_UNDERLINE_TRACK + """ !important;
+  margin: 0.1rem 0 0.75rem 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+}
+[data-testid="stMain"] .farnda-tab-bar .farnda-tab,
+.stApp main .farnda-tab-bar .farnda-tab {
+  display: inline-block !important;
+  margin: 0 0 -1px 0 !important;
+  padding: 0.42rem 0.75rem 0.48rem !important;
+  border: none !important;
+  border-bottom: """ + str(TAB_UNDERLINE_WIDTH_PX) + """px solid transparent !important;
+  background: transparent !important;
+  color: """ + BRAND_NAVY + """ !important;
+  font-weight: 600 !important;
+  font-size: 1rem !important;
+  text-decoration: none !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  letter-spacing: 0.02em !important;
+}
+[data-testid="stMain"] .farnda-tab-bar .farnda-tab:hover,
+.stApp main .farnda-tab-bar .farnda-tab:hover {
+  color: """ + BRAND_NAVY + """ !important;
+  background: rgba(17, 60, 122, 0.05) !important;
+}
+[data-testid="stMain"] .farnda-tab-bar .farnda-tab.farnda-tab--active,
+.stApp main .farnda-tab-bar .farnda-tab.farnda-tab--active {
+  color: """ + BRAND_NAVY + """ !important;
+  border-bottom-color: """ + BRAND_GREEN + """ !important;
+  font-weight: 600 !important;
+}
+/* ``st.segmented_control`` / ``st.pills`` (Baseweb button-group; theme often wins on segmented look) */
+[data-testid="stMain"] [data-testid="stButtonGroup"],
+[data-testid="stMain"] [data-testid="stButtonGroup"] > div,
+[data-testid="stAppViewContainer"] > .main [data-testid="stButtonGroup"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stButtonGroup"] > div {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+[data-testid="stMain"] [data-testid="stButtonGroup"] [data-baseweb="button-group"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stButtonGroup"] [data-baseweb="button-group"] {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: flex-end !important;
+  gap: 0.5rem !important;
+  column-gap: 0.65rem !important;
+  row-gap: 0.25rem !important;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  padding: 0 !important;
+  margin: 0.15rem 0 0.55rem 0 !important;
+  border-bottom: none !important;
+}
+[data-testid="stMain"] [data-testid="stButtonGroup"] [data-baseweb="button-group"] [role="radio"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stButtonGroup"] [data-baseweb="button-group"] [role="radio"] {
+  background: transparent !important;
+  border: none !important;
+  border-left: none !important;
+  border-right: none !important;
+  border-top: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  margin: 0 !important;
+  padding: 0.48rem 0.2rem 0.42rem !important;
+  min-height: auto !important;
+  border-bottom: """ + str(LM_SEGMENT_UNDERLINE_PX) + """px solid transparent !important;
+  color: """ + BRAND_NAVY + """ !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em !important;
+}
+[data-testid="stMain"] [data-testid="stButtonGroup"] [data-baseweb="button-group"] [role="radio"]:hover,
+[data-testid="stAppViewContainer"] > .main [data-testid="stButtonGroup"] [data-baseweb="button-group"] [role="radio"]:hover {
+  color: """ + BRAND_NAVY + """ !important;
+  background: rgba(17, 60, 122, 0.04) !important;
+  border-bottom-color: transparent !important;
+}
+[data-testid="stMain"] [data-testid="stButtonGroup"] [data-baseweb="button-group"] [role="radio"][aria-checked="true"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stButtonGroup"] [data-baseweb="button-group"] [role="radio"][aria-checked="true"] {
+  color: """ + BRAND_NAVY + """ !important;
+  border-bottom-color: """ + BRAND_GREEN + """ !important;
+  font-weight: 600 !important;
+  background: transparent !important;
+}
+[data-testid="stMain"] [data-testid="stButtonGroup"] [data-baseweb="button-group"] [role="radio"] p,
+[data-testid="stMain"] [data-testid="stButtonGroup"] [data-baseweb="button-group"] [role="radio"] span,
+[data-testid="stAppViewContainer"] > .main [data-testid="stButtonGroup"] [data-baseweb="button-group"] [role="radio"] p,
+[data-testid="stAppViewContainer"] > .main [data-testid="stButtonGroup"] [data-baseweb="button-group"] [role="radio"] span {
+  color: inherit !important;
+}
+/* Loan Capture shortcuts: marker row then horizontal block (inside Loan Capture tab panel) */
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(.farnda-lm-subnav-secondary)
+  + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(.farnda-lm-subnav-secondary)
+  + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] {
+  margin-top: 0 !important;
+  margin-bottom: 0.35rem !important;
+  align-items: center !important;
+}
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(.farnda-lm-subnav-secondary)
+  + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] button[data-testid="stBaseButton-tertiary"],
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(.farnda-lm-subnav-secondary)
+  + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] button[data-testid="baseButton-tertiary"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(.farnda-lm-subnav-secondary)
+  + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] button[data-testid="stBaseButton-tertiary"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(.farnda-lm-subnav-secondary)
+  + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] button[data-testid="baseButton-tertiary"] {
+  color: """ + BRAND_TEXT_SOFT + """ !important;
+  font-size: 0.8125rem !important;
+  font-weight: 500 !important;
+  text-decoration: underline !important;
+  text-underline-offset: 0.15em !important;
+  padding: 0.08rem 0.2rem !important;
+  min-height: auto !important;
+  gap: 0.28rem !important;
+}
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(.farnda-lm-subnav-secondary)
+  + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] button[data-testid="stBaseButton-tertiary"]:hover,
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(.farnda-lm-subnav-secondary)
+  + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] button[data-testid="baseButton-tertiary"]:hover,
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(.farnda-lm-subnav-secondary)
+  + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] button[data-testid="stBaseButton-tertiary"]:hover,
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(.farnda-lm-subnav-secondary)
+  + [data-testid="stElementContainer"] [data-testid="stHorizontalBlock"] button[data-testid="baseButton-tertiary"]:hover {
+  color: """ + BRAND_NAVY + """ !important;
+}
+/* Primary buttons: keep white label on navy/green — reset inherited label rules */
+.stApp button[data-testid="stBaseButton-primary"] p,
+.stApp button[data-testid="stBaseButton-primary"] span,
+.stApp [data-testid="stSidebar"] button[data-testid="stBaseButton-primary"] p,
+.stApp [data-testid="stSidebar"] button[kind="primary"] p {
+  color: #ffffff !important;
 }
 
 /* Main canvas: soft grey + glass panel */
@@ -73,13 +510,6 @@ html, body, input, button, textarea, select {
 [data-testid="stSidebar"] iframe[data-testid="stIFrame"] {
   min-height: max(360px, calc(100dvh - 300px)) !important;
   max-height: none !important;
-}
-
-[data-testid="stSidebar"] h1,
-[data-testid="stSidebar"] h2,
-[data-testid="stSidebar"] h3 {
-  color: #002147 !important;
-  font-weight: 700 !important;
 }
 
 /* Custom sidebar nav tiles (pure HTML anchors, no radio/button widgets). */
@@ -132,18 +562,33 @@ html, body, input, button, textarea, select {
   color: inherit !important;
 }
 
-/* Headings */
-.stApp h1, .stApp h2, .stApp h3,
-[data-testid="stAppViewContainer"] .stMarkdown h1,
-[data-testid="stAppViewContainer"] .stMarkdown h2,
+/* Native Streamlit h1–h3 fallback (prefer render_*_header helpers) */
+.stApp h1,
+[data-testid="stAppViewContainer"] .stMarkdown h1 {
+  color: #113C7A !important;
+  font-size: """ + f"{_MAIN_HEADER_FONT_PX}px" + """ !important;
+  font-weight: """ + str(_MAIN_HEADER_FONT_WEIGHT) + """ !important;
+  text-align: left !important;
+}
+.stApp h2,
+[data-testid="stAppViewContainer"] .stMarkdown h2 {
+  color: """ + BRAND_NAVY + """ !important;
+  -webkit-text-fill-color: """ + BRAND_NAVY + """ !important;
+  font-size: """ + f"{_SUB_HEADER_FONT_PX}px" + """ !important;
+  font-weight: """ + str(_SUB_HEADER_FONT_WEIGHT) + """ !important;
+  text-align: left !important;
+}
+.stApp h3,
 [data-testid="stAppViewContainer"] .stMarkdown h3 {
-  color: #002147 !important;
-  font-weight: 700 !important;
+  color: #113C7A !important;
+  font-size: """ + f"{_SUB_SUB_HEADER_FONT_PX}px" + """ !important;
+  font-weight: """ + str(_SUB_SUB_HEADER_FONT_WEIGHT) + """ !important;
+  text-align: left !important;
 }
 
-/* Primary / secondary buttons (navy, rounded) */
+/* Primary / secondary buttons (brand navy, rounded) */
 .stApp button[data-testid="stBaseButton-primary"] {
-  background-color: #002147 !important;
+  background-color: #113C7A !important;
   color: #ffffff !important;
   border: none !important;
   border-radius: 8px !important;
@@ -153,7 +598,7 @@ html, body, input, button, textarea, select {
 }
 
 .stApp button[data-testid="stBaseButton-primary"]:hover {
-  background-color: #001a38 !important;
+  background-color: #0d2f63 !important;
   box-shadow: 0 4px 14px rgba(0, 33, 71, 0.28) !important;
   """ + f"cursor: {CURSOR_POINTER} !important;" + """
 }
@@ -682,7 +1127,7 @@ html, body, input, button, textarea, select {
 .farnda-metric-card .farnda-metric-value {
   font-size: 1.5rem;
   font-weight: 700;
-  color: #002147;
+  color: #113C7A;
   margin: 0;
   line-height: 1.2;
 }
@@ -692,6 +1137,106 @@ html, body, input, button, textarea, select {
   font-weight: 600;
 }
 """
+
+
+def apply_custom_styles() -> None:
+    """
+    Ensure brand heading CSS is present once per session.
+
+    When :func:`inject_farnda_global_styles_once` has already run, rules are in the main
+    ``inject_style_block`` bundle and this is a no-op. Standalone pages should call this
+    (or ``inject_farnda_global_styles_once``) so ``st.markdown`` heading divs are styled —
+    ``st.markdown``-only ``<style>`` injection is unreliable on Streamlit 1.54+.
+    """
+    if st.session_state.get(_BRAND_STYLE_SESSION_KEY):
+        return
+    st.session_state[_BRAND_STYLE_SESSION_KEY] = True
+    if st.session_state.get(_SESSION_FLAG):
+        return
+    inject_style_block(_BRAND_HEADER_CSS.strip())
+
+
+def _markdown_brand(html_fragment: str, *, sidebar: bool) -> None:
+    if sidebar:
+        st.sidebar.markdown(html_fragment, unsafe_allow_html=True)
+    else:
+        st.markdown(html_fragment, unsafe_allow_html=True)
+
+
+def _main_header_inline_style_attr() -> str:
+    """Inline CSS so navy/size/weight survive Streamlit markdown sanitization (class-based rules often never apply)."""
+    return (
+        f"color:{BRAND_NAVY} !important;-webkit-text-fill-color:{BRAND_NAVY} !important;"
+        f"font-size:{_MAIN_HEADER_FONT_PX}px !important;font-weight:{_MAIN_HEADER_FONT_WEIGHT} !important;"
+        f"text-align:left !important;margin:0 !important;padding:0 0 0.5rem 0 !important;"
+        f"line-height:1.15 !important;letter-spacing:0.02em !important;"
+        f"box-sizing:border-box !important;-webkit-font-smoothing:antialiased !important;"
+        f"display:block !important;background:transparent !important;"
+    )
+
+
+def _sub_header_inline_style_attr() -> str:
+    """Inline navy + scale for level-2 headings (matches ``_BRAND_HEADER_CSS``)."""
+    return (
+        f"color:{BRAND_NAVY} !important;-webkit-text-fill-color:{BRAND_NAVY} !important;"
+        f"font-size:{_SUB_HEADER_FONT_PX}px !important;font-weight:{_SUB_HEADER_FONT_WEIGHT} !important;"
+        f"text-align:left !important;margin:0 !important;padding:0.35rem 0 0.25rem 0 !important;"
+        f"line-height:1.3 !important;box-sizing:border-box !important;-webkit-font-smoothing:antialiased !important;"
+        f"display:block !important;background:transparent !important;"
+    )
+
+
+def _sub_sub_header_inline_style_attr() -> str:
+    """Inline navy + scale for level-3 headings (same px/weight/padding as level-2 / Admin “Users”)."""
+    return (
+        f"color:{BRAND_NAVY} !important;-webkit-text-fill-color:{BRAND_NAVY} !important;"
+        f"font-size:{_SUB_SUB_HEADER_FONT_PX}px !important;font-weight:{_SUB_SUB_HEADER_FONT_WEIGHT} !important;"
+        f"text-align:left !important;margin:0 !important;padding:0.35rem 0 0.25rem 0 !important;"
+        f"line-height:1.3 !important;box-sizing:border-box !important;-webkit-font-smoothing:antialiased !important;"
+        f"display:block !important;background:transparent !important;"
+    )
+
+
+def _emit_brand_heading_html(fragment: str, *, sidebar: bool) -> None:
+    dg = st.sidebar if sidebar else st
+    html_m = getattr(dg, "html", None)
+    if html_m is not None:
+        html_m(fragment, unsafe_allow_javascript=True)
+    else:
+        _markdown_brand(fragment, sidebar=sidebar)
+
+
+def render_main_header(text: str, *, uppercase: bool = False, sidebar: bool = False) -> None:
+    """Brand level-1 heading: navy; size/weight from ``_MAIN_HEADER_*`` (``st.html`` + inline CSS)."""
+    raw = str(text).strip()
+    if uppercase:
+        raw = raw.upper()
+    safe = html.escape(raw)
+    fragment = (
+        f'<div class="main-header" role="heading" aria-level="1" '
+        f'style="{_main_header_inline_style_attr()}">{safe}</div>'
+    )
+    _emit_brand_heading_html(fragment, sidebar=sidebar)
+
+
+def render_sub_header(text: str, *, sidebar: bool = False) -> None:
+    """Brand level-2 heading: navy; size/weight from ``_SUB_HEADER_*`` (``st.html`` + inline CSS when available)."""
+    safe = html.escape(str(text).strip())
+    fragment = (
+        f'<div class="sub-header" role="heading" aria-level="2" '
+        f'style="{_sub_header_inline_style_attr()}">{safe}</div>'
+    )
+    _emit_brand_heading_html(fragment, sidebar=sidebar)
+
+
+def render_sub_sub_header(text: str, *, sidebar: bool = False) -> None:
+    """Brand level-3 heading: same navy/size/weight as :func:`render_sub_header`; ``aria-level=\"3\"`` preserved."""
+    safe = html.escape(str(text).strip())
+    fragment = (
+        f'<div class="sub-sub-header" role="heading" aria-level="3" '
+        f'style="{_sub_sub_header_inline_style_attr()}">{safe}</div>'
+    )
+    _emit_brand_heading_html(fragment, sidebar=sidebar)
 
 
 def inject_style_block(css_rules: str) -> None:
@@ -720,15 +1265,16 @@ def inject_style_block(css_rules: str) -> None:
 
 
 def inject_farnda_global_styles_once() -> None:
-    """Inject fonts, FA CDN, and global CSS once per browser session."""
-    if st.session_state.get(_SESSION_FLAG):
+    """Inject fonts, FA CDN, and global CSS when the bundle version changes (session-scoped)."""
+    if st.session_state.get(_SESSION_FLAG) == _FARNDA_CSS_BUNDLE_VERSION:
         return
-    st.session_state[_SESSION_FLAG] = True
+    st.session_state[_SESSION_FLAG] = _FARNDA_CSS_BUNDLE_VERSION
     _font_fa = (
-        '@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");\n'
+        '@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");\n'
         '@import url("https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css");\n'
     )
-    inject_style_block(_font_fa + FARNDA_GLOBAL_CSS.strip())
+    inject_style_block(_font_fa + FARNDA_GLOBAL_CSS.strip() + "\n" + _BRAND_HEADER_CSS.strip())
+    apply_custom_styles()
 
 
 # Unicode / emoji prefixes for sidebar radio labels (plain text only in Streamlit).
@@ -763,6 +1309,11 @@ def format_navigation_label(section_key: str) -> str:
     return f"{icon}  {section_key}"
 
 
+def render_main_page_title(section_key: str) -> None:
+    """Main canvas section title for sidebar nav: brand ``.main-header``, uppercase."""
+    render_main_header(str(section_key).strip(), uppercase=True)
+
+
 def create_card(
     title: str,
     value: str,
@@ -788,6 +1339,16 @@ def create_card(
 
 
 __all__ = [
+    "BRAND_GREEN",
+    "BRAND_NAVY",
+    "BRAND_TEXT_BODY",
+    "BRAND_TEXT_MUTED",
+    "BRAND_TEXT_SOFT",
+    "TABS_UNDERLINE_ACTIVE",
+    "TABS_UNDERLINE_TRACK",
+    "TAB_UNDERLINE_WIDTH_PX",
+    "LM_SEGMENT_UNDERLINE_PX",
+    "apply_custom_styles",
     "create_card",
     "CURSOR_DEFAULT",
     "CURSOR_POINTER",
@@ -796,4 +1357,8 @@ __all__ = [
     "inject_farnda_global_styles_once",
     "inject_style_block",
     "NAV_LABEL_ICONS",
+    "render_main_header",
+    "render_main_page_title",
+    "render_sub_header",
+    "render_sub_sub_header",
 ]

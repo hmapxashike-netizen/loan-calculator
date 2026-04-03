@@ -8,8 +8,12 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from display_formatting import format_display_currency
 from ui.components import inject_tertiary_hyperlink_css_once, render_centered_html_table
+from ui.streamlit_feedback import run_with_spinner
 
 
 def _normalize_document_file_bytes(raw: object) -> bytes:
@@ -40,7 +44,7 @@ def render_update_loans_ui(
     list_provision_security_subtypes,
 ) -> None:
         """UI for updating non-financial loan details and requesting loan termination."""
-        st.subheader("Update / Terminate loans")
+        render_sub_sub_header("Update / Terminate loans")
         if not loan_management_available:
             st.error(f"Loan management module is not available. ({loan_management_error})")
             return
@@ -63,15 +67,15 @@ def render_update_loans_ui(
                 key="update_loan_cust",
             )
         cust_id = next(c["id"] for c in customers if get_display_name(c["id"]) == cust_sel)
-
+    
         loans = get_loans_by_customer(cust_id)
         loans_active = [l for l in loans if l.get("status") == "active"]
-
+    
         loan_options = [
             (l["id"], f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('principal', 0):,.2f}")
             for l in loans_active
         ]
-
+    
         loan_labels = [t[1] for t in loan_options]
         with _loan_col:
             if not loans_active:
@@ -158,7 +162,10 @@ def render_update_loans_ui(
                     "collateral_valuation_amount": new_val if new_val > 0 else None,
                 }
                 try:
-                    update_loan_safe_details(loan_id, updates)
+                    run_with_spinner(
+                        "Updating loan details…",
+                        lambda: update_loan_safe_details(loan_id, updates),
+                    )
                     st.session_state["update_loans_flash"] = f"Details updated for Loan #{loan_id}."
                     st.rerun()
                 except Exception as e:
@@ -190,16 +197,19 @@ def render_update_loans_ui(
     
                         draft_details["approval_action"] = "TERMINATE"
                         draft_details["termination_reason"] = reason.strip()
-    
-                        draft_id = save_loan_approval_draft(
-                            customer_id=loan["customer_id"],
-                            loan_type=loan["loan_type"],
-                            details=draft_details,
-                            schedule_df=None,
-                            product_code=loan.get("product_code"),
-                            created_by="ui_user",
-                            status="PENDING",
-                            loan_id=loan_id,
+
+                        draft_id = run_with_spinner(
+                            "Submitting termination request…",
+                            lambda: save_loan_approval_draft(
+                                customer_id=loan["customer_id"],
+                                loan_type=loan["loan_type"],
+                                details=draft_details,
+                                schedule_df=None,
+                                product_code=loan.get("product_code"),
+                                created_by="ui_user",
+                                status="PENDING",
+                                loan_id=loan_id,
+                            ),
                         )
                         st.session_state["update_loans_flash"] = f"Termination request submitted (Draft #{draft_id})."
                         for k in list(st.session_state.keys()):
@@ -229,7 +239,7 @@ def render_approve_loans_ui(
     format_schedule_df,
 ) -> None:
         """Approval inbox for loan drafts submitted from capture Stage 2."""
-        st.subheader("Approve loans")
+        render_sub_sub_header("Approve loans")
         st.caption(
             "All loan drafts awaiting approval (new submissions and items returned for rework)."
         )
@@ -256,7 +266,7 @@ def render_approve_loans_ui(
                     if str(_k).startswith("approve_doc_preview_"):
                         st.session_state.pop(_k, None)
                 st.rerun()
-
+    
         drafts = list_loan_approval_drafts(
             statuses=["PENDING", "REWORK"],
             search=search_txt.strip() or None,
@@ -458,27 +468,38 @@ def render_approve_loans_ui(
                 with a1:
                     if st.button("Approve and create loan", type="primary", key="approve_create_loan_btn"):
                         try:
-                            loan_id = approve_loan_approval_draft(int(selected_id), approved_by="approver_ui")
-                            # Copy draft documents to final loan entity.
-                            doc_count = 0
-                            if documents_available:
-                                docs = list_documents(entity_type="loan_approval_draft", entity_id=int(selected_id))
-                                for row in docs:
-                                    full = get_document(int(row["id"]))
-                                    if not full:
-                                        continue
-                                    upload_document(
-                                        "loan",
-                                        int(loan_id),
-                                        int(full["category_id"]),
-                                        str(full["file_name"]),
-                                        str(full["file_type"]),
-                                        int(full["file_size"]),
-                                        full["file_content"],
-                                        uploaded_by="System User",
-                                        notes=str(full.get("notes") or ""),
+
+                            def _approve_and_copy_docs() -> tuple[int, int]:
+                                new_loan_id = approve_loan_approval_draft(
+                                    int(selected_id), approved_by="approver_ui"
+                                )
+                                doc_count = 0
+                                if documents_available:
+                                    docs = list_documents(
+                                        entity_type="loan_approval_draft", entity_id=int(selected_id)
                                     )
-                                    doc_count += 1
+                                    for row in docs:
+                                        full = get_document(int(row["id"]))
+                                        if not full:
+                                            continue
+                                        upload_document(
+                                            "loan",
+                                            int(new_loan_id),
+                                            int(full["category_id"]),
+                                            str(full["file_name"]),
+                                            str(full["file_type"]),
+                                            int(full["file_size"]),
+                                            full["file_content"],
+                                            uploaded_by="System User",
+                                            notes=str(full.get("notes") or ""),
+                                        )
+                                        doc_count += 1
+                                return int(new_loan_id), doc_count
+
+                            loan_id, doc_count = run_with_spinner(
+                                "Creating loan and copying documents…",
+                                _approve_and_copy_docs,
+                            )
                             st.session_state["approve_loans_flash_message"] = (
                                 f"Loan approved successfully. Loan #{loan_id} created. "
                                 f"{doc_count} document(s) copied."
@@ -490,7 +511,12 @@ def render_approve_loans_ui(
                 with a2:
                     if st.button("Send back to schedule builder", key="approve_send_back_btn"):
                         try:
-                            send_back_loan_approval_draft(int(selected_id), note=note or "", actor="approver_ui")
+                            run_with_spinner(
+                                "Sending draft back…",
+                                lambda: send_back_loan_approval_draft(
+                                    int(selected_id), note=note or "", actor="approver_ui"
+                                ),
+                            )
                             st.session_state["approve_loans_flash_message"] = (
                                 f"Draft #{selected_id} sent back to capture (status REWORK). "
                                 f"Open **Capture loan → See loans for rework** to edit the schedule."
@@ -502,7 +528,12 @@ def render_approve_loans_ui(
                 with a3:
                     if st.button("Dismiss draft", key="approve_dismiss_btn"):
                         try:
-                            dismiss_loan_approval_draft(int(selected_id), note=note or "", actor="approver_ui")
+                            run_with_spinner(
+                                "Dismissing draft…",
+                                lambda: dismiss_loan_approval_draft(
+                                    int(selected_id), note=note or "", actor="approver_ui"
+                                ),
+                            )
                             st.session_state["approve_loans_flash_message"] = (
                                 f"Draft #{selected_id} dismissed."
                             )
@@ -658,10 +689,10 @@ def render_view_schedule_ui(
         if not loan_management_available:
             st.error(f"Loan management module is not available. ({loan_management_error})")
             return
-
+    
         loan_id = None
         search_by = st.radio("Find loan by", ["Loan ID", "Customer"], key="view_sched_by", horizontal=True)
-
+    
         if search_by == "Loan ID":
             _half_l, _half_r = st.columns([1, 1])
             with _half_l:
@@ -679,7 +710,7 @@ def render_view_schedule_ui(
                     else:
                         loan_id = int(lid_input)
                         st.session_state["view_schedule_loan_id"] = loan_id
-                loan_id = st.session_state.get("view_schedule_loan_id")
+            loan_id = st.session_state.get("view_schedule_loan_id")
             with _half_r:
                 st.empty()
         else:
@@ -695,7 +726,7 @@ def render_view_schedule_ui(
                     cust_col, loan_col = st.columns([1, 1])
                     with cust_col:
                         cust_sel = st.selectbox("Customer", cust_labels, key="view_sched_cust")
-                    cid = cust_options[cust_labels.index(cust_sel)][0] if cust_sel else None
+                        cid = cust_options[cust_labels.index(cust_sel)][0] if cust_sel else None
                     with loan_col:
                         if not cid:
                             st.caption("Select a customer to choose a loan.")

@@ -6,6 +6,9 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+
+from style import render_main_header, render_sub_header, render_sub_sub_header
+
 from ui.components import inject_tertiary_hyperlink_css_once, render_centered_html_table
 
 from loans import (
@@ -28,7 +31,7 @@ _LABEL_REPAYMENTS_ON = "Repayments On"
 
 
 def _render_calc_schedule_table(format_schedule_df, df_schedule: pd.DataFrame) -> None:
-    st.subheader("Repayment schedule")
+    render_sub_sub_header("Repayment schedule")
     styled = format_schedule_df(df_schedule)
     render_centered_html_table(styled, [str(c) for c in styled.columns])
 
@@ -54,7 +57,7 @@ def render_consumer_loan_ui(
         cfg = get_system_config()
         default_additional_rate_pct = cfg.get("consumer_default_additional_rate_pct", 0.0)
 
-        st.subheader("Consumer Loan Parameters")
+        render_sub_sub_header("Consumer Loan Parameters")
         accepted_currencies = cfg.get(
             "accepted_currencies", [cfg.get("base_currency", "USD")]
         )
@@ -242,7 +245,7 @@ def render_term_loan_ui(
         cfg = get_system_config()
         rate_basis = glob.get("rate_basis", "Per month")
 
-        st.subheader("Term Loan Parameters")
+        render_sub_sub_header("Term Loan Parameters")
         # Currency selection with system default + override
         accepted_currencies = cfg.get(
             "accepted_currencies", [cfg.get("base_currency", "USD")]
@@ -421,7 +424,7 @@ def render_bullet_loan_ui(
 ) -> None:
         glob = get_global_loan_settings()
         cfg = get_system_config()
-        st.subheader("Bullet Loan Parameters")
+        render_sub_sub_header("Bullet Loan Parameters")
         # Currency selection with system default + override
         accepted_currencies = cfg.get(
             "accepted_currencies", [cfg.get("base_currency", "USD")]
@@ -580,7 +583,7 @@ def render_customised_repayments_ui(
         cfg = get_system_config()
         flat_rate = glob.get("interest_method") == "Flat rate"
 
-        st.subheader("Customised Repayments Parameters")
+        render_sub_sub_header("Customised Repayments Parameters")
         # Currency selection with system default + override
         accepted_currencies = cfg.get(
             "accepted_currencies", [cfg.get("base_currency", "USD")]
@@ -684,7 +687,7 @@ def render_customised_repayments_ui(
         df = recompute_customised_from_payments(df, total_facility, schedule_dates, annual_rate, flat_rate, disbursement_date)
         st.session_state[session_key] = df
 
-        st.subheader("Repayment schedule")
+        render_sub_sub_header("Repayment schedule")
         if irregular_calc:
             if st.button("Add row", key="cust_add_row"):
                 last_df = st.session_state[session_key]

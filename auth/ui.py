@@ -7,6 +7,9 @@ import streamlit as st
 from dal import get_conn, UserRepository
 from auth.service import AuthService
 from middleware import set_current_user, clear_current_user
+from style import render_sub_sub_header
+
+from ui.streamlit_feedback import run_with_spinner
 
 
 def _logo_path() -> Path:
@@ -22,7 +25,7 @@ def _logo_path() -> Path:
 
 
 def login_form():
-    st.subheader("Login")
+    render_sub_sub_header("Login")
     email = st.text_input("Email", key="login_email")
     password = st.text_input("Password", type="password", key="login_password")
 
@@ -39,7 +42,10 @@ def login_form():
 
         try:
             auth = AuthService(conn)
-            user, status = auth.authenticate(email=email, password=password, ip=None, user_agent=None)
+            user, status = run_with_spinner(
+                "Signing in…",
+                lambda: auth.authenticate(email=email, password=password, ip=None, user_agent=None),
+            )
         finally:
             conn.close()
 
@@ -56,12 +62,18 @@ def login_form():
             return
 
         set_current_user(user)
+        try:
+            from db.tenant_registry import bind_default_tenant_context_safely
+
+            bind_default_tenant_context_safely()
+        except Exception:
+            pass
         st.success(f"Welcome, {user.full_name}!")
         st.rerun()
 
 
 def registration_form():
-    st.subheader("Register (Borrower)")
+    render_sub_sub_header("Register (Borrower)")
     email = st.text_input("Email", key="reg_email")
     full_name = st.text_input("Full name", key="reg_full_name")
     password = st.text_input("Password", type="password", key="reg_password")
@@ -85,13 +97,17 @@ def registration_form():
                 return
 
             auth = AuthService(conn)
-            pw_hash = auth.hash_password(password)
-            user = users.create_user(
-                email=email,
-                password_hash=pw_hash,
-                full_name=full_name,
-                role="BORROWER",
-            )
+
+            def _hash_and_create():
+                pw_hash = auth.hash_password(password)
+                return users.create_user(
+                    email=email,
+                    password_hash=pw_hash,
+                    full_name=full_name,
+                    role="BORROWER",
+                )
+
+            run_with_spinner("Creating account…", _hash_and_create)
         finally:
             conn.close()
 
