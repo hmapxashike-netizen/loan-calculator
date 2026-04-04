@@ -10,11 +10,28 @@ from decimal import Decimal
 
 from reporting.portfolio_reporting import (
     ARREARS_BUCKET_KEYS,
+    RESTRUCTURE_SCOPE_REMODIFIED,
+    RESTRUCTURE_SCOPE_SPLIT,
     buckets_from_daily_balance_series,
     buckets_from_daily_flow_or_balance,
     bucket_arrears_for_loan,
     bucket_maturity_for_loan,
+    restructure_scope_sql,
 )
+
+
+def test_restructure_scope_sql_empty():
+    assert restructure_scope_sql(None) == ""
+    assert restructure_scope_sql(frozenset()) == ""
+
+
+def test_restructure_scope_sql_or_semantics():
+    s = frozenset({RESTRUCTURE_SCOPE_REMODIFIED, RESTRUCTURE_SCOPE_SPLIT})
+    q = restructure_scope_sql(s, table_alias="l")
+    assert "l.remodified_in_place" in q
+    assert "l.originated_from_split" in q
+    assert " OR " in q
+    assert q.strip().startswith("AND")
 
 
 def _sum_buckets(b: dict[str, Decimal]) -> Decimal:
@@ -267,6 +284,8 @@ def test_arrears_fees_on_newest_past_due_when_no_pi_allocated():
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
     for fn in (
+        test_restructure_scope_sql_empty,
+        test_restructure_scope_sql_or_semantics,
         test_arrears_splits_match_total_one_past_due_line,
         test_arrears_raises_when_arrears_but_no_past_due_schedule,
         test_arrears_zero_total_allows_empty_past_due_schedule,

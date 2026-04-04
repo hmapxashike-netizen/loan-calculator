@@ -26,12 +26,32 @@ from reporting.portfolio_reporting import (
     MATURITY_BUCKET_LABELS,
     REGULATORY_MATURITY_BUCKET_KEYS,
     REGULATORY_MATURITY_BUCKET_LABELS,
+    RESTRUCTURE_SCOPE_REMODIFIED,
+    RESTRUCTURE_SCOPE_SPLIT,
+    RESTRUCTURE_SCOPE_TOPUP,
     build_arrears_aging_report,
     build_maturity_profile_report,
     build_regulatory_maturity_profile_report,
     build_regulatory_maturity_summary_table,
+    restructure_scope_sql,
 )
 from provisions.engine import compute_security_provision_breakdown
+
+# First selectbox option: no report rendered; Data export UI only on this screen.
+_PORTFOLIO_REPORT_PLACEHOLDER = "— Select report to view —"
+
+# Reports whose loan base queries support restructure tag filters (OR semantics).
+_REPORT_KEYS_WITH_RESTRUCTURE_FILTER = frozenset(
+    {"mat_11", "reg_mat", "r21", "r22", "r31", "r32", "r42", "r51", "r52", "r53"}
+)
+
+_RESTRUCTURE_TAG_LABELS: tuple[tuple[str, str], ...] = (
+    ("Remodified in place (same loan)", RESTRUCTURE_SCOPE_REMODIFIED),
+    ("Originated from split", RESTRUCTURE_SCOPE_SPLIT),
+    ("Modification top-up applied", RESTRUCTURE_SCOPE_TOPUP),
+)
+# Reset selectbox on next run (cannot set portfolio_report_pick after the widget is created).
+_PORTFOLIO_CLOSE_NEXT_RUN_KEY = "_portfolio_close_report_next_run"
 
 try:
     from eod.system_business_date import get_effective_date
@@ -49,6 +69,9 @@ def _default_as_of() -> date:
 
 
 def _df_download(df: pd.DataFrame, filename: str, *, button_key: str) -> None:
+    # No per-report CSV while viewing a report; bulk export lives on the default screen only.
+    if st.session_state.get("portfolio_report_pick") != _PORTFOLIO_REPORT_PLACEHOLDER:
+        return
     if not st.session_state.get("portfolio_exports_visible", False):
         return
     if df.empty:
@@ -92,10 +115,16 @@ def _bucket_summary_grid(
         i = chunk_end
 
 
-def _report_arrears_aging(as_of: date, active_only: bool) -> None:
+def _report_arrears_aging(
+    as_of: date,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None,
+) -> None:
     render_sub_sub_header("Debtor loans arrears (aging)")
     try:
-        df = build_arrears_aging_report(as_of, active_only=active_only)
+        df = build_arrears_aging_report(
+            as_of, active_only=active_only, restructure_scope=restructure_scope
+        )
     except Exception as ex:
         st.error(f"Could not build arrears ageing report: {ex}")
         return
@@ -120,7 +149,11 @@ def _report_arrears_aging(as_of: date, active_only: bool) -> None:
     _df_download(df_view, "debtor_arrears_aging_buckets.csv", button_key="port_r21_csv")
 
 
-def _report_debtor_maturity(as_of: date, active_only: bool) -> None:
+def _report_debtor_maturity(
+    as_of: date,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None,
+) -> None:
     render_sub_sub_header("Debtor maturity profile")
     st.caption(
         "Principal-only: principal not due is spread across future instalments in proportion to scheduled principal. "
@@ -139,7 +172,12 @@ def _report_debtor_maturity(as_of: date, active_only: bool) -> None:
     view_type = "principal" if "Principal-Only" in view_type_label else "cash_flow"
 
     try:
-        df = build_maturity_profile_report(as_of, active_only=active_only, view_type=view_type)
+        df = build_maturity_profile_report(
+            as_of,
+            active_only=active_only,
+            view_type=view_type,
+            restructure_scope=restructure_scope,
+        )
     except Exception as ex:
         st.error(f"Could not build maturity profile: {ex}")
         return
@@ -161,7 +199,11 @@ def _report_debtor_maturity(as_of: date, active_only: bool) -> None:
     _df_download(df, f"debtor_maturity_profile_{view_type}.csv", button_key="port_mat11_csv")
 
 
-def _report_regulatory_maturity_profile(as_of: date, active_only: bool) -> None:
+def _report_regulatory_maturity_profile(
+    as_of: date,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None,
+) -> None:
     render_sub_sub_header("Regulatory maturity profile")
     st.caption(
         "Debtor **cash inflows** are the same engine as **Debtor maturity profile**: `principal_not_due` from "
@@ -182,10 +224,16 @@ def _report_regulatory_maturity_profile(as_of: date, active_only: bool) -> None:
 
     try:
         summary_df = build_regulatory_maturity_summary_table(
-            as_of, active_only=active_only, view_type=view_type
+            as_of,
+            active_only=active_only,
+            view_type=view_type,
+            restructure_scope=restructure_scope,
         )
         detail_df = build_regulatory_maturity_profile_report(
-            as_of, active_only=active_only, view_type=view_type
+            as_of,
+            active_only=active_only,
+            view_type=view_type,
+            restructure_scope=restructure_scope,
         )
     except Exception as ex:
         st.error(f"Could not build regulatory maturity profile: {ex}")
@@ -250,13 +298,19 @@ def _report_regulatory_maturity_profile(as_of: date, active_only: bool) -> None:
     )
 
 
-def _report_par(as_of: date, active_only: bool, par_threshold_days: int) -> None:
+def _report_par(
+    as_of: date,
+    active_only: bool,
+    par_threshold_days: int,
+    restructure_scope: frozenset[str] | None,
+) -> None:
     render_sub_sub_header("Portfolio at risk (PAR)")
     st.caption(
         f"**PAR ({par_threshold_days}+)** = sum of `total_exposure` where `days_overdue` > {par_threshold_days} "
         "÷ sum of `total_exposure` for the same portfolio base. Uses latest daily state per loan."
     )
     status_clause = "AND l.status = 'active'" if active_only else ""
+    rs_clause = restructure_scope_sql(restructure_scope)
     sql = f"""
         SELECT
             l.id AS loan_id,
@@ -271,6 +325,7 @@ def _report_par(as_of: date, active_only: bool, par_threshold_days: int) -> None
             LIMIT 1
         ) lds ON TRUE
         WHERE 1=1 {status_clause}
+        {rs_clause}
     """
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -298,10 +353,15 @@ def _report_par(as_of: date, active_only: bool, par_threshold_days: int) -> None
     _df_download(df, f"par_detail_asof_{as_of.isoformat()}.csv", button_key="port_r22_csv")
 
 
-def _report_master_listing(as_of: date, active_only: bool) -> None:
+def _report_master_listing(
+    as_of: date,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None,
+) -> None:
     render_sub_sub_header("Master loan listing")
     st.caption("Flat snapshot: loan + customer dimensions + latest daily state on or before as-of.")
     status_clause = "AND l.status = 'active'" if active_only else ""
+    rs_clause = restructure_scope_sql(restructure_scope)
     sql = f"""
         SELECT
             l.id AS loan_id,
@@ -311,6 +371,9 @@ def _report_master_listing(as_of: date, active_only: bool) -> None:
             l.loan_type,
             l.scheme,
             l.status AS loan_status,
+            l.remodified_in_place,
+            l.originated_from_split,
+            l.modification_topup_applied,
             l.agent_id,
             ag.name AS agent_name,
             sec.name AS sector_name,
@@ -338,6 +401,7 @@ def _report_master_listing(as_of: date, active_only: bool) -> None:
             LIMIT 1
         ) lds ON TRUE
         WHERE 1=1 {status_clause}
+        {rs_clause}
         ORDER BY l.id
     """
     with _connection() as conn:
@@ -353,10 +417,15 @@ def _report_master_listing(as_of: date, active_only: bool) -> None:
     _df_download(df, f"master_loan_listing_{as_of.isoformat()}.csv", button_key="port_r31_csv")
 
 
-def _report_disbursed(period_start: date, period_end: date) -> None:
+def _report_disbursed(
+    period_start: date,
+    period_end: date,
+    restructure_scope: frozenset[str] | None,
+) -> None:
     render_sub_sub_header("Disbursed loans (period)")
     st.caption("Loans with `disbursement_date` in the selected inclusive range (booked activation date).")
-    sql = """
+    rs_clause = restructure_scope_sql(restructure_scope)
+    sql = f"""
         SELECT
             l.id AS loan_id,
             l.disbursement_date,
@@ -367,6 +436,9 @@ def _report_disbursed(period_start: date, period_end: date) -> None:
             l.term AS tenor_periods,
             l.loan_type,
             l.product_code,
+            l.remodified_in_place,
+            l.originated_from_split,
+            l.modification_topup_applied,
             l.agent_id,
             ag.name AS agent_name,
             sec.name AS sector_name,
@@ -379,6 +451,7 @@ def _report_disbursed(period_start: date, period_end: date) -> None:
         WHERE l.disbursement_date IS NOT NULL
           AND l.disbursement_date >= %s
           AND l.disbursement_date <= %s
+          {rs_clause}
         ORDER BY l.disbursement_date, l.id
     """
     with _connection() as conn:
@@ -394,13 +467,19 @@ def _report_disbursed(period_start: date, period_end: date) -> None:
     _df_download(df, f"disbursed_loans_{period_start}_{period_end}.csv", button_key="port_r32_csv")
 
 
-def _report_iis_movement(period_start: date, period_end: date, nonzero_only: bool) -> None:
+def _report_iis_movement(
+    period_start: date,
+    period_end: date,
+    nonzero_only: bool,
+    restructure_scope: frozenset[str] | None,
+) -> None:
     render_sub_sub_header("Interest in suspense (IIS) movement")
     st.caption(
         "Compare latest `loan_daily_state` on or before **period start** vs **period end** "
         "(requires EOD rows for both dates)."
     )
-    sql = """
+    rs_clause = restructure_scope_sql(restructure_scope)
+    sql = f"""
         WITH start_state AS (
             SELECT DISTINCT ON (loan_id)
                 loan_id,
@@ -433,6 +512,9 @@ def _report_iis_movement(period_start: date, period_end: date, nonzero_only: boo
             (e.reg_end - s.reg_start) AS delta_regular_iis
         FROM start_state s
         JOIN end_state e ON e.loan_id = s.loan_id
+        JOIN loans l ON l.id = s.loan_id
+        WHERE 1=1
+        {rs_clause}
     """
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -451,21 +533,47 @@ def _report_iis_movement(period_start: date, period_end: date, nonzero_only: boo
     _df_download(df, f"iis_movement_{period_start}_{period_end}.csv", button_key="port_r42_csv")
 
 
-def _report_concentration(as_of: date, active_only: bool) -> None:
+def _report_concentration(
+    as_of: date,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None,
+) -> None:
     render_sub_sub_header("Portfolio concentration")
     st.caption("Total exposure from latest daily state, grouped by dimension.")
     st.markdown("**By product_code**")
-    st.dataframe(_concentration_query(as_of, active_only, "l.product_code"), hide_index=True, width="stretch")
+    st.dataframe(
+        _concentration_query(as_of, active_only, "l.product_code", restructure_scope),
+        hide_index=True,
+        width="stretch",
+    )
     st.markdown("**By sector**")
-    st.dataframe(_concentration_query(as_of, active_only, "sec.name"), hide_index=True, width="stretch")
+    st.dataframe(
+        _concentration_query(as_of, active_only, "sec.name", restructure_scope),
+        hide_index=True,
+        width="stretch",
+    )
     st.markdown("**By agent**")
-    st.dataframe(_concentration_query(as_of, active_only, "ag.name"), hide_index=True, width="stretch")
+    st.dataframe(
+        _concentration_query(as_of, active_only, "ag.name", restructure_scope),
+        hide_index=True,
+        width="stretch",
+    )
     st.markdown("**By scheme (loan.scheme)**")
-    st.dataframe(_concentration_query(as_of, active_only, "l.scheme"), hide_index=True, width="stretch")
+    st.dataframe(
+        _concentration_query(as_of, active_only, "l.scheme", restructure_scope),
+        hide_index=True,
+        width="stretch",
+    )
 
 
-def _concentration_query(as_of: date, active_only: bool, dim_sql: str) -> pd.DataFrame:
+def _concentration_query(
+    as_of: date,
+    active_only: bool,
+    dim_sql: str,
+    restructure_scope: frozenset[str] | None,
+) -> pd.DataFrame:
     status_clause = "AND l.status = 'active'" if active_only else ""
+    rs_clause = restructure_scope_sql(restructure_scope)
     sql = f"""
         WITH latest AS (
             SELECT DISTINCT ON (loan_id)
@@ -485,6 +593,7 @@ def _concentration_query(as_of: date, active_only: bool, dim_sql: str) -> pd.Dat
         LEFT JOIN subsectors sub ON sub.id = c.subsector_id
         LEFT JOIN agents ag ON ag.id = l.agent_id
         WHERE 1=1 {status_clause}
+        {rs_clause}
         GROUP BY 1
         ORDER BY sum_exposure DESC NULLS LAST
     """
@@ -495,7 +604,11 @@ def _concentration_query(as_of: date, active_only: bool, dim_sql: str) -> pd.Dat
     return pd.DataFrame(rows)
 
 
-def _report_ecl_provision(as_of: date, active_only: bool) -> None:
+def _report_ecl_provision(
+    as_of: date,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None,
+) -> None:
     render_sub_sub_header("Expected credit loss (ECL) — provisions view")
     st.caption(
         "Same logic as **IFRS Provisions (single loan)**: haircut on collateral, **provision = unsecured × PD%**. "
@@ -529,6 +642,7 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
     sub_by_id = {int(r["id"]): r for r in subtypes}
 
     status_clause = "AND l.status = 'active'" if active_only else ""
+    rs_clause = restructure_scope_sql(restructure_scope)
     sql = f"""
         SELECT
             l.id AS loan_id,
@@ -547,6 +661,7 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
             LIMIT 1
         ) lds ON TRUE
         WHERE 1=1 {status_clause}
+        {rs_clause}
         ORDER BY l.id
     """
     with _connection() as conn:
@@ -608,7 +723,11 @@ def _report_ecl_provision(as_of: date, active_only: bool) -> None:
     _df_download(df, f"ecl_provision_ifrs_{as_of.isoformat()}.csv", button_key="port_r52_csv")
 
 
-def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
+def _report_regulatory_classification(
+    as_of: date,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None,
+) -> None:
     render_sub_sub_header("Loan classification (regulatory scale)")
     st.caption(
         "Each loan is classified using **System configurations → Loan grade scales → Regulatory** DPD bands. "
@@ -632,6 +751,7 @@ def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
         return
 
     status_clause = "AND l.status = 'active'" if active_only else ""
+    rs_clause = restructure_scope_sql(restructure_scope)
     sql = f"""
         SELECT
             l.id AS loan_id,
@@ -646,6 +766,7 @@ def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
             LIMIT 1
         ) lds ON TRUE
         WHERE 1=1 {status_clause}
+        {rs_clause}
         ORDER BY l.id
     """
     with _connection() as conn:
@@ -717,6 +838,15 @@ def _report_regulatory_classification(as_of: date, active_only: bool) -> None:
 
 
 def render_portfolio_reports_ui() -> None:
+    try:
+        from loan_management import _connection
+        from loan_management.schema_ddl import _ensure_loans_schema_for_save_loan
+
+        with _connection() as conn:
+            _ensure_loans_schema_for_save_loan(conn)
+    except Exception:
+        pass
+
     st.session_state.setdefault("portfolio_exports_visible", False)
     report_keys = [
         ("IFRS Provisions (single loan)", "ifrs"),
@@ -736,6 +866,20 @@ def render_portfolio_reports_ui() -> None:
     ]
     labels = [x[0] for x in report_keys]
     key_by_label = {x[0]: x[1] for x in report_keys}
+    select_options = [_PORTFOLIO_REPORT_PLACEHOLDER] + labels
+
+    if st.session_state.pop(_PORTFOLIO_CLOSE_NEXT_RUN_KEY, False):
+        st.session_state["portfolio_report_pick"] = _PORTFOLIO_REPORT_PLACEHOLDER
+
+    def _on_report_pick_change() -> None:
+        p = st.session_state.get("portfolio_report_pick")
+        if p != _PORTFOLIO_REPORT_PLACEHOLDER:
+            st.session_state["portfolio_exports_visible"] = False
+
+    # Migrate old sessions that stored a bare label without the placeholder option.
+    _cur_pick = st.session_state.get("portfolio_report_pick")
+    if _cur_pick is not None and _cur_pick not in select_options:
+        st.session_state["portfolio_report_pick"] = _PORTFOLIO_REPORT_PLACEHOLDER
 
     as_of_default = _default_as_of()
     as_of = as_of_default
@@ -747,14 +891,16 @@ def render_portfolio_reports_ui() -> None:
         st.caption("Report")
         choice = st.selectbox(
             "Report",
-            labels,
+            select_options,
             key="portfolio_report_pick",
             label_visibility="collapsed",
+            on_change=_on_report_pick_change,
         )
-    rk = key_by_label[choice]
-    _no_snap = rk in ("ifrs", "r32", "r42", "shell_12", "shell_23", "shell_41")
+    report_open = choice != _PORTFOLIO_REPORT_PLACEHOLDER
+    rk = key_by_label[choice] if report_open else None
+    _no_snap = rk in ("ifrs", "r32", "r42", "shell_12", "shell_23", "shell_41") if rk else True
     with c2:
-        if not _no_snap:
+        if report_open and not _no_snap:
             st.caption("As-of")
             as_of = st.date_input(
                 "As-of",
@@ -763,7 +909,7 @@ def render_portfolio_reports_ui() -> None:
                 label_visibility="collapsed",
             )
     with c3:
-        if not _no_snap:
+        if report_open and not _no_snap:
             st.caption("Scope")
             active_only = st.checkbox(
                 "Active loans only",
@@ -784,22 +930,48 @@ def render_portfolio_reports_ui() -> None:
                 help="Exposure in numerator when days_overdue is strictly greater than this.",
             )
 
-    _ex_vis = st.session_state.get("portfolio_exports_visible", False)
-    if st.button(
-        "Hide exports" if _ex_vis else "Data export",
-        key="portfolio_exports_toggle",
-        help="Show or hide CSV downloads for reports and the bulk data export panel at the bottom.",
-    ):
-        st.session_state["portfolio_exports_visible"] = not _ex_vis
+    restructure_scope: frozenset[str] | None = None
+    if report_open and rk in _REPORT_KEYS_WITH_RESTRUCTURE_FILTER:
+        _lab_list = [t[0] for t in _RESTRUCTURE_TAG_LABELS]
+        _lab_to_tag = dict(_RESTRUCTURE_TAG_LABELS)
+        st.caption(
+            "Restructure tags — loans matching **any** selected tag; leave empty for the full portfolio."
+        )
+        _picked = st.multiselect(
+            "Restructure filter",
+            options=_lab_list,
+            key="portfolio_restructure_filter_tags",
+            label_visibility="collapsed",
+        )
+        restructure_scope = frozenset(_lab_to_tag[x] for x in _picked) if _picked else None
 
-    if rk == "ifrs":
+    if report_open:
+        bar_l, bar_r = st.columns([6, 1], gap="small", vertical_alignment="center")
+        with bar_l:
+            st.caption("Close report to return to the portfolio home screen.")
+        with bar_r:
+            if st.button("✕", key="portfolio_close_report", help="Close report"):
+                st.session_state[_PORTFOLIO_CLOSE_NEXT_RUN_KEY] = True
+                st.rerun()
+    else:
+        _ex_vis = st.session_state.get("portfolio_exports_visible", False)
+        if st.button(
+            "Hide exports" if _ex_vis else "Data export",
+            key="portfolio_exports_toggle",
+            help="Show or hide the bulk data export panel below.",
+        ):
+            st.session_state["portfolio_exports_visible"] = not _ex_vis
+
+    if not report_open:
+        st.info("Select a report from the dropdown above to view it.")
+    elif rk == "ifrs":
         from provisions.ui import render_ifrs_provision_calculator
 
         render_ifrs_provision_calculator()
     elif rk == "mat_11":
-        _report_debtor_maturity(as_of, active_only)
+        _report_debtor_maturity(as_of, active_only, restructure_scope)
     elif rk == "reg_mat":
-        _report_regulatory_maturity_profile(as_of, active_only)
+        _report_regulatory_maturity_profile(as_of, active_only, restructure_scope)
     elif rk == "shell_12":
         _shell_report(
             "Creditor loans maturity profile",
@@ -824,11 +996,11 @@ def render_portfolio_reports_ui() -> None:
             ],
         )
     elif rk == "r21":
-        _report_arrears_aging(as_of, active_only)
+        _report_arrears_aging(as_of, active_only, restructure_scope)
     elif rk == "r22":
-        _report_par(as_of, active_only, par_d)
+        _report_par(as_of, active_only, par_d, restructure_scope)
     elif rk == "r31":
-        _report_master_listing(as_of, active_only)
+        _report_master_listing(as_of, active_only, restructure_scope)
     elif rk == "r32":
         p1, p2, _, _ = st.columns(4, gap="xxsmall", vertical_alignment="top")
         with p1:
@@ -847,7 +1019,7 @@ def render_portfolio_reports_ui() -> None:
                 key="disb_end",
                 label_visibility="collapsed",
             )
-        _report_disbursed(p0, p1)
+        _report_disbursed(p0, p1, restructure_scope)
     elif rk == "r42":
         p1, p2, p3, _ = st.columns(4, gap="xxsmall", vertical_alignment="top")
         with p1:
@@ -872,15 +1044,15 @@ def render_portfolio_reports_ui() -> None:
         if p1 < p0:
             st.error("Period end must be on or after period start.")
         else:
-            _report_iis_movement(p0, p1, nz)
+            _report_iis_movement(p0, p1, nz, restructure_scope)
     elif rk == "r51":
-        _report_concentration(as_of, active_only)
+        _report_concentration(as_of, active_only, restructure_scope)
     elif rk == "r52":
-        _report_ecl_provision(as_of, active_only)
+        _report_ecl_provision(as_of, active_only, restructure_scope)
     elif rk == "r53":
-        _report_regulatory_classification(as_of, active_only)
+        _report_regulatory_classification(as_of, active_only, restructure_scope)
 
-    if st.session_state.get("portfolio_exports_visible", False):
+    if not report_open and st.session_state.get("portfolio_exports_visible", False):
         st.divider()
         render_sub_sub_header("Data Export")
         st.caption("Export low-level database tables to CSV for external analysis or auditing.")

@@ -27,6 +27,10 @@ def save_loan(
     schedule_df: pd.DataFrame,
     schedule_version: int = 1,
     product_code: str | None = None,
+    *,
+    originated_from_split: bool = False,
+    modification_topup_applied: bool = False,
+    remodified_in_place: bool = False,
 ) -> int:
     """
     Persist loan details and schedule to DB.
@@ -125,9 +129,11 @@ def save_loan(
                     payment_timing, metadata, status, agent_id, relationship_manager_id,
                     disbursement_bank_option_id, cash_gl_account_id,
                     collateral_security_subtype_id, collateral_charge_amount, collateral_valuation_amount,
-                    loan_purpose_id
+                    loan_purpose_id,
+                    remodified_in_place, originated_from_split, modification_topup_applied
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s
                 ) RETURNING id
                 """,
                 (
@@ -191,6 +197,9 @@ def save_loan(
                     _coll_chg,
                     _coll_val,
                     loan_purpose_id,
+                    bool(remodified_in_place),
+                    bool(originated_from_split),
+                    bool(modification_topup_applied),
                 ),
             )
             loan_id = cur.fetchone()[0]

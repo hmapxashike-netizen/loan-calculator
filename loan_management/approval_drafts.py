@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pandas as pd
 
 from .db import Json, RealDictCursor, _connection
+from .modification_gl import (
+    post_modification_topup_disbursement,
+    post_principal_writeoff_for_loan,
+)
 from .save_loan import save_loan
 from .schema_ddl import _ensure_loan_approval_drafts_table
 from .serialization import _json_safe
@@ -23,9 +28,15 @@ def save_loan_approval_draft(
     created_by: str | None = None,
     status: str = "PENDING",
     loan_id: int | None = None,
+    schedule_df_secondary: pd.DataFrame | None = None,
 ) -> int:
     """Persist a loan draft for approval queue (no loan tables/GL posting)."""
     st_val = (status or "PENDING").strip().upper() or "PENDING"
+    sec_rows = (
+        _json_safe(schedule_df_secondary.to_dict(orient="records"))
+        if schedule_df_secondary is not None
+        else []
+    )
     with _connection() as conn:
         _ensure_loan_approval_drafts_table(conn)
         with conn.cursor() as cur:
@@ -33,8 +44,9 @@ def save_loan_approval_draft(
                 """
                 INSERT INTO loan_approval_drafts (
                     customer_id, loan_type, product_code, details_json, schedule_json,
+                    schedule_json_secondary,
                     assigned_approver_id, status, created_by, submitted_at, updated_at, loan_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
                 RETURNING id
                 """,
                 (
@@ -43,6 +55,7 @@ def save_loan_approval_draft(
                     product_code,
                     Json(_json_safe(details or {})),
                     Json(_json_safe(schedule_df.to_dict(orient="records") if schedule_df is not None else [])),
+                    Json(sec_rows),
                     str(assigned_approver_id) if assigned_approver_id is not None else None,
                     st_val,
                     created_by,
@@ -61,8 +74,14 @@ def update_loan_approval_draft_staged(
     *,
     product_code: str | None = None,
     assigned_approver_id: str | None = None,
+    schedule_df_secondary: pd.DataFrame | None = None,
 ) -> None:
     """Update a STAGED (incomplete capture) draft in place; no status change."""
+    sec_rows = (
+        _json_safe(schedule_df_secondary.to_dict(orient="records"))
+        if schedule_df_secondary is not None
+        else []
+    )
     with _connection() as conn:
         _ensure_loan_approval_drafts_table(conn)
         with conn.cursor() as cur:
@@ -74,6 +93,7 @@ def update_loan_approval_draft_staged(
                     product_code = %s,
                     details_json = %s,
                     schedule_json = %s,
+                    schedule_json_secondary = %s,
                     assigned_approver_id = %s,
                     updated_at = NOW()
                 WHERE id = %s AND UPPER(status) = 'STAGED'
@@ -84,6 +104,7 @@ def update_loan_approval_draft_staged(
                     product_code,
                     Json(_json_safe(details or {})),
                     Json(_json_safe(schedule_df.to_dict(orient="records"))),
+                    Json(sec_rows),
                     str(assigned_approver_id) if assigned_approver_id is not None else None,
                     int(draft_id),
                 ),
@@ -102,8 +123,14 @@ def resubmit_loan_approval_draft(
     product_code: str | None = None,
     assigned_approver_id: str | None = None,
     created_by: str | None = None,
+    schedule_df_secondary: pd.DataFrame | None = None,
 ) -> int:
     """Update an existing draft and place it back in PENDING for approval."""
+    sec_rows = (
+        _json_safe(schedule_df_secondary.to_dict(orient="records"))
+        if schedule_df_secondary is not None
+        else []
+    )
     with _connection() as conn:
         _ensure_loan_approval_drafts_table(conn)
         with conn.cursor() as cur:
@@ -115,6 +142,7 @@ def resubmit_loan_approval_draft(
                     product_code = %s,
                     details_json = %s,
                     schedule_json = %s,
+                    schedule_json_secondary = %s,
                     assigned_approver_id = %s,
                     status = 'PENDING',
                     created_by = %s,
@@ -132,6 +160,7 @@ def resubmit_loan_approval_draft(
                     product_code,
                     Json(_json_safe(details or {})),
                     Json(_json_safe(schedule_df.to_dict(orient="records"))),
+                    Json(sec_rows),
                     str(assigned_approver_id) if assigned_approver_id is not None else None,
                     created_by,
                     int(draft_id),
@@ -267,13 +296,159 @@ def approve_loan_approval_draft(
         raise ValueError(f"Draft #{draft_id} is not pending (status={draft.get('status')}).")
 
     details = dict(draft.get("details_json") or {})
+    action = str(details.get("approval_action") or "").strip().upper()
+    actor = approved_by or "approver"
 
-    if details.get("approval_action") == "TERMINATE":
+    def _parse_rd(raw: object) -> date:
+        if isinstance(raw, date):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            return date.fromisoformat(raw.strip()[:10])
+        raise ValueError("Modification draft missing valid restructure_date.")
+
+    if action == "TERMINATE":
         existing_loan_id = draft.get("loan_id")
         if not existing_loan_id:
             raise ValueError("Termination draft missing loan_id.")
         terminate_loan(existing_loan_id, terminated_by=approved_by)
-        loan_id = existing_loan_id
+        loan_id = int(existing_loan_id)
+    elif action == "LOAN_MODIFICATION":
+        from loan_management import get_loan
+        from reamortisation import apply_loan_modification_from_approval_schedule
+
+        source_loan_id = int(draft.get("loan_id") or 0)
+        if not source_loan_id:
+            raise ValueError("Modification draft missing loan_id.")
+        rd = _parse_rd(details.get("restructure_date"))
+        wo = float(details.get("writeoff_amount") or 0)
+        tu = float(details.get("topup_amount") or 0)
+        suf = str(int(draft_id))
+        if wo > 0:
+            post_principal_writeoff_for_loan(
+                source_loan_id, wo, entry_date=rd, created_by=actor, unique_suffix=suf
+            )
+        if tu > 0:
+            post_modification_topup_disbursement(
+                source_loan_id, tu, entry_date=rd, created_by=actor, unique_suffix=suf
+            )
+        schedule_df = pd.DataFrame(draft.get("schedule_json") or [])
+        mod_det = dict(details.get("modification_loan_details") or {})
+        src = get_loan(source_loan_id)
+        if src and mod_det.get("cash_gl_account_id") in (None, "") and src.get("cash_gl_account_id"):
+            mod_det["cash_gl_account_id"] = str(src.get("cash_gl_account_id"))
+        apply_loan_modification_from_approval_schedule(
+            source_loan_id,
+            rd,
+            schedule_df,
+            mod_det,
+            str(draft["loan_type"]),
+            outstanding_interest_treatment=str(details.get("outstanding_interest_treatment") or "capitalise"),
+            notes=str(details.get("modification_notes") or "") or None,
+        )
+        if tu > 0:
+            from .loan_records import update_loan_restructure_flags
+
+            update_loan_restructure_flags(
+                int(source_loan_id),
+                modification_topup_applied=True,
+            )
+        loan_id = int(source_loan_id)
+    elif action == "LOAN_MODIFICATION_SPLIT":
+        from loan_management import get_loan
+
+        source_loan_id = int(draft.get("loan_id") or 0)
+        if not source_loan_id:
+            raise ValueError("Split modification draft missing loan_id.")
+        rd = _parse_rd(details.get("restructure_date"))
+        wo = float(details.get("writeoff_amount") or 0)
+        tu = float(details.get("topup_amount") or 0)
+        suf = str(int(draft_id))
+        if wo > 0:
+            post_principal_writeoff_for_loan(
+                source_loan_id, wo, entry_date=rd, created_by=actor, unique_suffix=suf
+            )
+        if tu > 0:
+            post_modification_topup_disbursement(
+                source_loan_id, tu, entry_date=rd, created_by=actor, unique_suffix=suf
+            )
+        src = get_loan(source_loan_id)
+        cash_gl = str(src.get("cash_gl_account_id") or "").strip() if src else ""
+        terminate_loan(source_loan_id, terminated_by=approved_by)
+
+        leg_details_list = details.get("split_loan_details_list")
+        if not isinstance(leg_details_list, list) or len(leg_details_list) < 2:
+            leg_details_list = [
+                dict(details.get("split_loan_details_a") or {}),
+                dict(details.get("split_loan_details_b") or {}),
+            ]
+        n_legs = int(details.get("split_leg_count") or len(leg_details_list))
+        n_legs = max(2, min(n_legs, 4))
+        leg_details_list = [dict(leg_details_list[i]) for i in range(min(len(leg_details_list), n_legs))]
+        while len(leg_details_list) < n_legs:
+            leg_details_list.append({})
+
+        schedule_rows_list: list[list[Any]] = [
+            list(draft.get("schedule_json") or []),
+            list(draft.get("schedule_json_secondary") or []),
+        ]
+        extras = details.get("split_schedules_extra")
+        if isinstance(extras, list):
+            for block in extras:
+                if isinstance(block, list):
+                    schedule_rows_list.append(block)
+                else:
+                    schedule_rows_list.append([])
+        while len(schedule_rows_list) < n_legs:
+            schedule_rows_list.append([])
+
+        pc_list = details.get("split_product_codes")
+        if not isinstance(pc_list, list) or len(pc_list) < n_legs:
+            pc_list = [draft.get("product_code")] + [details.get("split_product_code_b") or draft.get("product_code")]
+            while len(pc_list) < n_legs:
+                pc_list.append(pc_list[-1] if pc_list else draft.get("product_code"))
+        pc_list = [str(pc_list[i] if i < len(pc_list) else draft.get("product_code")) for i in range(n_legs)]
+
+        lt_list = details.get("split_loan_types")
+        if not isinstance(lt_list, list) or len(lt_list) < n_legs:
+            lt_base = str(draft["loan_type"])
+            lt_b = str(details.get("split_loan_type_b") or lt_base)
+            lt_list = [lt_base, lt_b] + [lt_b] * max(0, n_legs - 2)
+        lt_list = [str(lt_list[i] if i < len(lt_list) else draft["loan_type"]) for i in range(n_legs)]
+
+        _split_topup = tu > 0
+        created_ids: list[int] = []
+        for i in range(n_legs):
+            d_i = leg_details_list[i]
+            if cash_gl:
+                d_i.setdefault("cash_gl_account_id", cash_gl)
+            d_i["status"] = "active"
+            df_i = pd.DataFrame(schedule_rows_list[i] if i < len(schedule_rows_list) else [])
+            if df_i.empty:
+                raise ValueError(
+                    f"Split modification draft missing schedule rows for leg {chr(ord('A') + i)}."
+                )
+            new_id = save_loan(
+                int(draft["customer_id"]),
+                lt_list[i],
+                d_i,
+                df_i,
+                product_code=pc_list[i],
+                originated_from_split=True,
+                modification_topup_applied=_split_topup,
+            )
+            created_ids.append(int(new_id))
+
+        details["split_created_loan_ids"] = created_ids
+        if len(created_ids) >= 2:
+            details["split_created_loan_id_b"] = int(created_ids[1])
+        loan_id = int(created_ids[0])
+        with _connection() as conn:
+            _ensure_loan_approval_drafts_table(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE loan_approval_drafts SET details_json = %s, updated_at = NOW() WHERE id = %s",
+                    (Json(_json_safe(details)), int(draft_id)),
+                )
     else:
         details["status"] = "active"
         schedule_rows = draft.get("schedule_json") or []

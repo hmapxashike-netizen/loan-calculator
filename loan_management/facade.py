@@ -46,7 +46,13 @@ from .loan_purposes import (
     set_loan_purpose_active,
     update_loan_purpose,
 )
-from .loan_records import get_loan, get_loans_by_customer, update_loan_details, update_loan_safe_details
+from .loan_records import (
+    get_loan,
+    get_loans_by_customer,
+    update_loan_details,
+    update_loan_restructure_flags,
+    update_loan_safe_details,
+)
 from .product_catalog import (
     create_product,
     delete_product,

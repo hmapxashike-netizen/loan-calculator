@@ -41,6 +41,31 @@ from decimal_utils import as_10dp
 from loan_management import _connection
 from reporting.statements import _parse_schedule_date
 
+# Loan row flags (see loan_management.schema_ddl — cheap OR filters in SQL).
+RESTRUCTURE_SCOPE_REMODIFIED = "remodified_in_place"
+RESTRUCTURE_SCOPE_SPLIT = "originated_from_split"
+RESTRUCTURE_SCOPE_TOPUP = "modification_topup_applied"
+
+
+def restructure_scope_sql(scope: frozenset[str] | None, *, table_alias: str = "l") -> str:
+    """
+    When ``scope`` is non-empty, require the loan row to match **at least one** selected tag (OR).
+    Empty / None scope → no extra predicate.
+    """
+    if not scope:
+        return ""
+    ta = table_alias
+    parts: list[str] = []
+    if RESTRUCTURE_SCOPE_REMODIFIED in scope:
+        parts.append(f"COALESCE({ta}.remodified_in_place, FALSE) = TRUE")
+    if RESTRUCTURE_SCOPE_SPLIT in scope:
+        parts.append(f"COALESCE({ta}.originated_from_split, FALSE) = TRUE")
+    if RESTRUCTURE_SCOPE_TOPUP in scope:
+        parts.append(f"COALESCE({ta}.modification_topup_applied, FALSE) = TRUE")
+    if not parts:
+        return ""
+    return " AND (" + " OR ".join(parts) + ")"
+
 
 def _parse_schedule_line_date(raw: Any) -> date | None:
     """Parse schedule line Date; same as statements, plus common ISO / slash formats."""
@@ -613,8 +638,14 @@ def fetch_loan_daily_ancillary_series_batch(
     return out
 
 
-def fetch_loans_arrears_base_rows(as_of: date, *, active_only: bool) -> list[dict[str, Any]]:
+def fetch_loans_arrears_base_rows(
+    as_of: date,
+    *,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
     status_clause = "AND l.status = 'active'" if active_only else ""
+    rs_clause = restructure_scope_sql(restructure_scope)
     sql = f"""
         SELECT
             l.id AS loan_id,
@@ -646,6 +677,7 @@ def fetch_loans_arrears_base_rows(as_of: date, *, active_only: bool) -> list[dic
         ) lds ON TRUE
         WHERE lds.days_overdue > 0
         {status_clause}
+        {rs_clause}
         ORDER BY l.id
     """
     with _connection() as conn:
@@ -654,8 +686,14 @@ def fetch_loans_arrears_base_rows(as_of: date, *, active_only: bool) -> list[dic
             return [dict(r) for r in cur.fetchall() or []]
 
 
-def fetch_loans_maturity_base_rows(as_of: date, *, active_only: bool) -> list[dict[str, Any]]:
+def fetch_loans_maturity_base_rows(
+    as_of: date,
+    *,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
     status_clause = "AND l.status = 'active'" if active_only else ""
+    rs_clause = restructure_scope_sql(restructure_scope)
     sql = f"""
         SELECT
             l.id AS loan_id,
@@ -678,6 +716,7 @@ def fetch_loans_maturity_base_rows(as_of: date, *, active_only: bool) -> list[di
         ) lds ON TRUE
         WHERE lds.principal_not_due > 0
         {status_clause}
+        {rs_clause}
         ORDER BY l.id
     """
     with _connection() as conn:
@@ -686,8 +725,15 @@ def fetch_loans_maturity_base_rows(as_of: date, *, active_only: bool) -> list[di
             return [dict(r) for r in cur.fetchall() or []]
 
 
-def build_arrears_aging_report(as_of: date, *, active_only: bool) -> pd.DataFrame:
-    base = fetch_loans_arrears_base_rows(as_of, active_only=active_only)
+def build_arrears_aging_report(
+    as_of: date,
+    *,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None = None,
+) -> pd.DataFrame:
+    base = fetch_loans_arrears_base_rows(
+        as_of, active_only=active_only, restructure_scope=restructure_scope
+    )
     if not base:
         return pd.DataFrame()
     lids = [int(r["loan_id"]) for r in base]
@@ -728,8 +774,16 @@ def build_arrears_aging_report(as_of: date, *, active_only: bool) -> pd.DataFram
     return pd.DataFrame(rows_out)
 
 
-def build_maturity_profile_report(as_of: date, *, active_only: bool, view_type: str = "principal") -> pd.DataFrame:
-    base = fetch_loans_maturity_base_rows(as_of, active_only=active_only)
+def build_maturity_profile_report(
+    as_of: date,
+    *,
+    active_only: bool,
+    view_type: str = "principal",
+    restructure_scope: frozenset[str] | None = None,
+) -> pd.DataFrame:
+    base = fetch_loans_maturity_base_rows(
+        as_of, active_only=active_only, restructure_scope=restructure_scope
+    )
     if not base:
         return pd.DataFrame()
     lids = [int(r["loan_id"]) for r in base]
@@ -769,9 +823,12 @@ def build_regulatory_maturity_profile_report(
     *,
     active_only: bool,
     view_type: str = "principal",
+    restructure_scope: frozenset[str] | None = None,
 ) -> pd.DataFrame:
     """Per-loan regulatory maturity buckets (same base population as debtor maturity profile)."""
-    base = fetch_loans_maturity_base_rows(as_of, active_only=active_only)
+    base = fetch_loans_maturity_base_rows(
+        as_of, active_only=active_only, restructure_scope=restructure_scope
+    )
     if not base:
         return pd.DataFrame()
     lids = [int(r["loan_id"]) for r in base]
@@ -811,6 +868,7 @@ def build_regulatory_maturity_summary_table(
     *,
     active_only: bool,
     view_type: str = "principal",
+    restructure_scope: frozenset[str] | None = None,
 ) -> pd.DataFrame:
     """
     Aggregated regulatory maturity profile: debtor **cash inflows** (principal or principal+interest per
@@ -818,7 +876,12 @@ def build_regulatory_maturity_summary_table(
 
     Rows: TOTAL, then i)–ix). ``net`` = inflow − outflow; ``cumulative`` = running sum of net down the buckets.
     """
-    df_loans = build_regulatory_maturity_profile_report(as_of, active_only=active_only, view_type=view_type)
+    df_loans = build_regulatory_maturity_profile_report(
+        as_of,
+        active_only=active_only,
+        view_type=view_type,
+        restructure_scope=restructure_scope,
+    )
     if df_loans.empty:
         return pd.DataFrame(
             columns=[

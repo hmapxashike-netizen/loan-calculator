@@ -223,7 +223,7 @@ def _schedule_export_downloads(df: pd.DataFrame, *, file_stem: str, key_prefix: 
     if df is None or getattr(df, "empty", True):
         return
     inject_tertiary_hyperlink_css_once()
-    c1, c2, _c_sp = st.columns([1, 1, 2], gap="small")
+    c1, c2, _c_sp = st.columns([1, 1, 4], gap="small")
     with c1:
         st.download_button(
             label="Download CSV",
@@ -888,6 +888,7 @@ def approve_loans_ui():
         send_back_loan_approval_draft=send_back_loan_approval_draft,
         dismiss_loan_approval_draft=dismiss_loan_approval_draft,
         format_schedule_df=_format_schedule_df,
+        money_df_column_config=_money_df_column_config,
     )
 
 
@@ -966,9 +967,30 @@ def teller_ui():
     )
 
 
+def _reamod_created_by() -> str:
+    try:
+        from middleware import get_current_user
+
+        u = get_current_user()
+        if u:
+            return str(u.get("email") or u.get("username") or u.get("id") or "user")
+    except Exception:
+        pass
+    return "reamortisation_ui"
+
+
 def reamortisation_ui():
     """Reamortisation: loan modification, recast, unapplied funds."""
     from ui.reamortisation import render_reamortisation_ui
+
+    _cash_pairs = None
+    if _loan_management_available:
+        try:
+            lbls, ids = _source_cash_gl_cached_labels_and_ids()
+            if lbls and ids and len(lbls) == len(ids):
+                _cash_pairs = list(zip(lbls, ids))
+        except Exception:
+            _cash_pairs = None
 
     render_reamortisation_ui(
         loan_management_available=_loan_management_available,
@@ -980,6 +1002,32 @@ def reamortisation_ui():
         format_schedule_df=_format_schedule_df,
         schedule_export_downloads=_schedule_export_downloads,
         apply_unapplied_funds_recast=globals().get("apply_unapplied_funds_recast"),
+        list_products=list_products if _loan_management_available else (lambda active_only=True: []),
+        get_product_config_from_db=get_product_config_from_db,
+        get_system_config=_get_system_config,
+        get_consumer_schemes=_get_consumer_schemes,
+        get_product_rate_basis=_get_product_rate_basis,
+        compute_consumer_schedule=compute_consumer_schedule,
+        compute_term_schedule=compute_term_schedule,
+        compute_bullet_schedule=compute_bullet_schedule,
+        pct_to_monthly=_pct_to_monthly,
+        save_loan_approval_draft=save_loan_approval_draft
+        if _loan_management_available
+        else (lambda *a, **k: 0),
+        update_loan_approval_draft_staged=update_loan_approval_draft_staged
+        if _loan_management_available
+        else (lambda *a, **k: None),
+        resubmit_loan_approval_draft=resubmit_loan_approval_draft
+        if _loan_management_available
+        else (lambda *a, **k: 0),
+        documents_available=_documents_available,
+        list_document_categories=globals().get("list_document_categories")
+        or (lambda active_only=True: []),
+        upload_document=globals().get("upload_document"),
+        provisions_config_ok=_PROVISIONS_CONFIG_OK,
+        list_provision_security_subtypes=list_provision_security_subtypes,
+        source_cash_gl_cached_labels_and_ids=_cash_pairs,
+        created_by=_reamod_created_by(),
     )
 
 

@@ -16,6 +16,8 @@ from loans import (
     get_bullet_schedule,
     repayment_dates,
 )
+from decimal_utils import as_10dp
+
 from loan_management import (
     get_loan,
     get_latest_schedule_version,
@@ -26,6 +28,7 @@ from loan_management import (
     _connection,
     _date_conv,
 )
+from loan_management.loan_records import update_loan_restructure_flags, update_loan_safe_details
 
 try:
     from psycopg2.extras import RealDictCursor
@@ -258,6 +261,7 @@ def execute_loan_modification(
                     notes,
                 ),
             )
+    update_loan_restructure_flags(loan_id, remodified_in_place=True)
     return new_version
 
 
@@ -348,6 +352,115 @@ def execute_loan_recast(
                 (loan_id, recast_date, prev_version, new_version, round(new_installment, 2), trigger_repayment_id, notes),
             )
     return new_installment
+
+
+def apply_loan_modification_from_approval_schedule(
+    loan_id: int,
+    restructure_date: date,
+    schedule_df: pd.DataFrame,
+    loan_details: dict[str, Any],
+    new_loan_type: str,
+    *,
+    outstanding_interest_treatment: str = "capitalise",
+    notes: str | None = None,
+) -> int:
+    """
+    Apply an approver-approved modification: new schedule version + loan header updates from capture-shaped details.
+    """
+    loan = get_loan(loan_id)
+    if not loan:
+        raise ValueError(f"Loan {loan_id} not found.")
+    prev_version = get_latest_schedule_version(loan_id)
+    new_version = prev_version + 1
+    save_new_schedule_version(loan_id, schedule_df, new_version)
+
+    term = int(loan_details.get("term") or 12)
+    principal = float(as_10dp(loan_details.get("principal") or 0))
+    disbursed = float(as_10dp(loan_details.get("disbursed_amount") if loan_details.get("disbursed_amount") is not None else principal))
+
+    lt_db = new_loan_type
+    if " " in lt_db:
+        lt_db = {
+            "Consumer Loan": "consumer_loan",
+            "Term Loan": "term_loan",
+            "Bullet Loan": "bullet_loan",
+            "Customised Repayments": "customised_repayments",
+        }.get(new_loan_type, new_loan_type.replace(" ", "_").lower())
+
+    ud: dict[str, Any] = {
+        "principal": round(principal, 2),
+        "disbursed_amount": round(disbursed, 2),
+        "term": term,
+        "loan_type": lt_db,
+    }
+    if loan_details.get("annual_rate") is not None:
+        ud["annual_rate"] = float(loan_details["annual_rate"])
+    if loan_details.get("monthly_rate") is not None:
+        ud["monthly_rate"] = float(loan_details["monthly_rate"])
+    if loan_details.get("installment") is not None:
+        ud["installment"] = round(float(loan_details["installment"]), 2)
+    if loan_details.get("total_payment") is not None:
+        ud["total_payment"] = float(as_10dp(loan_details["total_payment"]))
+    if loan_details.get("end_date") is not None:
+        ud["end_date"] = _date_conv(loan_details["end_date"])
+    if loan_details.get("first_repayment_date") is not None:
+        ud["first_repayment_date"] = _date_conv(loan_details["first_repayment_date"])
+    if loan_details.get("product_code"):
+        ud["product_code"] = str(loan_details["product_code"]).strip()
+    if loan_details.get("bullet_type"):
+        ud["bullet_type"] = loan_details["bullet_type"]
+    if loan_details.get("grace_type"):
+        ud["grace_type"] = loan_details["grace_type"]
+    if loan_details.get("moratorium_months") is not None:
+        ud["moratorium_months"] = int(loan_details["moratorium_months"])
+
+    update_loan_details(loan_id, **ud)
+
+    safe_upd: dict[str, Any] = {}
+    cs = loan_details.get("collateral_security_subtype_id")
+    if cs is not None and str(cs).strip() != "":
+        try:
+            safe_upd["collateral_security_subtype_id"] = int(cs)
+        except (TypeError, ValueError):
+            pass
+    elif loan_details.get("collateral_cleared"):
+        safe_upd["collateral_security_subtype_id"] = None
+        safe_upd["collateral_charge_amount"] = None
+        safe_upd["collateral_valuation_amount"] = None
+    if loan_details.get("collateral_charge_amount") is not None and not loan_details.get("collateral_cleared"):
+        safe_upd["collateral_charge_amount"] = float(as_10dp(loan_details["collateral_charge_amount"]))
+    if loan_details.get("collateral_valuation_amount") is not None and not loan_details.get("collateral_cleared"):
+        safe_upd["collateral_valuation_amount"] = float(as_10dp(loan_details["collateral_valuation_amount"]))
+    if safe_upd:
+        update_loan_safe_details(loan_id, safe_upd)
+
+    ar_note = loan_details.get("annual_rate")
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO loan_modifications (
+                    loan_id, modification_date, previous_schedule_version, new_schedule_version,
+                    outstanding_interest_treatment, new_loan_type, new_term, new_annual_rate,
+                    new_principal, notes
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    loan_id,
+                    restructure_date,
+                    prev_version,
+                    new_version,
+                    outstanding_interest_treatment,
+                    lt_db,
+                    term,
+                    ar_note,
+                    round(principal, 2),
+                    notes,
+                ),
+            )
+    update_loan_restructure_flags(loan_id, remodified_in_place=True)
+    return new_version
 
 
 def list_unapplied_funds(loan_id: int | None = None, status: str = "pending") -> list[dict]:

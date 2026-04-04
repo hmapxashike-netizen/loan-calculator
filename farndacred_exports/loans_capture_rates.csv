@@ -1,3 +1,4 @@
 loan_id,annual_rate,monthly_rate,penalty_rate_pct,penalty_quotation,currency
 1,1.2,,10,Absolute Rate,USD
 2,1.2,,10,Absolute Rate,USD
+3,1.2,,10,Absolute Rate,USD

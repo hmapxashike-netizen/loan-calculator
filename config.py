@@ -1,10 +1,29 @@
 """
 FarndaCred configuration module.
 Move major app and database settings here; override via environment variables in production.
+
+Local dev: optional ``.env`` in the project root (see ``.env.example``). Loaded before DB_* are read.
 """
 
+from __future__ import annotations
+
 import os
+from pathlib import Path
 from urllib.parse import quote_plus
+
+
+def _load_local_env_file() -> None:
+    """Load ``.env`` from repo root so Streamlit picks up DB vars without manual export."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    root = Path(__file__).resolve().parent
+    load_dotenv(root / ".env")
+
+
+_load_local_env_file()
+
 
 def _env_with_legacy(new_key: str, legacy_key: str, default: str = "") -> str:
     return os.environ.get(new_key) or os.environ.get(legacy_key, default)

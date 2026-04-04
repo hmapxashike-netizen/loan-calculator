@@ -130,6 +130,43 @@ def _ensure_loans_schema_for_save_loan(conn: Any) -> None:
         cur.execute(
             "ALTER TABLE loans ADD COLUMN IF NOT EXISTS collateral_valuation_amount NUMERIC(22, 10);"
         )
+        # Restructure reporting flags (indexed for cheap OR filters in portfolio SQL).
+        cur.execute(
+            """
+            ALTER TABLE loans
+            ADD COLUMN IF NOT EXISTS remodified_in_place BOOLEAN NOT NULL DEFAULT FALSE;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE loans
+            ADD COLUMN IF NOT EXISTS originated_from_split BOOLEAN NOT NULL DEFAULT FALSE;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE loans
+            ADD COLUMN IF NOT EXISTS modification_topup_applied BOOLEAN NOT NULL DEFAULT FALSE;
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_loans_remodified_in_place
+            ON loans (id) WHERE remodified_in_place = TRUE;
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_loans_originated_from_split
+            ON loans (id) WHERE originated_from_split = TRUE;
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_loans_modification_topup
+            ON loans (id) WHERE modification_topup_applied = TRUE;
+            """
+        )
     _ensure_loan_purposes_schema(conn)
 
 
@@ -168,6 +205,12 @@ def _ensure_loan_approval_drafts_table(conn: Any) -> None:
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS ix_loan_approval_drafts_customer ON loan_approval_drafts(customer_id)"
+        )
+        cur.execute(
+            """
+            ALTER TABLE loan_approval_drafts
+            ADD COLUMN IF NOT EXISTS schedule_json_secondary JSONB NOT NULL DEFAULT '[]'::jsonb
+            """
         )
         # Older runs may have created this as INTEGER; allow UUID/text user ids.
         cur.execute(

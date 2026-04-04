@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import io
+from decimal import Decimal
 from html import escape
 
 import pandas as pd
 import streamlit as st
+
+from decimal_utils import as_10dp
 
 
 from style import render_main_header, render_sub_header, render_sub_sub_header
@@ -237,6 +240,7 @@ def render_approve_loans_ui(
     send_back_loan_approval_draft,
     dismiss_loan_approval_draft,
     format_schedule_df,
+    money_df_column_config=None,
 ) -> None:
         """Approval inbox for loan drafts submitted from capture Stage 2."""
         render_sub_sub_header("Approve loans")
@@ -289,12 +293,15 @@ def render_approve_loans_ui(
                 details = draft.get("details_json") or {}
                 schedule_rows = draft.get("schedule_json") or []
                 df_schedule = pd.DataFrame(schedule_rows) if schedule_rows else pd.DataFrame()
+                sec_rows = draft.get("schedule_json_secondary") or []
+                df_schedule_b = pd.DataFrame(sec_rows) if sec_rows else pd.DataFrame()
                 customer_name = (
                     get_display_name(int(draft["customer_id"]))
                     if customers_available
                     else f"Customer #{draft['customer_id']}"
                 )
-    
+                ap_action = str(details.get("approval_action") or "").strip().upper()
+
                 st.markdown("### Draft inspection")
                 p1, p2, p3, p4 = st.columns(4)
                 with p1:
@@ -303,24 +310,77 @@ def render_approve_loans_ui(
                     st.write(f"Customer: **{customer_name}**")
                     st.write(f"Loan type: **{draft.get('loan_type')}**")
                     st.write(f"Product: **{draft.get('product_code') or '—'}**")
-                with p2:
-                    st.caption("Amounts")
-                    st.write(f"Principal: **{float(details.get('principal') or 0):,.2f}**")
-                    st.write(f"Disbursed: **{float(details.get('disbursed_amount') or 0):,.2f}**")
-                    st.write(f"Installment: **{float(details.get('installment') or 0):,.2f}**")
-                    st.write(f"Total payment: **{float(details.get('total_payment') or 0):,.2f}**")
-                with p3:
-                    st.caption("Pricing")
-                    st.write(f"Annual rate: **{float(details.get('annual_rate') or 0) * 100:.2f}%**")
-                    st.write(f"Monthly rate: **{float(details.get('monthly_rate') or 0) * 100:.2f}%**")
-                    st.write(f"Penalty: **{float(details.get('penalty_rate_pct') or 0):.2f}%**")
-                    st.write(f"Fees: **{float(details.get('drawdown_fee') or 0) * 100:.2f}% / {float(details.get('arrangement_fee') or 0) * 100:.2f}%**")
-                with p4:
-                    st.caption("Dates & status")
-                    st.write(f"Tenor: **{int(details.get('term') or 0)} months**")
-                    st.write(f"First repay: **{details.get('first_repayment_date') or '—'}**")
-                    st.write(f"Disbursed on: **{details.get('disbursement_date') or '—'}**")
-                    st.write(f"Status: **{draft.get('status')}**")
+                    if ap_action:
+                        st.write(f"Action: **{ap_action}**")
+                if ap_action in ("LOAN_MODIFICATION", "LOAN_MODIFICATION_SPLIT"):
+                    mod = details.get("modification_loan_details") or {}
+                    src_lid = draft.get("loan_id") or details.get("source_loan_id")
+                    with p2:
+                        st.caption("Modification amounts")
+                        st.write(f"Source loan: **{src_lid or '—'}**")
+                        st.write(f"Restructure date: **{details.get('restructure_date') or '—'}**")
+                        st.write(f"EOD snapshot date: **{details.get('as_of_balance_date') or '—'}**")
+                        st.write(f"Total facility: **{float(str(details.get('total_facility') or details.get('principal') or 0)):,.2f}**")
+                        st.write(f"Top-up: **{float(str(details.get('topup_amount') or 0)):,.2f}**")
+                        st.write(f"Write-off on approve: **{float(str(details.get('writeoff_amount') or 0)):,.2f}**")
+                    with p3:
+                        st.caption("Policy & interest")
+                        st.write(f"Excess policy: **{details.get('excess_policy') or '—'}**")
+                        st.write(
+                            "Interest treatment (restructure): **capitalise** "
+                            "(automatic; excess handled via write-off / split policy above)."
+                        )
+                        st.write(
+                            f"New principal (header): **{float(mod.get('principal') or 0):,.2f}** · "
+                            f"Instalment: **{float(mod.get('installment') or 0):,.2f}**"
+                        )
+                    with p4:
+                        st.caption("Status")
+                        st.write(f"Draft status: **{draft.get('status')}**")
+                        if ap_action == "LOAN_MODIFICATION_SPLIT":
+                            sp = details.get("split") or {}
+                            nsp = int(details.get("split_leg_count") or 2)
+                            st.write(
+                                f"The Split: **{nsp}** loan(s) (schedules A–{chr(ord('A') + min(nsp, 4) - 1)}; "
+                                "**A** = amount to restructure)"
+                            )
+                            st.write(
+                                f"Split A/B principal: **{float(str(sp.get('principal_a') or 0)):,.2f}** / "
+                                f"**{float(str(sp.get('principal_b') or 0)):,.2f}**"
+                            )
+                            st.write(f"Product B: **{details.get('split_product_code_b') or '—'}**")
+                elif ap_action == "TERMINATE":
+                    with p2:
+                        st.caption("Termination")
+                        st.write(f"Loan to terminate: **{draft.get('loan_id') or '—'}**")
+                    with p3:
+                        st.caption("Reason")
+                        st.write(f"{escape(str(details.get('termination_reason') or details.get('notes') or '—'))}")
+                    with p4:
+                        st.caption("Status")
+                        st.write(f"**{draft.get('status')}**")
+                else:
+                    with p2:
+                        st.caption("Amounts")
+                        st.write(f"Principal: **{float(details.get('principal') or 0):,.2f}**")
+                        st.write(f"Disbursed: **{float(details.get('disbursed_amount') or 0):,.2f}**")
+                        st.write(f"Installment: **{float(details.get('installment') or 0):,.2f}**")
+                        st.write(f"Total payment: **{float(details.get('total_payment') or 0):,.2f}**")
+                    with p3:
+                        st.caption("Pricing")
+                        st.write(f"Annual rate: **{float(details.get('annual_rate') or 0) * 100:.2f}%**")
+                        st.write(f"Monthly rate: **{float(details.get('monthly_rate') or 0) * 100:.2f}%**")
+                        st.write(f"Penalty: **{float(details.get('penalty_rate_pct') or 0):.2f}%**")
+                        st.write(
+                            f"Fees: **{float(details.get('drawdown_fee') or 0) * 100:.2f}% / "
+                            f"{float(details.get('arrangement_fee') or 0) * 100:.2f}%**"
+                        )
+                    with p4:
+                        st.caption("Dates & status")
+                        st.write(f"Tenor: **{int(details.get('term') or 0)} months**")
+                        st.write(f"First repay: **{details.get('first_repayment_date') or '—'}**")
+                        st.write(f"Disbursed on: **{details.get('disbursement_date') or '—'}**")
+                        st.write(f"Status: **{draft.get('status')}**")
     
                 with st.expander("View documents", expanded=False):
                     if documents_available:
@@ -454,56 +514,275 @@ def render_approve_loans_ui(
                         st.info("Document module is unavailable.")
     
                 with st.expander("View schedule", expanded=False):
-                    if df_schedule.empty:
+                    if ap_action == "LOAN_MODIFICATION_SPLIT":
+                        extras = details.get("split_schedules_extra") or []
+                        leg_frames: list[pd.DataFrame] = [df_schedule, df_schedule_b]
+                        if isinstance(extras, list):
+                            for block in extras:
+                                leg_frames.append(
+                                    pd.DataFrame(block) if isinstance(block, list) else pd.DataFrame()
+                                )
+                        n_legs = int(details.get("split_leg_count") or 2)
+                        n_legs = max(2, min(n_legs, 4))
+                        tab_labels = [f"Schedule {chr(ord('A') + i)}" for i in range(n_legs)]
+                        dfs_use = leg_frames[:n_legs]
+                        while len(dfs_use) < n_legs:
+                            dfs_use.append(pd.DataFrame())
+                        if any(not d.empty for d in dfs_use):
+                            tabs = st.tabs(tab_labels)
+                            for ti, tlab in enumerate(tabs):
+                                with tlab:
+                                    st.caption(f"Loan {chr(ord('A') + ti)}")
+                                    if ti < len(dfs_use) and not dfs_use[ti].empty:
+                                        st.dataframe(
+                                            format_schedule_df(dfs_use[ti]),
+                                            width="stretch",
+                                            hide_index=True,
+                                            height=220,
+                                        )
+                                    else:
+                                        st.info("No schedule rows for this leg.")
+                        elif df_schedule.empty:
+                            st.info("No schedule found for this draft.")
+                        else:
+                            st.dataframe(
+                                format_schedule_df(df_schedule),
+                                width="stretch",
+                                hide_index=True,
+                                height=220,
+                            )
+                    elif df_schedule.empty:
                         st.info("No schedule found for this draft.")
                     else:
-                        st.dataframe(format_schedule_df(df_schedule), width="stretch", hide_index=True, height=220)
-    
+                        st.dataframe(
+                            format_schedule_df(df_schedule),
+                            width="stretch",
+                            hide_index=True,
+                            height=220,
+                        )
+
+                with st.expander("Journal preview (simulation)", expanded=False):
+                    try:
+                        from accounting.service import AccountingService
+                        from loan_management import build_loan_approval_journal_payload
+
+                        svc = AccountingService()
+                        src_lid = draft.get("loan_id")
+                        wo = float(str(details.get("writeoff_amount") or 0))
+                        tu = float(str(details.get("topup_amount") or 0))
+                        mod_det = details.get("modification_loan_details") or {}
+                        cash_gl = mod_det.get("cash_gl_account_id")
+                        if ap_action in ("LOAN_MODIFICATION", "LOAN_MODIFICATION_SPLIT") and src_lid:
+                            if wo > 0:
+                                p_wo = {
+                                    "allowance_credit_losses": as_10dp(Decimal(str(wo))),
+                                    "loan_principal": as_10dp(Decimal(str(wo))),
+                                }
+                                sim_wo = svc.simulate_event(
+                                    "PRINCIPAL_WRITEOFF",
+                                    payload=p_wo,
+                                    loan_id=int(src_lid),
+                                )
+                                if sim_wo.lines:
+                                    st.caption("Principal write-off (on approve)")
+                                    df_j = pd.DataFrame(
+                                        [
+                                            {
+                                                "Account": f"{ln['account_name']} ({ln['account_code']})",
+                                                "Debit": float(ln["debit"]),
+                                                "Credit": float(ln["credit"]),
+                                            }
+                                            for ln in sim_wo.lines
+                                        ]
+                                    )
+                                    cfg_j = dict(money_df_column_config(df_j)) if money_df_column_config else {}
+                                    for jc in ("Debit", "Credit"):
+                                        if jc in cfg_j and isinstance(cfg_j[jc], dict):
+                                            cfg_j[jc] = {**cfg_j[jc], "alignment": "right"}
+                                    st.dataframe(
+                                        df_j,
+                                        width="stretch",
+                                        hide_index=True,
+                                        height=min(200, 40 + len(sim_wo.lines) * 34),
+                                        column_config=cfg_j or None,
+                                    )
+                                    if not sim_wo.balanced and sim_wo.warning:
+                                        st.warning(sim_wo.warning)
+                            if tu > 0:
+                                payload_tu = dict(
+                                    build_loan_approval_journal_payload(
+                                        {
+                                            "principal": tu,
+                                            "disbursed_amount": tu,
+                                            "drawdown_fee": 0.0,
+                                            "arrangement_fee": 0.0,
+                                            "admin_fee": 0.0,
+                                        }
+                                    )
+                                )
+                                if cash_gl:
+                                    payload_tu["account_overrides"] = {"cash_operating": str(cash_gl).strip()}
+                                st.caption("Top-up disbursement (on approve)")
+                                sim_tu = svc.simulate_event(
+                                    "LOAN_APPROVAL",
+                                    payload=payload_tu,
+                                    loan_id=int(src_lid),
+                                )
+                                if sim_tu.lines:
+                                    df_t = pd.DataFrame(
+                                        [
+                                            {
+                                                "Account": f"{ln['account_name']} ({ln['account_code']})",
+                                                "Debit": float(ln["debit"]),
+                                                "Credit": float(ln["credit"]),
+                                            }
+                                            for ln in sim_tu.lines
+                                        ]
+                                    )
+                                    cfg_t = dict(money_df_column_config(df_t)) if money_df_column_config else {}
+                                    for jc in ("Debit", "Credit"):
+                                        if jc in cfg_t and isinstance(cfg_t[jc], dict):
+                                            cfg_t[jc] = {**cfg_t[jc], "alignment": "right"}
+                                    st.dataframe(
+                                        df_t,
+                                        width="stretch",
+                                        hide_index=True,
+                                        height=min(200, 40 + len(sim_tu.lines) * 34),
+                                        column_config=cfg_t or None,
+                                    )
+                                    if not sim_tu.balanced and sim_tu.warning:
+                                        st.warning(sim_tu.warning)
+                        elif not ap_action or ap_action == "":
+                            cap_det = {**details}
+                            if cap_det.get("principal"):
+                                payload_cap = dict(build_loan_approval_journal_payload(cap_det))
+                                cg = cap_det.get("cash_gl_account_id")
+                                if cg:
+                                    payload_cap["account_overrides"] = {"cash_operating": str(cg).strip()}
+                                sim_c = svc.simulate_event("LOAN_APPROVAL", payload=payload_cap, loan_id=None)
+                                if sim_c.lines:
+                                    df_c = pd.DataFrame(
+                                        [
+                                            {
+                                                "Account": f"{ln['account_name']} ({ln['account_code']})",
+                                                "Debit": float(ln["debit"]),
+                                                "Credit": float(ln["credit"]),
+                                            }
+                                            for ln in sim_c.lines
+                                        ]
+                                    )
+                                    cfg_c = dict(money_df_column_config(df_c)) if money_df_column_config else {}
+                                    for jc in ("Debit", "Credit"):
+                                        if jc in cfg_c and isinstance(cfg_c[jc], dict):
+                                            cfg_c[jc] = {**cfg_c[jc], "alignment": "right"}
+                                    st.dataframe(
+                                        df_c,
+                                        width="stretch",
+                                        hide_index=True,
+                                        height=min(220, 40 + len(sim_c.lines) * 34),
+                                        column_config=cfg_c or None,
+                                    )
+                                    if not sim_c.balanced and sim_c.warning:
+                                        st.warning(sim_c.warning)
+                        else:
+                            st.info("No journal simulation for this action type.")
+                    except Exception as _je:
+                        st.warning(f"Journal preview unavailable: {_je}")
+
                 note = st.text_input("Reviewer note (optional)", key="approve_reviewer_note")
                 st.caption(
                     "**Send back to schedule builder** sets the draft to REWORK so capture staff can reload it under "
                     "**Capture loan → See loans for rework**, adjust the schedule, and **Send for approval** again."
                 )
+                if ap_action == "TERMINATE":
+                    _approve_label = "Approve termination"
+                elif ap_action == "LOAN_MODIFICATION":
+                    _approve_label = "Approve modification"
+                elif ap_action == "LOAN_MODIFICATION_SPLIT":
+                    _approve_label = "Approve split & new loans"
+                else:
+                    _approve_label = "Approve and create loan"
+
                 a1, a2, a3 = st.columns(3)
                 with a1:
-                    if st.button("Approve and create loan", type="primary", key="approve_create_loan_btn"):
+                    if st.button(_approve_label, type="primary", key="approve_create_loan_btn"):
                         try:
 
-                            def _approve_and_copy_docs() -> tuple[int, int]:
+                            def _approve_and_copy_docs() -> tuple[int, int, str]:
                                 new_loan_id = approve_loan_approval_draft(
                                     int(selected_id), approved_by="approver_ui"
                                 )
                                 doc_count = 0
+                                refreshed = get_loan_approval_draft(int(selected_id))
+                                dj = (refreshed or {}).get("details_json") or {}
+                                _sids = dj.get("split_created_loan_ids")
+                                if isinstance(_sids, list) and _sids:
+                                    targets = []
+                                    for _x in _sids:
+                                        try:
+                                            targets.append(int(_x))
+                                        except (TypeError, ValueError):
+                                            pass
+                                    if not targets:
+                                        targets = [int(new_loan_id)]
+                                else:
+                                    targets = [int(new_loan_id)]
+                                    id_b = dj.get("split_created_loan_id_b")
+                                    if id_b is not None:
+                                        try:
+                                            targets.append(int(id_b))
+                                        except (TypeError, ValueError):
+                                            pass
                                 if documents_available:
                                     docs = list_documents(
                                         entity_type="loan_approval_draft", entity_id=int(selected_id)
                                     )
-                                    for row in docs:
-                                        full = get_document(int(row["id"]))
-                                        if not full:
-                                            continue
-                                        upload_document(
-                                            "loan",
-                                            int(new_loan_id),
-                                            int(full["category_id"]),
-                                            str(full["file_name"]),
-                                            str(full["file_type"]),
-                                            int(full["file_size"]),
-                                            full["file_content"],
-                                            uploaded_by="System User",
-                                            notes=str(full.get("notes") or ""),
-                                        )
-                                        doc_count += 1
-                                return int(new_loan_id), doc_count
+                                    for lid in targets:
+                                        for row in docs:
+                                            full = get_document(int(row["id"]))
+                                            if not full:
+                                                continue
+                                            upload_document(
+                                                "loan",
+                                                int(lid),
+                                                int(full["category_id"]),
+                                                str(full["file_name"]),
+                                                str(full["file_type"]),
+                                                int(full["file_size"]),
+                                                full["file_content"],
+                                                uploaded_by="System User",
+                                                notes=str(full.get("notes") or ""),
+                                            )
+                                            doc_count += 1
+                                ap_done = str(dj.get("approval_action") or ap_action or "").strip().upper()
+                                if ap_done == "LOAN_MODIFICATION":
+                                    msg = (
+                                        f"Modification approved. Loan #{new_loan_id}. "
+                                        f"{doc_count} document copy operation(s)."
+                                    )
+                                elif ap_done == "LOAN_MODIFICATION_SPLIT":
+                                    _ids_s = ", ".join(f"#{t}" for t in targets)
+                                    msg = (
+                                        f"Split approved. New loans {_ids_s}. "
+                                        f"{doc_count} document copy operation(s)."
+                                    )
+                                elif ap_done == "TERMINATE":
+                                    msg = (
+                                        f"Termination approved for loan #{new_loan_id}. "
+                                        f"{doc_count} document copy operation(s)."
+                                    )
+                                else:
+                                    msg = (
+                                        f"Loan approved successfully. Loan #{new_loan_id} created. "
+                                        f"{doc_count} document(s) copied."
+                                    )
+                                return int(new_loan_id), doc_count, msg
 
-                            loan_id, doc_count = run_with_spinner(
-                                "Creating loan and copying documents…",
+                            loan_id, doc_count, flash_msg = run_with_spinner(
+                                "Approving draft and copying documents…",
                                 _approve_and_copy_docs,
                             )
-                            st.session_state["approve_loans_flash_message"] = (
-                                f"Loan approved successfully. Loan #{loan_id} created. "
-                                f"{doc_count} document(s) copied."
-                            )
+                            st.session_state["approve_loans_flash_message"] = flash_msg
                             st.session_state.pop("approve_selected_draft_id", None)
                             st.rerun()
                         except Exception as e:

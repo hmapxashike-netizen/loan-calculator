@@ -43,6 +43,10 @@ def update_loan_details(loan_id: int, **kwargs: Any) -> None:
         "end_date",
         "first_repayment_date",
         "loan_type",
+        "product_code",
+        "bullet_type",
+        "grace_type",
+        "moratorium_months",
     }
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
@@ -53,6 +57,36 @@ def update_loan_details(loan_id: int, **kwargs: Any) -> None:
             cur.execute(
                 f"UPDATE loans SET {sets} WHERE id = %s",
                 (*updates.values(), loan_id),
+            )
+
+
+def update_loan_restructure_flags(
+    loan_id: int,
+    *,
+    remodified_in_place: bool | None = None,
+    originated_from_split: bool | None = None,
+    modification_topup_applied: bool | None = None,
+) -> None:
+    """Set loan restructure reporting flags (None = leave unchanged)."""
+    sets: list[str] = []
+    params: list[Any] = []
+    if remodified_in_place is not None:
+        sets.append("remodified_in_place = %s")
+        params.append(bool(remodified_in_place))
+    if originated_from_split is not None:
+        sets.append("originated_from_split = %s")
+        params.append(bool(originated_from_split))
+    if modification_topup_applied is not None:
+        sets.append("modification_topup_applied = %s")
+        params.append(bool(modification_topup_applied))
+    if not sets:
+        return
+    sets.append("updated_at = NOW()")
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE loans SET {', '.join(sets)} WHERE id = %s",
+                (*params, int(loan_id)),
             )
 
 

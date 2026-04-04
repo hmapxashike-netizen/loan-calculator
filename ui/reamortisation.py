@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
-import numpy_financial as npf
 import pandas as pd
 import streamlit as st
 
-
-
 from style import render_sub_sub_header
+
 
 def render_reamortisation_ui(
     *,
@@ -23,6 +19,25 @@ def render_reamortisation_ui(
     format_schedule_df,
     schedule_export_downloads,
     apply_unapplied_funds_recast,
+    list_products,
+    get_product_config_from_db,
+    get_system_config,
+    get_consumer_schemes,
+    get_product_rate_basis,
+    compute_consumer_schedule,
+    compute_term_schedule,
+    compute_bullet_schedule,
+    pct_to_monthly,
+    save_loan_approval_draft,
+    update_loan_approval_draft_staged,
+    resubmit_loan_approval_draft,
+    documents_available: bool = False,
+    list_document_categories=None,
+    upload_document=None,
+    provisions_config_ok: bool = False,
+    list_provision_security_subtypes=None,
+    source_cash_gl_cached_labels_and_ids=None,
+    created_by: str | None = None,
 ) -> None:
     if not loan_management_available:
         st.error(loan_management_error or "Loan management not available.")
@@ -32,8 +47,6 @@ def render_reamortisation_ui(
         from loan_management import get_loans_by_customer
         from reamortisation import (
             get_loan_for_modification,
-            preview_loan_modification,
-            execute_loan_modification,
             preview_loan_recast,
             execute_loan_recast,
             list_unapplied_funds,
@@ -48,135 +61,38 @@ def render_reamortisation_ui(
     customers = list_customers() if customers_available else []
     
     with tab_mod:
-        render_sub_sub_header("Loan Modification (New Terms / Agreement)")
-        st.caption(
-            "Select an existing loan and apply new terms (rate, term, loan type). "
-            "Restructure date cannot be in the future or before the last due date. "
-            "Outstanding interest can be capitalised or written off."
+        from ui.reamortisation_modification import render_loan_modification_tab
+
+        _ldc = list_document_categories or (lambda **k: [])
+        _lps = list_provision_security_subtypes or (lambda: [])
+        render_loan_modification_tab(
+            list_customers=list_customers,
+            get_display_name=get_display_name,
+            get_system_date=get_system_date,
+            get_loan_for_modification=get_loan_for_modification,
+            format_schedule_df=format_schedule_df,
+            schedule_export_downloads=schedule_export_downloads,
+            list_products=list_products,
+            get_product_config_from_db=get_product_config_from_db,
+            get_system_config=get_system_config,
+            get_consumer_schemes=get_consumer_schemes,
+            get_product_rate_basis=get_product_rate_basis,
+            compute_consumer_schedule=compute_consumer_schedule,
+            compute_term_schedule=compute_term_schedule,
+            compute_bullet_schedule=compute_bullet_schedule,
+            pct_to_monthly=pct_to_monthly,
+            save_loan_approval_draft=save_loan_approval_draft,
+            update_loan_approval_draft_staged=update_loan_approval_draft_staged,
+            resubmit_loan_approval_draft=resubmit_loan_approval_draft,
+            documents_available=bool(documents_available),
+            list_document_categories=_ldc,
+            upload_document=upload_document,
+            provisions_config_ok=bool(provisions_config_ok),
+            list_provision_security_subtypes=_lps,
+            source_cash_gl_cached_labels_and_ids=source_cash_gl_cached_labels_and_ids,
+            created_by=created_by or "reamortisation_ui",
         )
-        if not customers:
-            st.info("No customers. Create a customer first.")
-        else:
-            cust_sel = st.selectbox(
-                "Customer",
-                [get_display_name(c["id"]) for c in customers],
-                key="reamod_cust",
-            )
-            cust_id = next(c["id"] for c in customers if get_display_name(c["id"]) == cust_sel)
-            loans = get_loans_by_customer(cust_id)
-            loans_active = [l for l in loans if l.get("status") == "active"]
-            if not loans_active:
-                st.info("No active loans for this customer.")
-            else:
-                loan_options = [(l["id"], f"Loan #{l['id']} | {l.get('loan_type', '')} | Principal: {l.get('principal', 0):,.2f}") for l in loans_active]
-                loan_labels = [t[1] for t in loan_options]
-                loan_sel = st.selectbox("Select loan", loan_labels, key="reamod_loan")
-                loan_id = loan_options[loan_labels.index(loan_sel)][0] if loan_sel and loan_labels else None
-                if loan_id:
-                    info = get_loan_for_modification(loan_id)
-                    if not info:
-                        st.warning("Could not load loan details.")
-                    else:
-                        loan = info["loan"]
-                        last_due = info.get("last_due_date")
-                        st.caption(f"Current schedule version: {info['schedule_version']}. Last due date: {last_due}.")
-                        restructure_date = st.date_input(
-                            "Restructure date (not future, not before last due)",
-                            value=datetime.now().date(),
-                            max_value=datetime.now().date(),
-                            key="reamod_date",
-                        )
-                        if last_due and restructure_date > last_due:
-                            st.error("Restructure date cannot be after the last due date.")
-                        elif last_due and restructure_date < get_system_date() and restructure_date < last_due:
-                            pass
-                        new_loan_type = st.selectbox(
-                            "Modified loan type",
-                            ["consumer_loan", "term_loan", "bullet_loan", "customised_repayments"],
-                            key="reamod_type",
-                        )
-                        new_term = st.number_input("New term (months)", min_value=1, value=12, key="reamod_term")
-                        new_annual_rate = st.number_input("New annual rate (%)", min_value=0.0, value=float(loan.get("annual_rate") or 0), step=0.1, key="reamod_rate")
-                        outstanding_interest = st.selectbox(
-                            "Outstanding interest",
-                            ["capitalise", "write_off"],
-                            key="reamod_interest",
-                        )
-    
-                        def _reamod_params():
-                            p = {"term": new_term, "annual_rate": new_annual_rate}
-                            if new_loan_type == "consumer_loan":
-                                p["monthly_rate"] = new_annual_rate / 12.0
-                                p["installment"] = float(npf.pmt(new_annual_rate / 1200, new_term, -float(loan.get("principal") or loan.get("disbursed_amount") or 0)))
-                            elif new_loan_type == "term_loan":
-                                p["grace_type"] = loan.get("grace_type") or "none"
-                                p["moratorium_months"] = loan.get("moratorium_months") or 0
-                            elif new_loan_type == "bullet_loan":
-                                from datetime import datetime as dt
-                                p["end_date"] = dt.combine(restructure_date, dt.min.time())
-                                p["bullet_type"] = loan.get("bullet_type") or "with_interest"
-                            return p
-    
-                        preview_key = "reamod_preview"
-                        if st.button("Preview schedule", type="secondary", key="reamod_preview_btn"):
-                            try:
-                                new_params = _reamod_params()
-                                preview = preview_loan_modification(
-                                    loan_id,
-                                    restructure_date,
-                                    new_loan_type,
-                                    new_params,
-                                    outstanding_interest,
-                                )
-                                st.session_state[preview_key] = {
-                                    **preview,
-                                    "loan_id": loan_id,
-                                    "restructure_date": restructure_date,
-                                    "new_params": new_params,
-                                    "outstanding_interest": outstanding_interest,
-                                }
-                                st.rerun()
-                            except Exception as ex:
-                                st.error(str(ex))
-    
-                        if st.session_state.get(preview_key) and st.session_state[preview_key].get("loan_id") == loan_id:
-                            pr = st.session_state[preview_key]
-                            render_sub_sub_header("Proposed schedule (inspect before commit)")
-                            cap = f"New principal: **{pr['new_principal']:,.2f}**"
-                            if pr.get("new_installment") is not None:
-                                cap += f" | New instalment: **{pr['new_installment']:,.2f}**"
-                            st.caption(cap)
-                            df_preview = pr["schedule_df"]
-                            st.dataframe(
-                                format_schedule_df(df_preview),
-                                width="stretch",
-                                hide_index=True,
-                            )
-                            schedule_export_downloads(
-                                df_preview,
-                                file_stem=f"loan_{loan_id}_modification_preview_schedule",
-                                key_prefix=f"dl_reamod_sched_{loan_id}",
-                            )
-                            if st.button("Commit modification", type="primary", key="reamod_commit"):
-                                try:
-                                    v = execute_loan_modification(
-                                        pr["loan_id"],
-                                        pr["restructure_date"],
-                                        pr["new_loan_type"],
-                                        pr["new_params"],
-                                        pr["outstanding_interest"],
-                                    )
-                                    if preview_key in st.session_state:
-                                        del st.session_state[preview_key]
-                                    st.success(f"Loan modification applied. New schedule version: {v}.")
-                                    st.rerun()
-                                except Exception as ex:
-                                    st.error(str(ex))
-                            if st.button("Cancel preview", key="reamod_cancel_preview"):
-                                if preview_key in st.session_state:
-                                    del st.session_state[preview_key]
-                                st.rerun()
-    
+
     with tab_recast:
         render_sub_sub_header("Loan Recast (Prepayment → New Instalment)")
         st.caption(
