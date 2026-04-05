@@ -1,1 +1,2 @@
 id,loan_id,recast_date,previous_schedule_version,new_schedule_version,new_installment,trigger_repayment_id,created_at,notes,recast_mode,previous_principal,previous_installment,previous_end_date,unapplied_credit_id,liquidation_repayment_id
+1,1,2025-04-26,2,3,228.45,7,2026-04-05T18:33:26.866131+02:00,,maintain_instalment,683.97,228.45,2025-07-06,1,15

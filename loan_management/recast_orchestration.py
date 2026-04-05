@@ -37,8 +37,18 @@ _RECAST_PHASE1: tuple[str, ...] = (
     "interest_accrued_balance",
 )
 _RECAST_PHASE2: tuple[str, ...] = ("principal_arrears", "principal_not_due")
+_RECAST_ALLOC_ORDER: tuple[str, ...] = (
+    "alloc_fees_charges",
+    "alloc_penalty_interest",
+    "alloc_default_interest",
+    "alloc_interest_arrears",
+    "alloc_interest_accrued",
+    "alloc_principal_arrears",
+    "alloc_principal_not_due",
+)
 
-RecastMode = Literal["maintain_term", "maintain_instalment"]
+RecastMode = Literal["maintain_term", "maintain_instalment", "prepay_upcoming_installments"]
+RecastBalancing = Literal["final_installment"]
 
 
 def _same_calendar_month(a: date, b: date) -> bool:
@@ -94,6 +104,85 @@ def compute_recast_unapplied_allocation(
             break
     unused = float(as_10dp(remaining)) if remaining > ARREARS_ZERO_TOLERANCE else 0.0
     return alloc, unused
+
+
+def _eligible_unapplied_credits_for_recast(cur, loan_id: int, recast_effective_date: date) -> list[dict[str, Any]]:
+    """
+    FIFO unapplied credit rows (not yet consumed) eligible on/before recast date.
+    """
+    cur.execute(
+        """
+        SELECT u.id, u.loan_id, u.amount, u.value_date, u.repayment_id, u.entry_type
+        FROM unapplied_funds u
+        WHERE u.loan_id = %s
+          AND u.amount > 0
+          AND COALESCE(NULLIF(TRIM(u.entry_type), ''), 'credit') = 'credit'
+          AND u.repayment_id IS NOT NULL
+          AND u.value_date <= %s
+          AND NOT EXISTS (
+              SELECT 1 FROM unapplied_funds d
+              WHERE d.source_unapplied_id = u.id
+          )
+        ORDER BY u.value_date, u.id
+        FOR UPDATE
+        """,
+        (loan_id, recast_effective_date),
+    )
+    out: list[dict[str, Any]] = []
+    for r in cur.fetchall():
+        row = dict(r)
+        vd = row.get("value_date")
+        if hasattr(vd, "date"):
+            vd = vd.date()
+        row["value_date"] = vd
+        row["id"] = int(row["id"])
+        row["loan_id"] = int(row["loan_id"])
+        row["repayment_id"] = int(row["repayment_id"])
+        row["amount"] = float(as_10dp(row.get("amount") or 0))
+        out.append(row)
+    return out
+
+
+def _split_recast_allocation_fifo(
+    credits_fifo: list[dict[str, Any]],
+    alloc_total_by_bucket: dict[str, float],
+) -> list[dict[str, Any]]:
+    """
+    Split pooled recast allocation into deterministic per-credit legs in FIFO order.
+    """
+    remain = {k: float(as_10dp(alloc_total_by_bucket.get(k, 0.0))) for k in _RECAST_ALLOC_ORDER}
+    legs: list[dict[str, Any]] = []
+    for c in credits_fifo:
+        available = float(as_10dp(c.get("amount") or 0.0))
+        if available <= ARREARS_ZERO_TOLERANCE:
+            continue
+        leg = {k: 0.0 for k in _RECAST_ALLOC_ORDER}
+        for k in _RECAST_ALLOC_ORDER:
+            need = float(as_10dp(remain.get(k, 0.0)))
+            if need <= ARREARS_ZERO_TOLERANCE or available <= ARREARS_ZERO_TOLERANCE:
+                continue
+            take = float(as_10dp(min(available, need)))
+            if take <= ARREARS_ZERO_TOLERANCE:
+                continue
+            leg[k] = float(as_10dp(leg[k] + take))
+            remain[k] = float(as_10dp(need - take))
+            available = float(as_10dp(available - take))
+        leg_total = float(as_10dp(sum(float(leg[k]) for k in _RECAST_ALLOC_ORDER)))
+        if leg_total > ARREARS_ZERO_TOLERANCE:
+            legs.append(
+                {
+                    "source_unapplied_id": int(c["id"]),
+                    "source_repayment_id": int(c["repayment_id"]),
+                    "value_date": c["value_date"],
+                    **leg,
+                    "alloc_total": leg_total,
+                }
+            )
+        if all(float(as_10dp(remain[k])) <= ARREARS_ZERO_TOLERANCE for k in _RECAST_ALLOC_ORDER):
+            break
+    if any(float(as_10dp(remain[k])) > ARREARS_ZERO_TOLERANCE for k in _RECAST_ALLOC_ORDER):
+        raise ValueError("Internal error: pooled recast allocation could not be fully split across FIFO credits.")
+    return legs
 
 
 def _post_liquidation_gl(
@@ -240,6 +329,7 @@ def preview_recast_from_unapplied(
     recast_effective_date: date,
     unapplied_funds_id: int,
     mode: RecastMode,
+    balancing_position: RecastBalancing = "final_installment",
     *,
     system_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -256,6 +346,8 @@ def preview_recast_from_unapplied(
     lt = str(loan.get("loan_type") or "")
     if lt not in ("term_loan", "consumer_loan"):
         raise ValueError("Recast from unapplied is only supported for term_loan and consumer_loan.")
+    if mode == "maintain_instalment" and balancing_position != "final_installment":
+        raise ValueError("Only final instalment balancing is supported for fixed instalment recast.")
 
     cfg = system_config or load_system_config_from_db() or {}
     _ensure_loan_daily_state_through_recast_effective_date(
@@ -267,37 +359,14 @@ def preview_recast_from_unapplied(
 
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT id, loan_id, amount, value_date, repayment_id, entry_type
-                FROM unapplied_funds
-                WHERE id = %s
-                """,
-                (unapplied_funds_id,),
-            )
-            uf = cur.fetchone()
-            if not uf:
-                raise ValueError(f"Unapplied funds entry {unapplied_funds_id} not found.")
-            if int(uf["loan_id"]) != int(loan_id):
-                raise ValueError("Unapplied entry does not belong to this loan.")
-            et = (uf.get("entry_type") or "credit").lower()
-            if et != "credit" or float(uf.get("amount") or 0) <= 0:
-                raise ValueError("Select a positive unapplied credit entry.")
-            cur.execute(
-                "SELECT 1 FROM unapplied_funds WHERE source_unapplied_id = %s LIMIT 1",
-                (unapplied_funds_id,),
-            )
-            if cur.fetchone():
-                raise ValueError("This unapplied entry was already consumed.")
-            src_rid = uf.get("repayment_id")
-            if src_rid is None:
-                raise ValueError("Unapplied entry must have a source repayment_id.")
-            src_rid = int(src_rid)
-            vd = uf["value_date"]
-            if hasattr(vd, "date"):
-                vd = vd.date()
-            if vd > recast_effective_date:
-                raise ValueError("Unapplied value_date cannot be after the recast effective date.")
+            credits = _eligible_unapplied_credits_for_recast(cur, loan_id, recast_effective_date)
+            if not credits:
+                raise ValueError("No eligible unapplied credit entries for recast on this date.")
+            selected = next((r for r in credits if int(r["id"]) == int(unapplied_funds_id)), None)
+            if not selected:
+                raise ValueError(
+                    "Selected unapplied entry is not eligible for recast (already consumed, wrong loan, or value_date after recast date)."
+                )
 
             fake_rid = _next_repayment_id_for_preview(cur)
             balances, _st_prev, _days = _get_opening_balances_for_repayment(
@@ -309,7 +378,7 @@ def preview_recast_from_unapplied(
             "Delinquency balances must be zero before recast (principal arrears, interest arrears, "
             "penalty, default interest, fees). Clear arrears first, then retry."
         )
-    uf_amt = float(uf["amount"])
+    uf_amt = float(as_10dp(sum(float(r.get("amount") or 0.0) for r in credits)))
     accrued = float(balances.get("interest_accrued_balance") or 0)
     if uf_amt <= accrued + ARREARS_ZERO_TOLERANCE:
         raise ValueError(
@@ -338,6 +407,8 @@ def preview_recast_from_unapplied(
         recast_effective_date,
         new_principal,
         mode,
+        balancing_position=balancing_position,
+        prepayment_amount=applied if mode in {"maintain_instalment", "prepay_upcoming_installments"} else None,
     )
     return {
         "schedule_df": df,
@@ -345,6 +416,8 @@ def preview_recast_from_unapplied(
         "new_principal_balance": new_principal,
         "unapplied_applied": applied,
         "unapplied_unused_remainder": unused,
+        "pooled_unapplied_count": len(credits),
+        "pooled_unapplied_total": uf_amt,
         "allocation": alloc,
     }
 
@@ -354,6 +427,7 @@ def execute_recast_from_unapplied(
     recast_effective_date: date,
     unapplied_funds_id: int,
     mode: RecastMode,
+    balancing_position: RecastBalancing = "final_installment",
     *,
     system_config: dict[str, Any] | None = None,
     notes: str | None = None,
@@ -372,6 +446,8 @@ def execute_recast_from_unapplied(
     lt = str(loan.get("loan_type") or "")
     if lt not in ("term_loan", "consumer_loan"):
         raise ValueError("Recast from unapplied is only supported for term_loan and consumer_loan.")
+    if mode == "maintain_instalment" and balancing_position != "final_installment":
+        raise ValueError("Only final instalment balancing is supported for fixed instalment recast.")
 
     cfg = system_config or load_system_config_from_db() or {}
     _ensure_loan_daily_state_through_recast_effective_date(
@@ -403,55 +479,18 @@ def execute_recast_from_unapplied(
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT pg_advisory_xact_lock(%s, %s)", (4021001, loan_id))
 
-            cur.execute(
-                """
-                SELECT id, loan_id, amount, value_date, repayment_id, entry_type
-                FROM unapplied_funds
-                WHERE id = %s
-                FOR UPDATE
-                """,
-                (unapplied_funds_id,),
-            )
-            uf = cur.fetchone()
-            if not uf:
-                raise ValueError(f"Unapplied funds entry {unapplied_funds_id} not found.")
-            if int(uf["loan_id"]) != int(loan_id):
-                raise ValueError("Unapplied entry does not belong to this loan.")
-            et = (uf.get("entry_type") or "credit").lower()
-            if et != "credit" or float(uf.get("amount") or 0) <= 0:
-                raise ValueError("Select a positive unapplied credit entry.")
-            cur.execute(
-                "SELECT 1 FROM unapplied_funds WHERE source_unapplied_id = %s LIMIT 1",
-                (unapplied_funds_id,),
-            )
-            if cur.fetchone():
-                raise ValueError("This unapplied entry was already consumed.")
-            src_rid = int(uf["repayment_id"])
-            vd = uf["value_date"]
-            if hasattr(vd, "date"):
-                vd = vd.date()
-            if vd > recast_effective_date:
-                raise ValueError("Unapplied value_date cannot be after the recast effective date.")
-
-            cur.execute(
-                """
-                INSERT INTO loan_repayments (
-                    loan_id, amount, payment_date, reference, value_date, status
-                ) VALUES (%s, %s, %s, %s, %s, 'posted')
-                RETURNING id
-                """,
-                (
-                    loan_id,
-                    -0.01,
-                    recast_effective_date,
-                    "Loan recast (unapplied liquidation)",
-                    recast_effective_date,
-                ),
-            )
-            liq_rid = int(cur.fetchone()["id"])
+            credits = _eligible_unapplied_credits_for_recast(cur, loan_id, recast_effective_date)
+            if not credits:
+                raise ValueError("No eligible unapplied credit entries for recast on this date.")
+            selected = next((r for r in credits if int(r["id"]) == int(unapplied_funds_id)), None)
+            if not selected:
+                raise ValueError(
+                    "Selected unapplied entry is not eligible for recast (already consumed, wrong loan, or value_date after recast date)."
+                )
+            trigger_rid = int(selected["repayment_id"])
 
             balances, st_prev, days_overdue = _get_opening_balances_for_repayment(
-                cur, loan_id, recast_effective_date, liq_rid
+                cur, loan_id, recast_effective_date, _next_repayment_id_for_preview(cur)
             )
 
             if _delinquency_total(balances) > ARREARS_ZERO_TOLERANCE:
@@ -459,7 +498,7 @@ def execute_recast_from_unapplied(
                     "Delinquency balances must be zero before recast. Clear arrears first, then retry."
                 )
 
-            uf_amt = float(uf["amount"])
+            uf_amt = float(as_10dp(sum(float(r.get("amount") or 0.0) for r in credits)))
             accrued = float(balances.get("interest_accrued_balance") or 0)
             if uf_amt <= accrued + ARREARS_ZERO_TOLERANCE:
                 raise ValueError(
@@ -471,11 +510,7 @@ def execute_recast_from_unapplied(
             applied = float(as_10dp(uf_amt - unused))
             if applied <= ARREARS_ZERO_TOLERANCE:
                 raise ValueError("Nothing to apply from unapplied after allocation.")
-
-            cur.execute(
-                "UPDATE loan_repayments SET amount = %s WHERE id = %s",
-                (float(as_10dp(-applied)), liq_rid),
-            )
+            legs = _split_recast_allocation_fifo(credits, alloc)
 
             apr = alloc["alloc_principal_not_due"]
             apa = alloc["alloc_principal_arrears"]
@@ -491,41 +526,6 @@ def execute_recast_from_unapplied(
             alloc_total = alloc_principal_total + alloc_interest_total + alloc_fees_total
             if abs(float(as_10dp(alloc_total)) - float(as_10dp(applied))) > 0.02:
                 raise ValueError("Internal error: liquidation total does not match applied unapplied amount.")
-
-            cur.execute(
-                """
-                INSERT INTO loan_repayment_allocation (
-                    repayment_id,
-                    alloc_principal_not_due, alloc_principal_arrears,
-                    alloc_interest_accrued, alloc_interest_arrears,
-                    alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
-                    alloc_principal_total, alloc_interest_total, alloc_fees_total,
-                    alloc_total, unallocated,
-                    event_type,
-                    source_repayment_id
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    'unapplied_funds_allocation', %s
-                )
-                """,
-                (
-                    liq_rid,
-                    float(as_10dp(apr)),
-                    float(as_10dp(apa)),
-                    float(as_10dp(aia)),
-                    float(as_10dp(aiar)),
-                    float(as_10dp(adi)),
-                    float(as_10dp(api)),
-                    float(as_10dp(afc)),
-                    float(as_10dp(alloc_principal_total)),
-                    float(as_10dp(alloc_interest_total)),
-                    float(as_10dp(alloc_fees_total)),
-                    float(as_10dp(alloc_total)),
-                    0.0,
-                    src_rid,
-                ),
-            )
 
             new_interest_accrued = max(0.0, balances["interest_accrued_balance"] - aia)
             new_interest_arrears = max(0.0, balances["interest_arrears_balance"] - aiar)
@@ -633,74 +633,129 @@ def execute_recast_from_unapplied(
                     "Run EOD through the recast effective date first (opening replay may have failed or the loan has no schedule for that day)."
                 )
 
-            cur.execute(
-                """
-                INSERT INTO unapplied_funds (
-                    loan_id, amount, value_date, entry_type, reference,
-                    allocation_repayment_id, source_repayment_id, source_unapplied_id, currency
-                )
-                VALUES (%s, %s, %s, 'debit', 'Loan recast (unapplied)', %s, %s, %s, 'USD')
-                """,
-                (
-                    loan_id,
-                    float(as_10dp(-applied)),
-                    eff_date_val,
-                    liq_rid,
-                    src_rid,
-                    unapplied_funds_id,
-                ),
-            )
+            first_liq_rid: int | None = None
+            for leg in legs:
+                leg_apr = float(as_10dp(leg["alloc_principal_not_due"]))
+                leg_apa = float(as_10dp(leg["alloc_principal_arrears"]))
+                leg_aia = float(as_10dp(leg["alloc_interest_accrued"]))
+                leg_aiar = float(as_10dp(leg["alloc_interest_arrears"]))
+                leg_adi = float(as_10dp(leg["alloc_default_interest"]))
+                leg_api = float(as_10dp(leg["alloc_penalty_interest"]))
+                leg_afc = float(as_10dp(leg["alloc_fees_charges"]))
+                leg_total = float(as_10dp(leg["alloc_total"]))
+                src_rid = int(leg["source_repayment_id"])
+                src_uid = int(leg["source_unapplied_id"])
+                if leg_total <= ARREARS_ZERO_TOLERANCE:
+                    continue
 
-            if unused > ARREARS_ZERO_TOLERANCE:
                 cur.execute(
                     """
-                    INSERT INTO unapplied_funds (
-                        loan_id, amount, value_date, entry_type, reference,
-                        repayment_id, currency
-                    )
-                    VALUES (%s, %s, %s, 'credit', 'Recast remainder (excess over balances)', %s, 'USD')
+                    INSERT INTO loan_repayments (
+                        loan_id, amount, payment_date, reference, value_date, status
+                    ) VALUES (%s, %s, %s, %s, %s, 'posted')
+                    RETURNING id
                     """,
                     (
                         loan_id,
-                        float(as_10dp(unused)),
-                        eff_date_val,
+                        float(as_10dp(-leg_total)),
+                        recast_effective_date,
+                        "Loan recast (unapplied liquidation)",
+                        recast_effective_date,
+                    ),
+                )
+                liq_rid = int(cur.fetchone()["id"])
+                if first_liq_rid is None:
+                    first_liq_rid = liq_rid
+
+                leg_alloc_principal_total = leg_apr + leg_apa
+                leg_alloc_interest_total = leg_aia + leg_aiar + leg_adi + leg_api
+                leg_alloc_fees_total = leg_afc
+                cur.execute(
+                    """
+                    INSERT INTO loan_repayment_allocation (
+                        repayment_id,
+                        alloc_principal_not_due, alloc_principal_arrears,
+                        alloc_interest_accrued, alloc_interest_arrears,
+                        alloc_default_interest, alloc_penalty_interest, alloc_fees_charges,
+                        alloc_principal_total, alloc_interest_total, alloc_fees_total,
+                        alloc_total, unallocated,
+                        event_type,
+                        source_repayment_id
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        'unapplied_funds_allocation', %s
+                    )
+                    """,
+                    (
+                        liq_rid,
+                        leg_apr,
+                        leg_apa,
+                        leg_aia,
+                        leg_aiar,
+                        leg_adi,
+                        leg_api,
+                        leg_afc,
+                        float(as_10dp(leg_alloc_principal_total)),
+                        float(as_10dp(leg_alloc_interest_total)),
+                        float(as_10dp(leg_alloc_fees_total)),
+                        float(as_10dp(leg_total)),
+                        0.0,
                         src_rid,
                     ),
                 )
 
-            if svc is not None:
-                liq_ref = _unapplied_original_reference(
-                    "recast_liquidation",
-                    loan_id=loan_id,
-                    repayment_id=src_rid,
-                    value_date=eff_date_val,
+                cur.execute(
+                    """
+                    INSERT INTO unapplied_funds (
+                        loan_id, amount, value_date, entry_type, reference,
+                        allocation_repayment_id, source_repayment_id, source_unapplied_id, currency
+                    )
+                    VALUES (%s, %s, %s, 'debit', 'Loan recast (unapplied)', %s, %s, %s, 'USD')
+                    """,
+                    (
+                        loan_id,
+                        float(as_10dp(-leg_total)),
+                        eff_date_val,
+                        liq_rid,
+                        src_rid,
+                        src_uid,
+                    ),
                 )
-                _post_liquidation_gl(
-                    svc,
-                    loan_id,
-                    src_rid,
-                    eff_date_val,
-                    liq_ref,
-                    apr=apr,
-                    apa=apa,
-                    aia=aia,
-                    aiar=aiar,
-                    adi=adi,
-                    api=api,
-                    afc=afc,
-                )
+
+                if svc is not None:
+                    liq_ref = _unapplied_original_reference(
+                        "recast_liquidation",
+                        loan_id=loan_id,
+                        repayment_id=src_rid,
+                        value_date=eff_date_val,
+                    )
+                    _post_liquidation_gl(
+                        svc,
+                        loan_id,
+                        src_rid,
+                        eff_date_val,
+                        liq_ref,
+                        apr=leg_apr,
+                        apa=leg_apa,
+                        aia=leg_aia,
+                        aiar=leg_aiar,
+                        adi=leg_adi,
+                        api=leg_api,
+                        afc=leg_afc,
+                    )
 
             new_principal = float(as_10dp(new_principal_not_due + new_principal_arrears))
             if new_principal <= 0:
                 raise ValueError("Recast would leave no positive principal; aborting.")
 
-            tx_out["liq_rid"] = liq_rid
-            tx_out["src_rid"] = src_rid
+            tx_out["liq_rid"] = int(first_liq_rid or 0)
+            tx_out["src_rid"] = trigger_rid
             tx_out["applied"] = applied
             tx_out["unused"] = unused
             tx_out["new_principal"] = new_principal
 
-    liq_rid = int(tx_out["liq_rid"])
+    liq_rid = int(tx_out["liq_rid"]) if int(tx_out["liq_rid"]) > 0 else None
     src_rid = int(tx_out["src_rid"])
     applied = float(tx_out["applied"])
     unused = float(tx_out["unused"])
@@ -713,6 +768,8 @@ def execute_recast_from_unapplied(
         recast_effective_date,
         new_principal,
         mode,
+        balancing_position=balancing_position,
+        prepayment_amount=applied if mode in {"maintain_instalment", "prepay_upcoming_installments"} else None,
     )
     new_version = prev_version + 1
     save_new_schedule_version(loan_id, schedule_df, new_version)

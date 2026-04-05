@@ -88,14 +88,14 @@ def _statement_table_html(
             return ""
         if col_name == "Due Date":
             if hasattr(v, "strftime"):
-                return html.escape(v.strftime("%d %b %y"))
+                return html.escape(v.strftime("%d-%b-%Y"))
             s = str(v).strip()
             if len(s) >= 10 and s[4] == "-" and s[7] == "-":
                 try:
                     from datetime import date as _date
 
                     d = _date.fromisoformat(s[:10])
-                    return html.escape(d.strftime("%d %b %y"))
+                    return html.escape(d.strftime("%d-%b-%Y"))
                 except ValueError:
                     pass
             return html.escape(s[:16] if len(s) > 16 else s)
@@ -153,67 +153,25 @@ _STMT_PRINT_WINDOW_CSS = (
 )
 
 
-def _statement_export_bar_html(
-    *,
-    csv_bytes: bytes,
-    pdf_bytes: bytes | None,
-    print_inner_html: str,
-    csv_file_name: str,
-    pdf_file_name: str,
-) -> str:
-    """Single-row HTML: brand-themed Download PDF + Print."""
-    print_b64 = base64.standard_b64encode(print_inner_html.encode("utf-8")).decode("ascii")
+def _statement_print_button_html(*, print_inner_html: str | None) -> str:
+    """Single brand-themed Print PDF button (full width)."""
     uid = uuid.uuid4().hex[:12]
     css_js = json.dumps(_STMT_PRINT_WINDOW_CSS)
     btn_bg = BRAND_GREEN
-    if pdf_bytes:
-        pdf_fn = html_module.escape(pdf_file_name, quote=True)
-        pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
-        pdf_el = (
-            f'<a class="stmt-exp" href="data:application/pdf;base64,{pdf_b64}" '
-            f'download="{pdf_fn}">Download PDF</a>'
-        )
-    else:
-        pdf_el = '<span class="stmt-exp stmt-exp--disabled">Download PDF</span>'
-    return f"""<div style="width:100%;box-sizing:border-box;">
-<style>
-.stmt-exp-wrap {{ display:flex; gap:0.65rem; width:100%; align-items:stretch; box-sizing:border-box; }}
-.stmt-exp {{
-  flex: 0 0 auto;
-  width: 10.5rem;
-  text-align: center;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 2.25rem;
-  height: 2.25rem;
-  padding: 0.2rem 0.6rem;
-  box-sizing: border-box;
-  background: {btn_bg};
-  color: #fff !important;
-  border: none;
-  border-radius: 6px;
-  font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-  text-decoration: none !important;
-  font-family: system-ui, Segoe UI, sans-serif;
-}}
-.stmt-exp:hover {{ filter: brightness(0.93) !important; color: #fff !important; }}
-.stmt-exp--disabled {{
-  background: #94a3b8 !important;
-  cursor: not-allowed;
-  pointer-events: none;
-  color: #fff !important;
-}}
-.stmt-exp--disabled:hover {{ background: #94a3b8 !important; color: #fff !important; }}
-</style>
-<div class="stmt-exp-wrap" style="display:grid;grid-template-columns:1fr;gap:0.45rem;justify-items:start;">
-<button type="button" class="stmt-exp" id="stmt-print-{uid}">Print PDF</button>
-{pdf_el}
-</div>
-<textarea id="stmt-b64-{uid}" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none" aria-hidden="true" readonly>{print_b64}</textarea>
-<script>
+    is_enabled = bool(print_inner_html)
+    btn_html = (
+        f'<button type="button" class="stmt-act" id="stmt-print-{uid}">Print PDF</button>'
+        if is_enabled
+        else '<span class="stmt-act stmt-act--disabled">Print PDF</span>'
+    )
+    ta_html = (
+        f'<textarea id="stmt-b64-{uid}" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none" '
+        f'aria-hidden="true" readonly>{base64.standard_b64encode((print_inner_html or "").encode("utf-8")).decode("ascii")}</textarea>'
+        if is_enabled
+        else ""
+    )
+    script_html = (
+        f"""<script>
 (function() {{
   var btn = document.getElementById('stmt-print-{uid}');
   var ta = document.getElementById('stmt-b64-{uid}');
@@ -236,7 +194,87 @@ def _statement_export_bar_html(
     setTimeout(function() {{ w.print(); w.close(); }}, 400);
   }});
 }})();
-</script>
+</script>"""
+        if is_enabled
+        else ""
+    )
+    return f"""<div style="width:100%;box-sizing:border-box;">
+<style>
+.stmt-act {{
+  width: 100%;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.6rem;
+  height: 1.6rem;
+  padding: 0.05rem 0.3rem;
+  box-sizing: border-box;
+  background: {btn_bg};
+  color: #fff !important;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none !important;
+  font-family: system-ui, Segoe UI, sans-serif;
+}}
+.stmt-act:hover {{ filter: brightness(0.93) !important; color: #fff !important; }}
+.stmt-act--disabled {{
+  background: #94a3b8 !important;
+  cursor: not-allowed;
+  pointer-events: none;
+}}
+</style>
+{btn_html}
+{ta_html}
+{script_html}
+</div>"""
+
+
+def _statement_download_pdf_button_html(*, pdf_bytes: bytes | None, pdf_file_name: str) -> str:
+    """Single brand-themed Download PDF button (full width)."""
+    btn_bg = BRAND_GREEN
+    if pdf_bytes:
+        pdf_fn = html_module.escape(pdf_file_name, quote=True)
+        pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
+        link = (
+            f'<a class="stmt-act" href="data:application/pdf;base64,{pdf_b64}" '
+            f'download="{pdf_fn}">Download PDF</a>'
+        )
+    else:
+        link = '<span class="stmt-act stmt-act--disabled">Download PDF</span>'
+    return f"""<div style="width:100%;box-sizing:border-box;">
+<style>
+.stmt-act {{
+  width: 100%;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.6rem;
+  height: 1.6rem;
+  padding: 0.05rem 0.3rem;
+  box-sizing: border-box;
+  background: {btn_bg};
+  color: #fff !important;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none !important;
+  font-family: system-ui, Segoe UI, sans-serif;
+}}
+.stmt-act:hover {{ filter: brightness(0.93) !important; color: #fff !important; }}
+.stmt-act--disabled {{
+  background: #94a3b8 !important;
+  cursor: not-allowed;
+  pointer-events: none;
+}}
+</style>
+{link}
 </div>"""
 
 
@@ -315,12 +353,13 @@ def render_statements_ui(
         st.markdown(
             """
 <style>
-button[aria-label="Generate statement"]{
-  min-height:2.25rem !important;
-  height:2.25rem !important;
-  width:10.5rem !important;
-  padding:0.2rem 0.6rem !important;
-  font-size:0.9rem !important;
+button[aria-label="Generate statement"],
+button[aria-label="Generate"]{
+  min-height:1.6rem !important;
+  height:1.6rem !important;
+  width:100% !important;
+  padding:0.05rem 0.3rem !important;
+  font-size:0.7rem !important;
 }
 </style>
 """,
@@ -481,34 +520,66 @@ button[aria-label="Generate statement"]{
                     if stmt_type_key == "letterhead":
                         use_flow_statement = True
                         rollup_flow_accruals = True
+                        flow_arrears_mode = "end_snapshot"
                         show_pa_billing = False
-                        show_arrears_col = True
+                        show_arrears_col = False
                         show_unapplied_col = True
                     elif stmt_type_key == "daily":
                         use_flow_statement = True
                         rollup_flow_accruals = False
+                        flow_arrears_mode = "by_row_date"
                         show_pa_billing = True
                         show_arrears_col = True
                         show_unapplied_col = True
                     else:
                         use_flow_statement = False
                         rollup_flow_accruals = False
-                        with dr3:
+                        flow_arrears_mode = "end_snapshot"
+                        show_pa_billing = True
+                        show_arrears_col = True
+                        show_unapplied_col = True
+
+                    with dr3:
+                        gen_stmt = st.button(
+                            "Generate",
+                            type="primary",
+                            key="stmt_gen",
+                            use_container_width=True,
+                        )
+                    with dr4:
+                        print_btn_slot = st.empty()
+                    with dr5:
+                        pdf_btn_slot = st.empty()
+                    with print_btn_slot:
+                        st.components.v1.html(
+                            _statement_print_button_html(print_inner_html=None),
+                            height=34,
+                        )
+                    with pdf_btn_slot:
+                        st.components.v1.html(
+                            _statement_download_pdf_button_html(
+                                pdf_bytes=None,
+                                pdf_file_name="",
+                            ),
+                            height=34,
+                        )
+                    if stmt_type_key == "stock_legacy":
+                        lg1, lg2, lg3 = st.columns(3, gap="xsmall")
+                        with lg1:
                             show_pa_billing = st.checkbox(
                                 "Principal arrears billing",
                                 value=True,
                                 key="stmt_show_pa_billing",
                                 help="Include principal arrears billing (informational) lines.",
                             )
-                        with dr4:
+                        with lg2:
                             show_arrears_col = st.checkbox(
                                 "Arrears column",
                                 value=True,
                                 key="stmt_show_arrears_col",
                                 help="Show arrears column on the statement.",
                             )
-                    if stmt_type_key == "stock_legacy":
-                        with dr5:
+                        with lg3:
                             show_unapplied_col = st.checkbox(
                                 "Unapplied funds column",
                                 value=True,
@@ -517,13 +588,6 @@ button[aria-label="Generate statement"]{
                             )
                     else:
                         show_unapplied_col = True
-                    with dr5:
-                        gen_stmt = st.button(
-                            "Generate statement",
-                            type="primary",
-                            key="stmt_gen",
-                            use_container_width=True,
-                        )
     
                     if gen_stmt:
                         try:
@@ -536,6 +600,7 @@ button[aria-label="Generate statement"]{
                                         start_date=start_date,
                                         end_date=end_date,
                                         allowed_customer_ids=allowed_ids,
+                                        arrears_mode=flow_arrears_mode,
                                     )
                                     if rollup_flow_accruals:
                                         disb_r = loan_info.get("disbursement_date") or loan_info.get("start_date")
@@ -579,8 +644,8 @@ button[aria-label="Generate statement"]{
                                     end = meta.get("end_date")
                                     cust_id = _normalize_customer_id(meta.get("customer_id"))
                                     customer_name = _customer_label(cust_id) if cust_id is not None else "—"
-                                    start_fmt = start.strftime("%d%b%Y") if hasattr(start, "strftime") else str(start)
-                                    end_fmt = end.strftime("%d%b%Y") if hasattr(end, "strftime") else str(end)
+                                    start_fmt = start.strftime("%d-%b-%Y") if hasattr(start, "strftime") else str(start)
+                                    end_fmt = end.strftime("%d-%b-%Y") if hasattr(end, "strftime") else str(end)
                                     gen = meta.get("generated_at")
                                     generated_fmt = (
                                         gen.strftime("%d %b %Y, %H:%M:%S")
@@ -600,8 +665,13 @@ button[aria-label="Generate statement"]{
                                         visible_df = visible_df.drop(columns=["Unapplied funds"])
 
                                     # Full-width statement: HTML table (no Streamlit dataframe width limits)
-                                    display_headers = {**_alloc_display}
+                                    display_headers = {"Due Date": "Date", **_alloc_display}
                                     closing_row = None
+                                    closing_row_full = None
+                                    if len(df) > 0:
+                                        full_last_narr = str(df.iloc[-1].get("Narration") or "")
+                                        if "Total outstanding" in full_last_narr:
+                                            closing_row_full = df.iloc[-1]
                                     if len(visible_df) > 0:
                                         last_narr = str(visible_df.iloc[-1].get("Narration") or "")
                                         if "Total outstanding" in last_narr:
@@ -622,22 +692,37 @@ button[aria-label="Generate statement"]{
                                         due_d = closing_row.get("Due Date")
                                         bal = closing_row.get("Balance")
                                         unapp = closing_row.get("Unapplied funds")
+                                        arr = (
+                                            closing_row_full.get("Arrears")
+                                            if closing_row_full is not None
+                                            else closing_row.get("Arrears")
+                                        )
                                         due_fmt = (
-                                            due_d.strftime("%d %b %Y")
+                                            due_d.strftime("%d-%b-%Y")
                                             if due_d and hasattr(due_d, "strftime")
                                             else str(due_d or "")
                                         )
                                         try:
                                             bal_fmt = f"{float(bal):,.2f}" if bal is not None else "0.00"
                                             unapp_fmt = f"{float(unapp):,.2f}" if unapp is not None else "0.00"
+                                            arr_fmt = f"{float(arr):,.2f}" if arr is not None else "0.00"
                                         except (TypeError, ValueError):
                                             bal_fmt = str(bal or "0.00")
                                             unapp_fmt = str(unapp or "0.00")
-                                        if show_unapplied_col:
+                                            arr_fmt = str(arr or "0.00")
+                                        if stmt_type_key == "letterhead":
+                                            closing_html = (
+                                                f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}  &nbsp;|&nbsp;  "
+                                                f"<strong>Unapplied funds:</strong> {unapp_fmt}  &nbsp;|&nbsp;  "
+                                                f"<strong>Arrears (as at statement end date):</strong> {arr_fmt}</div>"
+                                            )
+                                        elif show_unapplied_col:
                                             closing_html = (
                                                 f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}  &nbsp;|&nbsp;  "
                                                 f"<strong>Unapplied funds:</strong> {unapp_fmt}</div>"
                                             )
+                                        if show_unapplied_col:
+                                            pass
                                         else:
                                             closing_html = (
                                                 f"<div class='stmt-closing'><strong>Closing balance as at {due_fmt}:</strong> {bal_fmt}</div>"
@@ -668,22 +753,30 @@ button[aria-label="Generate statement"]{
                                         statement_title,
                                     )
 
-                                    st.components.v1.html(
-                                        _statement_export_bar_html(
-                                            csv_bytes=b"",
-                                            pdf_bytes=pdf_bytes,
-                                            print_inner_html=stmt_inner,
-                                            csv_file_name="",
-                                            pdf_file_name=_pdf_name,
-                                        ),
-                                        height=96,
-                                    )
+                                    with print_btn_slot:
+                                        st.components.v1.html(
+                                            _statement_print_button_html(print_inner_html=stmt_inner),
+                                            height=34,
+                                        )
+                                    with pdf_btn_slot:
+                                        st.components.v1.html(
+                                            _statement_download_pdf_button_html(
+                                                pdf_bytes=pdf_bytes,
+                                                pdf_file_name=_pdf_name,
+                                            ),
+                                            height=34,
+                                        )
 
                                     st.markdown(f"##### {statement_title}")
                                     st.caption(
                                         f"Customer: {customer_name} | Customer ID: {cust_id if cust_id is not None else '—'} | "
                                         f"Loan ID: {loan_id} | Period: {start_fmt} to {end_fmt}"
                                     )
+                                    if "Due Date" in stmt_df.columns:
+                                        stmt_df = stmt_df.copy()
+                                        stmt_df["Due Date"] = stmt_df["Due Date"].map(
+                                            lambda v: v.strftime("%d-%b-%Y") if hasattr(v, "strftime") else str(v or "")
+                                        )
                                     stmt_df_display = stmt_df.rename(columns=display_headers)
                                     if money_df_column_config is not None:
                                         st.dataframe(
@@ -691,7 +784,7 @@ button[aria-label="Generate statement"]{
                                             column_config=money_df_column_config(
                                                 stmt_df_display,
                                                 overrides={
-                                                    "Due Date": {
+                                                    "Date": {
                                                         **st.column_config.TextColumn(),
                                                         "alignment": "left",
                                                     },
@@ -709,7 +802,13 @@ button[aria-label="Generate statement"]{
                                     else:
                                         st.dataframe(stmt_df_display, hide_index=True, width="stretch")
                                     if closing_row is not None:
-                                        if show_unapplied_col:
+                                        if stmt_type_key == "letterhead":
+                                            st.info(
+                                                f"Closing balance as at {due_fmt}: {bal_fmt} | "
+                                                f"Unapplied funds: {unapp_fmt} | "
+                                                f"Arrears (as at statement end date): {arr_fmt}"
+                                            )
+                                        elif show_unapplied_col:
                                             st.info(
                                                 f"Closing balance as at {due_fmt}: {bal_fmt} | Unapplied funds: {unapp_fmt}"
                                             )

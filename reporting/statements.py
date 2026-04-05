@@ -1874,13 +1874,16 @@ def generate_customer_facing_flow_statement(
     *,
     as_of_date: date | None = None,
     allowed_customer_ids: list[int] | None = None,
+    arrears_mode: str = "end_snapshot",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     Customer-facing statement from discrete subledger events: drawdown, daily accruals,
     repayment bucket allocations, and unapplied ledger rows. **No mid-statement balance
     snap** — ``Balance`` is a running total; ``Unapplied funds`` runs from signed deltas.
 
-    Arrears shown as total delinquency **as at** ``end_date`` on every row (static for this v1).
+    Arrears strategy:
+    - ``end_snapshot`` (default): total delinquency **as at** ``end_date`` on every movement row.
+    - ``by_row_date``: total delinquency snapped by each row date from ``loan_daily_state``.
 
     Does **not** change GL. See ``docs/STATEMENT_FLOW_AND_RECONCILIATION_PLAN.md``.
     """
@@ -1909,6 +1912,8 @@ def generate_customer_facing_flow_statement(
         end = today
     if start > end:
         start, end = end, start
+    if arrears_mode not in {"end_snapshot", "by_row_date"}:
+        raise ValueError(f"Unsupported arrears_mode '{arrears_mode}'.")
 
     prior_ds = get_loan_daily_state_balances(loan_id, start - timedelta(days=1))
     opening_loan = total_outstanding_decimal(prior_ds) if prior_ds else Decimal("0")
@@ -1918,9 +1923,25 @@ def generate_customer_facing_flow_statement(
 
     ds_end = get_loan_daily_state_balances(loan_id, end)
     arrears_row = _f3(_total_delinquency_arrears(ds_end))
+    arrears_by_date: dict[date, float] = {}
+    running_arrears = _f3(_total_delinquency_arrears(prior_ds))
+    if arrears_mode == "by_row_date":
+        ds_rows = get_loan_daily_state_range(loan_id, start, end)
+        for ds in ds_rows:
+            d = _date_conv(ds.get("as_of_date"))
+            if d is None:
+                continue
+            arrears_by_date[d] = _f3(_total_delinquency_arrears(ds))
 
     out: list[dict[str, Any]] = []
     for ev, loan_b, u_b in dual:
+        if arrears_mode == "by_row_date":
+            ev_d = ev.event_date
+            if ev_d in arrears_by_date:
+                running_arrears = arrears_by_date[ev_d]
+            arrears_val = running_arrears
+        else:
+            arrears_val = arrears_row
         deb_d = as_10dp(ev.debit)
         cred_d = as_10dp(ev.credit)
         row_ev: dict[str, Any] = {
@@ -1929,7 +1950,7 @@ def generate_customer_facing_flow_statement(
             "Debits": float(deb_d),
             "Credits": float(cred_d),
             "Balance": _f3(loan_b),
-            "Arrears": arrears_row,
+            "Arrears": arrears_val,
             "Unapplied funds": _f3(u_b),
             "_event_type": ev.event_type,
             # Exact 10dp for roll-up + balance replay (float Debits alone drifts vs Decimal events).
@@ -1961,6 +1982,7 @@ def generate_customer_facing_flow_statement(
         "start_date": start,
         "end_date": end,
         "statement_type": "customer_facing_flow",
+        "arrears_mode": arrears_mode,
         "opening_loan": _f3(opening_loan),
         "opening_unapplied": _f3(opening_unapplied),
         "reconcile_loan_total": recon,

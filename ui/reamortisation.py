@@ -186,15 +186,20 @@ def render_reamortisation_ui(
                             )
                         )
                     with ru2:
-                        mode = st.radio(
+                        _mode_labels = {
+                            "maintain_term": "Lower instalment (same term)",
+                            "maintain_instalment": "Fixed instalment (prepay from last)",
+                            "prepay_upcoming_installments": "Prepayment of upcoming instalments",
+                        }
+                        mode = st.selectbox(
                             "Mode",
-                            ("maintain_term", "maintain_instalment"),
-                            format_func=lambda m: "Lower instalment (same term)"
-                            if m == "maintain_term"
-                            else "Fixed instalment (balloon)",
-                            horizontal=True,
+                            options=list(_mode_labels.keys()),
+                            format_func=lambda m: _mode_labels.get(m, m),
                             key="recast_mode",
                         )
+                    balancing_position = "final_installment"
+                    if mode == "maintain_instalment":
+                        st.caption("Balancing installment: **Final instalment**")
                     rb1, rb2 = st.columns(2)
                     with rb1:
                         preview_clicked = st.button("Preview recast", type="secondary", key="recast_preview_btn")
@@ -210,6 +215,7 @@ def render_reamortisation_ui(
                                 recast_date,
                                 uf_id,
                                 mode,
+                                balancing_position=balancing_position,
                                 system_config=scfg,
                             )
                             st.session_state[recast_preview_key] = {
@@ -218,6 +224,7 @@ def render_reamortisation_ui(
                                 "recast_date": recast_date,
                                 "uf_id": uf_id,
                                 "mode": mode,
+                                "balancing_position": balancing_position,
                             }
                             st.rerun()
                         except Exception as ex:
@@ -228,6 +235,8 @@ def render_reamortisation_ui(
                 ) == loan_id_r:
                     rp = st.session_state[recast_preview_key]
                     _section_heading("Proposed recast schedule")
+                    if str(rp.get("mode") or "") == "maintain_instalment":
+                        st.caption("Balancing installment: **Final instalment**")
                     st.caption(
                         f"New instalment: **{rp['new_installment']:,.2f}** · "
                         f"New principal: **{rp['new_principal_balance']:,.2f}** · "
@@ -258,6 +267,7 @@ def render_reamortisation_ui(
                                     rp["recast_date"],
                                     int(rp["uf_id"]),
                                     str(rp.get("mode") or "maintain_term"),
+                                    balancing_position=str(rp.get("balancing_position") or "final_installment"),
                                     system_config=scfg if isinstance(scfg, dict) else {},
                                 )
                                 if recast_preview_key in st.session_state:

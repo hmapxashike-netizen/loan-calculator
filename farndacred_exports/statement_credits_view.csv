@@ -1,6 +1,6 @@
 line_type,entry_kind,loan_id,value_date,repayment_id,repayment_key,narration,credits,unapplied_from_receipt,alloc_prin_arrears,alloc_int_arrears,alloc_penalty_int,alloc_default_int,alloc_fees_charges,regular_interest_period,penalty_interest_period,default_interest_period
-period_accrual,,1,2025-01-01,,,Accruals for period ending 2025-01-01,,,,,,,,0,0,0
-period_accrual,,1,2025-01-29,,,Accruals for period ending 2025-01-29,,,,,,,,98.2456140344,0,0
+period_accrual,,1,2025-01-01,,,Accruals for period ending 2025-01-01,,,,,,,,3.5087719298,0,0
+period_accrual,,1,2025-01-29,,,Accruals for period ending 2025-01-29,,,,,,,,0,0,0
 period_accrual,,1,2025-02-28,,,Accruals for period ending 2025-02-28,,,,,,,,104.8082017607,0.4549561333,8.8654970756
 repayment_credit,neutral,1,2025-03-03,1,1,OP-1 From Repayment id 1 (Receipt 50.),50,0,0,38.4129093783,1.3648683999,10.2222222218,0,,,
 repayment_credit,neutral,1,2025-03-05,2,2,OP-2 From Repayment id 2 (Receipt 55.),55,0,0,52.8614056185,0.9099122666,1.2286821149,0,,,
@@ -14,6 +14,12 @@ period_accrual,,1,2025-03-29,,,Accruals for period ending 2025-03-29,,,,,,,,88.0
 repayment_credit,neutral,1,2025-03-31,9,9,OP-9 From Repayment id 9 (Receipt 40.47),40.47,0,0,40.47,0,0,0,,,
 repayment_credit,credit,1,2025-04-04,10,10,OP-10 From Repayment id 10 (Receipt 300.),200.6666645576,99.3333354424,153.1893398,46.8106580979,0.5106311327,0.156035527,0,,,
 liquidation_credit,liquidation,1,2025-04-06,10,10,LIQ-12 from OP-10,99.3333354424,-99.3333354424,0,0,0,0,0,,,
-period_accrual,,1,2025-04-06,,,Accruals for period ending 2025-04-06,,,,,,,,87.5522237514,9.213377093,8.46661265
+period_accrual,,1,2025-04-06,,,Accruals for period ending 2025-04-06,,,,,,,,311.4493200713,12.3980700261,21.0181560703
+liquidation_credit,liquidation,1,2025-04-26,7,7,LIQ-15 from OP-7,1.2848286303,-1.2848286303,0,0,0,0,0,,,
+liquidation_credit,liquidation,1,2025-04-26,13,13,LIQ-16 from OP-13,100,-100,0,0,0,0,0,,,
+liquidation_credit,liquidation,1,2025-04-26,14,14,LIQ-17 from OP-14,120,-120,0,0,0,0,0,,,
+period_accrual,,1,2025-04-26,,,Accruals for period ending 2025-04-26,,,,,,,,48.3376268257,0,0
+repayment_credit,credit,1,2025-04-26,13,13,OP-13 From Repayment id 13 (Receipt 100.),0,100,0,0,0,0,0,,,
+repayment_credit,credit,1,2025-04-26,14,14,OP-14 From Repayment id 14 (Receipt 120.),0,120,0,0,0,0,0,,,
 period_accrual,,2,2025-04-01,,,Accruals for period ending 2025-04-01,,,,,,,,3.5087719298,0,0
 period_accrual,,3,2025-04-03,,,Accruals for period ending 2025-04-03,,,,,,,,333.3333333333,0,0
