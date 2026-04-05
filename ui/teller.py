@@ -9,9 +9,43 @@ import pandas as pd
 import streamlit as st
 
 
-from style import render_main_header, render_sub_header, render_sub_sub_header
+from style import BRAND_GREEN, BRAND_TEXT_MUTED, inject_style_block, render_sub_header, render_sub_sub_header
 
 from ui.streamlit_feedback import run_with_spinner
+
+
+def _inject_teller_green_primary_submit_css_once() -> None:
+    """Brand-green primary form submits for Teller CTAs (scoped by accessible name)."""
+    if st.session_state.get("_farnda_teller_green_submit_css"):
+        return
+    st.session_state["_farnda_teller_green_submit_css"] = True
+    g = BRAND_GREEN
+    inject_style_block(
+        f"""
+[data-testid="stMain"] button[data-testid="stBaseButton-primaryFormSubmit"][aria-label*="Record repayment"],
+[data-testid="stMain"] button[data-testid="stBaseButton-primaryFormSubmit"][aria-label*="Post borrowing payment"],
+[data-testid="stMain"] button[data-testid="stBaseButton-primaryFormSubmit"][aria-label*="Post recovery receipt"],
+[data-testid="stMain"] button[kind="primaryFormSubmit"][aria-label*="Record repayment"],
+[data-testid="stMain"] button[kind="primaryFormSubmit"][aria-label*="Post borrowing payment"],
+[data-testid="stMain"] button[kind="primaryFormSubmit"][aria-label*="Post recovery receipt"] {{
+  background-color: {g} !important;
+  color: #ffffff !important;
+  border: none !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12) !important;
+}}
+[data-testid="stMain"] button[data-testid="stBaseButton-primaryFormSubmit"][aria-label*="Record repayment"]:hover,
+[data-testid="stMain"] button[data-testid="stBaseButton-primaryFormSubmit"][aria-label*="Post borrowing payment"]:hover,
+[data-testid="stMain"] button[data-testid="stBaseButton-primaryFormSubmit"][aria-label*="Post recovery receipt"]:hover,
+[data-testid="stMain"] button[kind="primaryFormSubmit"][aria-label*="Record repayment"]:hover,
+[data-testid="stMain"] button[kind="primaryFormSubmit"][aria-label*="Post borrowing payment"]:hover,
+[data-testid="stMain"] button[kind="primaryFormSubmit"][aria-label*="Post recovery receipt"]:hover {{
+  filter: brightness(0.93) !important;
+}}
+"""
+    )
+
 
 def render_teller_ui(
     *,
@@ -32,6 +66,8 @@ def render_teller_ui(
     if not loan_management_available:
         st.error(f"Loan management module is not available. ({loan_management_error})")
         return
+
+    _inject_teller_green_primary_submit_css_once()
 
     from accounting.service import AccountingService
     from services import teller_service
@@ -62,9 +98,16 @@ def render_teller_ui(
                     idx = next(i for i, (cid, _) in enumerate(options) if cid == st.session_state["teller_customer_id"])
                 except StopIteration:
                     pass
-            pick_col1, pick_col2 = st.columns(2)
+            pick_col1, pick_col2, pick_col3 = st.columns([1.15, 1.2, 0.85], gap="small")
             with pick_col1:
-                sel = st.selectbox("Select customer", labels, index=idx, key="teller_cust_select")
+                st.caption("Customer")
+                sel = st.selectbox(
+                    "Select customer",
+                    labels,
+                    index=idx,
+                    key="teller_cust_select",
+                    label_visibility="collapsed",
+                )
             cid = options[labels.index(sel)][0] if sel and labels else None
             st.session_state["teller_customer_id"] = cid
 
@@ -80,56 +123,107 @@ def render_teller_ui(
                     ]
                     loan_labels = [t[1] for t in loan_options]
                     with pick_col2:
-                        loan_sel = st.selectbox("Select loan", loan_labels, key="teller_loan_select")
+                        st.caption("Loan")
+                        loan_sel = st.selectbox(
+                            "Select loan",
+                            loan_labels,
+                            key="teller_loan_select",
+                            label_visibility="collapsed",
+                        )
                     loan_id = loan_options[loan_labels.index(loan_sel)][0] if loan_sel and loan_labels else None
 
                     if loan_id:
                         summary = teller_service.fetch_teller_amount_due_summary(loan_id)
                         amount_due = summary["amount_due_today"] if summary else None
-
+                        help_text = None
                         if amount_due is not None and summary is not None:
                             help_text = (
-                                f"Base arrears as at {summary.get('base_as_of_date')}: {float(summary.get('base_total_delinquency_arrears') or 0):,.2f}\n"
-                                f"Less today's allocations to arrears buckets: {float(summary.get('today_allocations_to_delinquency') or 0):,.2f}\n"
+                                f"Base arrears as at {summary.get('base_as_of_date')}: "
+                                f"{float(summary.get('base_total_delinquency_arrears') or 0):,.2f}\n"
+                                f"Less today's allocations to arrears buckets: "
+                                f"{float(summary.get('today_allocations_to_delinquency') or 0):,.2f}\n"
                                 f"Method: {summary.get('method')}"
                             )
-                            st.metric(
-                                label="Amount Due Today",
-                                value=f"{amount_due:,.2f}",
-                                help=help_text,
-                            )
+                        with pick_col3:
+                            st.caption("Amount due today")
+                            if amount_due is not None:
+                                st.markdown(
+                                    f'<p style="font-size:0.875rem;margin:0;color:{BRAND_TEXT_MUTED};">'
+                                    f"{amount_due:,.2f}</p>",
+                                    unsafe_allow_html=True,
+                                )
+                                if help_text:
+                                    with st.popover("Breakdown", help="How amount due today is derived"):
+                                        st.text(help_text)
+                            else:
+                                st.markdown(
+                                    f'<p style="font-size:0.875rem;margin:0;color:{BRAND_TEXT_MUTED};">—</p>',
+                                    unsafe_allow_html=True,
+                                )
 
                         now = datetime.now()
                         _sys = get_system_date()
                         st.caption(
                             "**Source cash / bank GL** — same control as **loan capture** step 1. "
-                            "This choice applies to **this receipt only** (not the loan’s disbursement cash)."
+                            "This choice applies to **this receipt only** (not the loan’s disbursement cash). "
+                            "**System date** for posting is taken from configured system date."
                         )
                         _t_cash_lab, _t_cash_ids = source_cash_gl_cached_labels_and_ids()
                         with st.form("teller_single_form", clear_on_submit=True):
-                            if _t_cash_ids:
-                                _t_sel = st.selectbox(
-                                    source_cash_gl_widget_label,
-                                    range(len(_t_cash_lab)),
-                                    format_func=lambda i: _t_cash_lab[i],
-                                    key="teller_source_cash_gl",
+                            row_a1, row_a2, row_a3 = st.columns(3, gap="small")
+                            with row_a1:
+                                st.caption("Source cash / bank GL (A100000 tree)")
+                                if _t_cash_ids:
+                                    _t_sel = st.selectbox(
+                                        source_cash_gl_widget_label,
+                                        range(len(_t_cash_lab)),
+                                        format_func=lambda i: _t_cash_lab[i],
+                                        key="teller_source_cash_gl",
+                                        label_visibility="collapsed",
+                                    )
+                                    _src_cash_gl = _t_cash_ids[_t_sel]
+                                else:
+                                    source_cash_gl_cache_empty_warning()
+                                    _src_cash_gl = None
+                            with row_a2:
+                                st.caption("Amount")
+                                amount = st.number_input(
+                                    "Amount",
+                                    min_value=0.00,
+                                    value=0.00,
+                                    step=100.0,
+                                    format="%.2f",
+                                    key="teller_amount",
+                                    label_visibility="collapsed",
                                 )
-                                _src_cash_gl = _t_cash_ids[_t_sel]
-                            else:
-                                source_cash_gl_cache_empty_warning()
-                                _src_cash_gl = None
-                            f_col1, f_col2 = st.columns(2)
-                            with f_col1:
-                                amount = st.number_input("Amount", min_value=0.00, value=0.00, step=100.0, format="%.2f", key="teller_amount")
-                                customer_ref = st.text_input("Customer reference (appears on loan statement)", placeholder="e.g. Receipt #123", key="teller_cust_ref")
-                            with f_col2:
-                                company_ref = st.text_input("Company reference (appears in general ledger)", placeholder="e.g. GL ref", key="teller_company_ref")
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                value_date = st.date_input("Value date", value=_sys, key="teller_value_date")
-                            with col2:
-                                system_date = st.date_input("System date", value=_sys, key="teller_system_date")
-                            submitted = st.form_submit_button("Record repayment")
+                            with row_a3:
+                                st.caption("Company reference (GL)")
+                                company_ref = st.text_input(
+                                    "Company reference (appears in general ledger)",
+                                    placeholder="e.g. GL ref",
+                                    key="teller_company_ref",
+                                    label_visibility="collapsed",
+                                )
+                            row_b1, row_b2, row_b3 = st.columns(3, gap="small")
+                            with row_b1:
+                                st.caption("Customer reference (statement)")
+                                customer_ref = st.text_input(
+                                    "Customer reference (appears on loan statement)",
+                                    placeholder="e.g. Receipt #123",
+                                    key="teller_cust_ref",
+                                    label_visibility="collapsed",
+                                )
+                            with row_b2:
+                                st.caption("Value date")
+                                value_date = st.date_input(
+                                    "Value date",
+                                    value=_sys,
+                                    key="teller_value_date",
+                                    label_visibility="collapsed",
+                                )
+                            with row_b3:
+                                st.empty()
+                            submitted = st.form_submit_button("Record repayment", type="primary")
                             if submitted and amount > 0:
                                 if not _src_cash_gl:
                                     st.error(
@@ -138,6 +232,8 @@ def render_teller_ui(
                                     )
                                 else:
                                     try:
+                                        _system_dt = datetime.combine(_sys, now.time())
+
                                         def _record_repayment():
                                             return teller_service.record_repayment_with_allocation(
                                                 loan_id=loan_id,
@@ -147,7 +243,7 @@ def render_teller_ui(
                                                 customer_reference=customer_ref.strip() or None,
                                                 company_reference=company_ref.strip() or None,
                                                 value_date=value_date,
-                                                system_date=datetime.combine(system_date, now.time()),
+                                                system_date=_system_dt,
                                             )
 
                                         rid = run_with_spinner("Recording repayment…", _record_repayment)
@@ -350,9 +446,18 @@ def render_teller_ui(
         _sys = get_system_date()
 
         with st.form("teller_borrowing_payment_form"):
-            bw_col1, bw_col2 = st.columns(2)
-            with bw_col1:
-                value_date = st.date_input("Payment value date", value=_sys, key="teller_borrowing_value_date")
+            st.caption("Posting uses the configured **system date** as the journal entry date.")
+            br1, br2, br3 = st.columns(3, gap="small")
+            with br1:
+                st.caption("Payment value date")
+                value_date = st.date_input(
+                    "Payment value date",
+                    value=_sys,
+                    key="teller_borrowing_value_date",
+                    label_visibility="collapsed",
+                )
+            with br2:
+                st.caption("Payment amount")
                 amount = st.number_input(
                     "Payment amount",
                     min_value=0.01,
@@ -360,21 +465,31 @@ def render_teller_ui(
                     step=100.00,
                     format="%.2f",
                     key="teller_borrowing_amount",
+                    label_visibility="collapsed",
                 )
+            with br3:
+                st.caption("Reference")
                 reference = st.text_input(
                     "Reference",
                     placeholder="e.g. Borrowing repayment ref",
                     key="teller_borrowing_ref",
+                    label_visibility="collapsed",
                 )
-            with bw_col2:
-                st.date_input("System date", value=_sys, key="teller_borrowing_system_date")
+            br4, br5, br6 = st.columns(3, gap="small")
+            with br4:
+                st.caption("Narration (description)")
                 description = st.text_input(
                     "Narration (Description)",
                     placeholder="e.g. Payment of borrowing to financier X",
                     key="teller_borrowing_desc",
+                    label_visibility="collapsed",
                 )
+            with br5:
+                st.empty()
+            with br6:
+                st.empty()
 
-            submitted = st.form_submit_button("Post borrowing payment")
+            submitted = st.form_submit_button("Post borrowing payment", type="primary")
             if submitted:
                 try:
 
@@ -446,11 +561,18 @@ def render_teller_ui(
                         _sys = get_system_date()
 
                         with st.form("teller_writeoff_recovery_form"):
-                            wrf_col1, wrf_col2 = st.columns(2)
-                            with wrf_col1:
+                            st.caption("Journal entry date follows the configured **system date**; only **value date** is entered below.")
+                            wr1, wr2, wr3 = st.columns(3, gap="small")
+                            with wr1:
+                                st.caption("Receipt value date")
                                 value_date = st.date_input(
-                                    "Receipt value date", value=_sys, key="teller_wr_value_date"
+                                    "Receipt value date",
+                                    value=_sys,
+                                    key="teller_wr_value_date",
+                                    label_visibility="collapsed",
                                 )
+                            with wr2:
+                                st.caption("Recovery amount")
                                 amount = st.number_input(
                                     "Recovery amount",
                                     min_value=0.01,
@@ -458,22 +580,30 @@ def render_teller_ui(
                                     step=10.00,
                                     format="%.2f",
                                     key="teller_wr_amount",
+                                    label_visibility="collapsed",
                                 )
+                            with wr3:
+                                st.caption("Customer reference (optional)")
                                 customer_ref = st.text_input(
                                     "Customer reference (optional)",
                                     placeholder="e.g. Recovery receipt #123",
                                     key="teller_wr_cust_ref",
+                                    label_visibility="collapsed",
                                 )
-                            with wrf_col2:
-                                st.date_input(
-                                    "System date", value=_sys, key="teller_wr_system_date"
-                                )
+                            wr4, wr5, wr6 = st.columns(3, gap="small")
+                            with wr4:
+                                st.caption("Company reference (optional)")
                                 company_ref = st.text_input(
                                     "Company reference (optional)",
                                     placeholder="e.g. GL ref",
                                     key="teller_wr_company_ref",
+                                    label_visibility="collapsed",
                                 )
-                            submitted = st.form_submit_button("Post recovery receipt")
+                            with wr5:
+                                st.empty()
+                            with wr6:
+                                st.empty()
+                            submitted = st.form_submit_button("Post recovery receipt", type="primary")
 
                             if submitted and amount > 0:
                                 try:

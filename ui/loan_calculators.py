@@ -9,7 +9,7 @@ import streamlit as st
 
 from style import render_main_header, render_sub_header, render_sub_sub_header
 
-from ui.components import inject_tertiary_hyperlink_css_once, render_centered_html_table
+from ui.components import inject_tertiary_hyperlink_css_once, render_schedule_readonly_dataframe
 
 from loans import (
     add_months,
@@ -30,10 +30,9 @@ _LABEL_DISBURSEMENT_DATE = "Disbursement Date"
 _LABEL_REPAYMENTS_ON = "Repayments On"
 
 
-def _render_calc_schedule_table(format_schedule_df, df_schedule: pd.DataFrame) -> None:
+def _render_calc_schedule_table(df_schedule: pd.DataFrame, *, money_df_column_config) -> None:
     render_sub_sub_header("Repayment schedule")
-    styled = format_schedule_df(df_schedule)
-    render_centered_html_table(styled, [str(c) for c in styled.columns])
+    render_schedule_readonly_dataframe(df_schedule, money_df_column_config=money_df_column_config)
 
 
 def _schedule_export_bytes_pair(df: pd.DataFrame) -> tuple[bytes, bytes]:
@@ -50,7 +49,7 @@ def render_consumer_loan_ui(
     get_system_date,
     get_global_loan_settings,
     compute_consumer_schedule,
-    format_schedule_df,
+    money_df_column_config,
 ) -> None:
         schemes = get_consumer_schemes()
         scheme_names = [s["name"] for s in schemes]
@@ -194,7 +193,7 @@ def render_consumer_loan_ui(
         )
         details["currency"] = currency
 
-        _render_calc_schedule_table(format_schedule_df, df_schedule)
+        _render_calc_schedule_table(df_schedule, money_df_column_config=money_df_column_config)
 
         loan_record = {**details, "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
         for k in ("disbursement_date", "start_date", "end_date", "first_repayment_date"):
@@ -239,7 +238,7 @@ def render_term_loan_ui(
     get_system_config,
     get_system_date,
     compute_term_schedule,
-    format_schedule_df,
+    money_df_column_config,
 ) -> None:
         glob = get_global_loan_settings()
         cfg = get_system_config()
@@ -375,7 +374,7 @@ def render_term_loan_ui(
         )
         details["currency"] = currency
 
-        _render_calc_schedule_table(format_schedule_df, df_schedule)
+        _render_calc_schedule_table(df_schedule, money_df_column_config=money_df_column_config)
 
         loan_record = {**details, "loan_type": "term_loan", "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
         for k in ("disbursement_date", "start_date", "end_date", "first_repayment_date"):
@@ -420,7 +419,7 @@ def render_bullet_loan_ui(
     get_system_config,
     get_system_date,
     compute_bullet_schedule,
-    format_schedule_df,
+    money_df_column_config,
 ) -> None:
         glob = get_global_loan_settings()
         cfg = get_system_config()
@@ -530,7 +529,7 @@ def render_bullet_loan_ui(
         details["currency"] = currency
         net_proceeds_to_display = float(details.get("disbursed_amount", loan_required) or 0.0)
 
-        _render_calc_schedule_table(format_schedule_df, df_schedule)
+        _render_calc_schedule_table(df_schedule, money_df_column_config=money_df_column_config)
 
         loan_record = {**details, "loan_type": "bullet_loan", "timestamp": datetime.now().isoformat(), "amortization_schedule": df_schedule.to_dict(orient="records")}
         for k in ("disbursement_date", "end_date", "first_repayment_date"):
@@ -574,7 +573,6 @@ def render_customised_repayments_ui(
     get_global_loan_settings,
     get_system_config,
     get_system_date,
-    format_schedule_df,
     money_df_column_config,
     schedule_editor_disabled_amounts,
     first_repayment_from_customised_table,
@@ -712,13 +710,20 @@ def render_customised_repayments_ui(
             column_config=money_df_column_config(
                 df,
                 overrides={
-                    "Period": st.column_config.NumberColumn(disabled=True),
-                    "Date": st.column_config.TextColumn(
-                        disabled=not date_editable_calc,
-                        help="Format: DD-Mon-YYYY" if date_editable_calc else None,
-                    ),
+                    "Period": {
+                        **st.column_config.NumberColumn(disabled=True),
+                        "alignment": "left",
+                    },
+                    "Date": {
+                        **st.column_config.TextColumn(
+                            disabled=not date_editable_calc,
+                            help="Format: DD-Mon-YYYY" if date_editable_calc else None,
+                        ),
+                        "alignment": "left",
+                    },
                 },
                 column_disabled=schedule_editor_disabled_amounts,
+                money_column_alignment="right",
             ),
             width="stretch",
             hide_index=True,

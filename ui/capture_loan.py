@@ -10,7 +10,7 @@ import streamlit as st
 from style import render_main_header, render_sub_header, render_sub_sub_header
 
 from display_formatting import format_display_amount
-from ui.components import inject_tertiary_hyperlink_css_once, render_centered_html_table
+from ui.components import inject_tertiary_hyperlink_css_once, render_schedule_readonly_dataframe
 from ui.streamlit_feedback import run_with_spinner
 
 from loans import (
@@ -286,7 +286,6 @@ def render_capture_loan_ui(
     get_consumer_schemes,
     get_product_rate_basis,
     get_system_date,
-    format_schedule_df,
     money_df_column_config,
     schedule_editor_disabled_amounts,
     compute_consumer_schedule,
@@ -1130,8 +1129,9 @@ def render_capture_loan_ui(
                     details["currency"] = currency
                     details["penalty_rate_pct"] = penalty_pct
                     details["penalty_quotation"] = penalty_quotation_product
-                    _df_cl = format_schedule_df(df_schedule)
-                    render_centered_html_table(_df_cl, [str(c) for c in _df_cl.columns])
+                    render_schedule_readonly_dataframe(
+                        df_schedule, money_df_column_config=money_df_column_config
+                    )
                     if st.button("Use This Schedule", type="tertiary", key="cap_cl_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -1295,8 +1295,9 @@ def render_capture_loan_ui(
                         st.stop()
                     details["penalty_rate_pct"] = float(penalty_pct_monthly)
                     details["penalty_quotation"] = penalty_quotation_product
-                    _df_term = format_schedule_df(df_schedule)
-                    render_centered_html_table(_df_term, [str(c) for c in _df_term.columns])
+                    render_schedule_readonly_dataframe(
+                        df_schedule, money_df_column_config=money_df_column_config
+                    )
                     if st.button("Use This Schedule", type="tertiary", key="cap_term_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -1449,8 +1450,9 @@ def render_capture_loan_ui(
                         details["currency"] = currency
                         details["penalty_rate_pct"] = float(penalty_pct_monthly)
                         details["penalty_quotation"] = penalty_quotation_product
-                        _df_bul = format_schedule_df(df_schedule)
-                        render_centered_html_table(_df_bul, [str(c) for c in _df_bul.columns])
+                        render_schedule_readonly_dataframe(
+                            df_schedule, money_df_column_config=money_df_column_config
+                        )
                         if st.button("Use This Schedule", type="tertiary", key="cap_bullet_use"):
                             st.session_state["capture_loan_details"] = details
                             st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -1469,8 +1471,9 @@ def render_capture_loan_ui(
                     details["currency"] = currency
                     details["penalty_rate_pct"] = float(penalty_pct_monthly)
                     details["penalty_quotation"] = penalty_quotation_product
-                    _df_bul2 = format_schedule_df(df_schedule)
-                    render_centered_html_table(_df_bul2, [str(c) for c in _df_bul2.columns])
+                    render_schedule_readonly_dataframe(
+                        df_schedule, money_df_column_config=money_df_column_config
+                    )
                     if st.button("Use This Schedule", type="tertiary", key="cap_bullet_use"):
                         st.session_state["capture_loan_details"] = details
                         st.session_state["capture_loan_schedule_df"] = df_schedule
@@ -1653,12 +1656,17 @@ def render_capture_loan_ui(
                     column_config=money_df_column_config(
                         df_cap,
                         overrides={
-                            "Period": st.column_config.NumberColumn(disabled=True),
-                            "Date": st.column_config.TextColumn(
-                                disabled=not date_editable,
-                            ),
+                            "Period": {
+                                **st.column_config.NumberColumn(disabled=True),
+                                "alignment": "left",
+                            },
+                            "Date": {
+                                **st.column_config.TextColumn(disabled=not date_editable),
+                                "alignment": "left",
+                            },
                         },
                         column_disabled=schedule_editor_disabled_amounts,
+                        money_column_alignment="right",
                     ),
                     width="stretch",
                     hide_index=True,
@@ -1826,8 +1834,7 @@ def render_capture_loan_ui(
             except Exception as e:
                 st.warning(f"Journal preview unavailable: {e}")
             render_sub_sub_header("Repayment Schedule")
-            _df_rv = format_schedule_df(_rv_df)
-            render_centered_html_table(_df_rv, [str(c) for c in _df_rv.columns])
+            render_schedule_readonly_dataframe(_rv_df, money_df_column_config=money_df_column_config)
 
         render_sub_sub_header("Documents")
         _render_capture_loan_documents_staging(

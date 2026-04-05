@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from html import escape
+
 import pandas as pd
 import streamlit as st
 
 
 from style import render_main_header, render_sub_header, render_sub_sub_header
 
-from ui.components import render_centered_html_table
+from ui.components import inject_tertiary_hyperlink_css_once, render_centered_html_table
 
 from constants import (
     AGENT_CORPORATE_DOC_TYPES,
@@ -71,6 +73,12 @@ def _vm_created_at_cell(v: object) -> str:
             pass
     s = str(v).strip()
     return s[:19] if len(s) >= 19 else s
+
+
+def _vm_escape_button_label(s: str) -> str:
+    """Streamlit button labels: avoid leading/trailing spaces-only / odd chars."""
+    t = (s or "").strip()
+    return t if t else "—"
 
 
 def _format_commission_display(v: object) -> str:
@@ -226,7 +234,7 @@ def render_add_individual_tab(
             else:
                 st.info("Document Module Is Unavailable.")
 
-        submitted = st.form_submit_button("Create Individual")
+        submitted = st.form_submit_button("Create individual", type="primary")
         if submitted and name.strip():
             addresses = None
             if use_addr and line1.strip():
@@ -542,7 +550,7 @@ def render_add_corporate_tab(
             else:
                 st.info("Document Module Is Unavailable.")
 
-        submitted = st.form_submit_button("Create Corporate")
+        submitted = st.form_submit_button("Create corporate", type="primary")
         if submitted and legal_name.strip():
             addresses = [{"address_type": addr_type or None, "line1": line1 or None, "line2": line2 or None, "city": city or None, "region": region or None, "postal_code": postal_code or None, "country": country or None}] if use_addr and line1.strip() else None
             contact_person = None
@@ -667,7 +675,8 @@ def render_view_manage_customers_tab(
 ) -> None:
 
     render_sub_sub_header("View & Manage Customers & Agents")
-    vm_c1, vm_c2, vm_c3, vm_c4, vm_c5 = st.columns(5)
+
+    vm_c1, vm_c2 = st.columns(2)
     with vm_c1:
         status_filter = st.selectbox(
             "Status",
@@ -682,24 +691,6 @@ def render_view_manage_customers_tab(
             format_func=_fmt_customer_type_filter,
             key="cust_type_filter",
         )
-    with vm_c3:
-        show_status_tools = st.checkbox(
-            "Change Status",
-            value=False,
-            key="cust_show_status_tools_top",
-        )
-    with vm_c4:
-        show_contact_docs_tools = st.checkbox(
-            "Contact Person Documents",
-            value=False,
-            key="cust_show_contact_docs_tools_top",
-        )
-    with vm_c5:
-        show_edit_customer = st.checkbox(
-            "Edit Details",
-            value=False,
-            key="cust_show_edit_tools_top",
-        )
     status = None if status_filter == "all" else status_filter
     customer_type = None if type_filter == "all" else type_filter
 
@@ -712,66 +703,118 @@ def render_view_manage_customers_tab(
             agents = list_agents(status=status)
             for a in agents:
                 customers_list.append({
-                    "id": f"A{a['id']}", # Prefix with A so it doesn't collide
+                    "id": f"A{a['id']}",  # Prefix with A so it doesn't collide
                     "type": "agent",
                     "status": a.get("status", "active"),
                     "created_at": a.get("created_at"),
                     "name": a.get("name", ""),
                     "is_agent": True,
-                    "original_id": a["id"]
+                    "original_id": a["id"],
                 })
     except Exception as e:
         st.error(f"Could Not Load Entities: {e}")
         customers_list = []
-    if not customers_list:
-        st.info("No Entities Found.")
 
-    def _get_display(item):
+    def _get_display(item: dict) -> str:
         is_agt = item.get("is_agent")
         if pd.notna(is_agt) and bool(is_agt):
             return f"(Agent) {item.get('name', '')}"
         try:
-            # In case ID is not integer
             return get_display_name(int(item["id"])) or f"Customer #{item['id']}"
         except Exception:
-            return str(item.get('name', item['id']))
+            return str(item.get("name", item["id"]))
 
-    loaded_id = None
-    is_loaded_agent = False
-    if (show_status_tools or show_contact_docs_tools or show_edit_customer) and customers_list:
-        cust_options = [(c["id"], _get_display(c), c.get("is_agent", False)) for c in customers_list]
-        labels = [f"{name} (ID {cid})" for cid, name, _ in cust_options]
-        sel_idx = 0
-        if st.session_state.get("cust_loaded_id") is not None:
-            try:
-                prev_id = st.session_state["cust_loaded_id"]
-                sel_idx = next(i for i, (cid, _n, _a) in enumerate(cust_options) if cid == prev_id)
-            except Exception:
-                sel_idx = 0
-        selected_label = st.selectbox(
-            "Select Entity For Selected Action(s)",
-            labels,
-            index=sel_idx,
-            key="cust_action_select",
-        )
-
-        if selected_label:
-            idx = labels.index(selected_label)
-            loaded_id = cust_options[idx][0]
-            is_loaded_agent = cust_options[idx][2]
-        st.session_state["cust_loaded_id"] = loaded_id
-    elif not (show_status_tools or show_contact_docs_tools or show_edit_customer):
+    valid_ids = {c["id"] for c in customers_list}
+    if st.session_state.get("cust_loaded_id") is not None and st.session_state["cust_loaded_id"] not in valid_ids:
         st.session_state.pop("cust_loaded_id", None)
+        st.session_state.pop("cust_vm_active_tool", None)
+
+    if not customers_list:
+        st.info("No Entities Found.")
+    else:
+        h0, h1, h2, h3, h4 = st.columns([0.72, 1.05, 1.05, 2.35, 1.73])
+        with h0:
+            st.caption("ID")
+        with h1:
+            st.caption("Type")
+        with h2:
+            st.caption("Status")
+        with h3:
+            st.caption("Name")
+        with h4:
+            st.caption("Created at")
+        for c in customers_list:
+            r0, r1, r2, r3, r4 = st.columns([0.72, 1.05, 1.05, 2.35, 1.73])
+            with r0:
+                st.markdown(
+                    f'<div style="text-align:left;font-size:0.9rem;">'
+                    f"{escape(str(_vm_entity_id_cell(c.get('id'))))}</div>",
+                    unsafe_allow_html=True,
+                )
+            with r1:
+                st.markdown(
+                    f'<div style="text-align:center;font-size:0.9rem;">'
+                    f"{escape(str(c.get('type') or ''))}</div>",
+                    unsafe_allow_html=True,
+                )
+            with r2:
+                st.markdown(
+                    f'<div style="text-align:center;font-size:0.9rem;">'
+                    f"{escape(str(c.get('status') or ''))}</div>",
+                    unsafe_allow_html=True,
+                )
+            with r3:
+                nm = _vm_escape_button_label(_get_display(c))
+                pick_id = c["id"]
+                if st.button(nm, key=f"vm_open_{pick_id}", type="tertiary"):
+                    st.session_state["cust_loaded_id"] = pick_id
+                    st.session_state["cust_vm_active_tool"] = ""
+                    st.rerun()
+            with r4:
+                st.markdown(
+                    f'<div style="text-align:center;font-size:0.9rem;">'
+                    f"{escape(_vm_created_at_cell(c.get('created_at')))}</div>",
+                    unsafe_allow_html=True,
+                )
+
+    loaded_id = st.session_state.get("cust_loaded_id")
+    is_loaded_agent = False
+    if loaded_id is not None and customers_list:
+        for c in customers_list:
+            if c["id"] == loaded_id:
+                is_loaded_agent = bool(c.get("is_agent"))
+                break
 
     if loaded_id is not None:
+        active_tool = str(st.session_state.get("cust_vm_active_tool") or "").strip()
+        show_status_tools = active_tool == "status"
+        show_contact_docs_tools = active_tool == "contact_docs"
+        show_edit_customer = active_tool == "edit"
+
         if is_loaded_agent:
             # Agent edit flow
             real_agent_id = int(str(loaded_id)[1:])
             arec = get_agent(real_agent_id)
             if not arec:
                 st.warning("Agent Not Found.")
+                st.session_state.pop("cust_loaded_id", None)
+                st.session_state.pop("cust_vm_active_tool", None)
             else:
                 render_sub_sub_header(f"Agent #{real_agent_id}")
+                _alk0, _alk1, _alk2 = st.columns([1.15, 1.05, 0.72])
+                with _alk0:
+                    if st.button("Change status", type="tertiary", key=f"vm_ag_link_status_{real_agent_id}"):
+                        st.session_state["cust_vm_active_tool"] = "" if active_tool == "status" else "status"
+                        st.rerun()
+                with _alk1:
+                    if st.button("Edit details", type="tertiary", key=f"vm_ag_link_edit_{real_agent_id}"):
+                        st.session_state["cust_vm_active_tool"] = "" if active_tool == "edit" else "edit"
+                        st.rerun()
+                with _alk2:
+                    if st.button("Close", type="tertiary", key=f"vm_ag_link_close_{real_agent_id}"):
+                        st.session_state.pop("cust_loaded_id", None)
+                        st.session_state.pop("cust_vm_active_tool", None)
+                        st.rerun()
                 st.markdown(f"**Name:** {arec.get('name')}")
                 st.caption(f"Status: {arec.get('status')}")
 
@@ -878,7 +921,7 @@ def render_view_manage_customers_tab(
                         format_func=_fmt_active_inactive,
                         key="agt_set_status",
                     )
-                    if st.button("Update Status", key="agt_update_status"):
+                    if st.button("Update status", key="agt_update_status", type="primary"):
                         update_agent(real_agent_id, name=arec.get("name"), status=new_active)
                         st.success(f"Status Set To **{new_active}**.")
                         st.session_state["cust_loaded_id"] = loaded_id
@@ -889,8 +932,27 @@ def render_view_manage_customers_tab(
             if not rec:
                 st.warning("Customer Not Found.")
                 st.session_state.pop("cust_loaded_id", None)
+                st.session_state.pop("cust_vm_active_tool", None)
             else:
                 render_sub_sub_header(f"Customer #{loaded_id}")
+                _clk0, _clk1, _clk2, _clk3 = st.columns([1.15, 1.45, 1.05, 0.72])
+                with _clk0:
+                    if st.button("Change status", type="tertiary", key=f"vm_cu_link_status_{loaded_id}"):
+                        st.session_state["cust_vm_active_tool"] = "" if active_tool == "status" else "status"
+                        st.rerun()
+                with _clk1:
+                    if st.button("Contact person documents", type="tertiary", key=f"vm_cu_link_cpdocs_{loaded_id}"):
+                        st.session_state["cust_vm_active_tool"] = "" if active_tool == "contact_docs" else "contact_docs"
+                        st.rerun()
+                with _clk2:
+                    if st.button("Edit details", type="tertiary", key=f"vm_cu_link_edit_{loaded_id}"):
+                        st.session_state["cust_vm_active_tool"] = "" if active_tool == "edit" else "edit"
+                        st.rerun()
+                with _clk3:
+                    if st.button("Close", type="tertiary", key=f"vm_cu_link_close_{loaded_id}"):
+                        st.session_state.pop("cust_loaded_id", None)
+                        st.session_state.pop("cust_vm_active_tool", None)
+                        st.rerun()
                 # Human-readable profile view (avoid dumping raw JSON/object repr in UI).
                 ctype = rec.get("type") or "—"
                 cstatus = rec.get("status") or "—"
@@ -1101,134 +1163,128 @@ def render_view_manage_customers_tab(
                         format_func=_fmt_active_inactive,
                         key="cust_set_status",
                     )
-                    if st.button("Update Status", key="cust_update_status"):
+                    if st.button("Update status", key="cust_update_status", type="primary"):
                         set_active(loaded_id, new_active == "active")
                         st.success(f"Status Set To **{new_active}**.")
                         st.session_state["cust_loaded_id"] = loaded_id
                         st.rerun()
 
                 # Direct document upload to corporate sub-entities (separate buckets/IDs).
-                if show_contact_docs_tools and rec.get("type") == "corporate" and documents_available:
-                    doc_cats = list_document_categories(active_only=True) or []
-                    # Contact person + directors share Individual KYC types plus Other.
-                    name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
-
-                    if not name_to_cat:
-                        st.info("No Matching Document Categories Configured For Contact/Director KYC.")
+                if show_contact_docs_tools:
+                    if rec.get("type") != "corporate":
+                        st.info("Contact person and director documents apply to **corporate** customers only.")
+                    elif not documents_available:
+                        st.info("Document module is unavailable.")
                     else:
-                        cp_list = rec.get("contact_persons") or []
-                        dir_list = rec.get("directors") or []
+                        doc_cats = list_document_categories(active_only=True) or []
+                        # Contact person + directors share Individual KYC types plus Other.
+                        name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
 
-                        if cp_list:
-                            render_sub_sub_header("Contact Person Documents")
-                            cp_options = [(cp["id"], cp.get("full_name") or f"Contact #{cp['id']}") for cp in cp_list]
-                            cdp_a, cdp_b, cdp_c, cdp_d = st.columns(4)
-                            with cdp_a:
-                                cp_id = st.selectbox(
-                                    "Select Contact Person",
-                                    options=[x[0] for x in cp_options],
-                                    format_func=lambda i: next((n for (cid, n) in cp_options if cid == i), str(i)),
-                                    key=f"cp_doc_pick_{loaded_id}",
-                                )
-                            with cdp_b:
-                                cp_doc_type = st.selectbox(
-                                    "Document Type",
-                                    sorted(name_to_cat.keys()),
-                                    key=f"cp_doc_type_{loaded_id}",
-                                )
-                            with cdp_c:
-                                cp_notes = st.text_input(
-                                    "Notes (Optional)",
-                                    key=f"cp_doc_notes_{loaded_id}",
-                                )
-                            with cdp_d:
-                                cp_file = st.file_uploader(
-                                    "Choose File",
-                                    type=["pdf", "png", "jpg", "jpeg"],
-                                    key=f"cp_doc_file_{loaded_id}",
-                                )
-                            cp_other_desc = ""
-                            if cp_doc_type == "Other":
-                                cp_other_desc = st.text_input(
-                                    "Other Document Name",
-                                    key=f"cp_doc_other_{loaded_id}",
-                                )
-                            if st.button("Upload Contact Document", key=f"cp_doc_upload_{loaded_id}") and cp_file is not None:
-                                cat = name_to_cat[cp_doc_type]
-                                stored_notes = cp_other_desc.strip() if cp_doc_type == "Other" else cp_notes.strip()
-                                upload_document(
-                                    "contact_person",
-                                    int(cp_id),
-                                    cat["id"],
-                                    cp_file.name,
-                                    cp_file.type,
-                                    cp_file.size,
-                                    cp_file.getvalue(),
-                                    uploaded_by="System User",
-                                    notes=stored_notes or "",
-                                )
-                                st.success("Contact Person Document Uploaded.")
+                        if not name_to_cat:
+                            st.info("No Matching Document Categories Configured For Contact/Director KYC.")
+                        else:
+                            cp_list = rec.get("contact_persons") or []
+                            dir_list = rec.get("directors") or []
 
-                        if dir_list:
-                            render_sub_sub_header("Director Documents")
-                            dir_options = [(d["id"], d.get("full_name") or f"Director #{d['id']}") for d in dir_list]
-                            ddp_a, ddp_b, ddp_c, ddp_d = st.columns(4)
-                            with ddp_a:
-                                dir_id = st.selectbox(
-                                    "Select Director",
-                                    options=[x[0] for x in dir_options],
-                                    format_func=lambda i: next((n for (did, n) in dir_options if did == i), str(i)),
-                                    key=f"dir_doc_pick_{loaded_id}",
-                                )
-                            with ddp_b:
-                                dir_doc_type = st.selectbox(
-                                    "Document Type",
-                                    sorted(name_to_cat.keys()),
-                                    key=f"dir_doc_type_{loaded_id}",
-                                )
-                            with ddp_c:
-                                dir_notes = st.text_input(
-                                    "Notes (Optional)",
-                                    key=f"dir_doc_notes_{loaded_id}",
-                                )
-                            with ddp_d:
-                                dir_file = st.file_uploader(
-                                    "Choose File",
-                                    type=["pdf", "png", "jpg", "jpeg"],
-                                    key=f"dir_doc_file_{loaded_id}",
-                                )
-                            dir_other_desc = ""
-                            if dir_doc_type == "Other":
-                                dir_other_desc = st.text_input(
-                                    "Other Document Name",
-                                    key=f"dir_doc_other_{loaded_id}",
-                                )
-                            if st.button("Upload Director Document", key=f"dir_doc_upload_{loaded_id}") and dir_file is not None:
-                                cat = name_to_cat[dir_doc_type]
-                                stored_notes = dir_other_desc.strip() if dir_doc_type == "Other" else dir_notes.strip()
-                                upload_document(
-                                    "director",
-                                    int(dir_id),
-                                    cat["id"],
-                                    dir_file.name,
-                                    dir_file.type,
-                                    dir_file.size,
-                                    dir_file.getvalue(),
-                                    uploaded_by="System User",
-                                    notes=stored_notes or "",
-                                )
-                                st.success("Director Document Uploaded.")
-    if customers_list:
-        df = pd.DataFrame(customers_list)
-        df["display_name"] = df.apply(_get_display, axis=1)
-        vm_cols = ["id", "type", "status", "display_name", "created_at"]
-        df_vm = df[vm_cols].copy()
-        df_vm["id"] = df_vm["id"].map(_vm_entity_id_cell)
-        df_vm["created_at"] = df_vm["created_at"].map(_vm_created_at_cell)
-        render_centered_html_table(
-            df_vm,
-            ["ID", "Type", "Status", "Display Name", "Created At"],
-        )
+                            if cp_list:
+                                render_sub_sub_header("Contact Person Documents")
+                                cp_options = [(cp["id"], cp.get("full_name") or f"Contact #{cp['id']}") for cp in cp_list]
+                                cdp_a, cdp_b, cdp_c, cdp_d = st.columns(4)
+                                with cdp_a:
+                                    cp_id = st.selectbox(
+                                        "Select Contact Person",
+                                        options=[x[0] for x in cp_options],
+                                        format_func=lambda i: next((n for (cid, n) in cp_options if cid == i), str(i)),
+                                        key=f"cp_doc_pick_{loaded_id}",
+                                    )
+                                with cdp_b:
+                                    cp_doc_type = st.selectbox(
+                                        "Document Type",
+                                        sorted(name_to_cat.keys()),
+                                        key=f"cp_doc_type_{loaded_id}",
+                                    )
+                                with cdp_c:
+                                    cp_notes = st.text_input(
+                                        "Notes (Optional)",
+                                        key=f"cp_doc_notes_{loaded_id}",
+                                    )
+                                with cdp_d:
+                                    cp_file = st.file_uploader(
+                                        "Choose File",
+                                        type=["pdf", "png", "jpg", "jpeg"],
+                                        key=f"cp_doc_file_{loaded_id}",
+                                    )
+                                cp_other_desc = ""
+                                if cp_doc_type == "Other":
+                                    cp_other_desc = st.text_input(
+                                        "Other Document Name",
+                                        key=f"cp_doc_other_{loaded_id}",
+                                    )
+                                if st.button("Upload Contact Document", key=f"cp_doc_upload_{loaded_id}") and cp_file is not None:
+                                    cat = name_to_cat[cp_doc_type]
+                                    stored_notes = cp_other_desc.strip() if cp_doc_type == "Other" else cp_notes.strip()
+                                    upload_document(
+                                        "contact_person",
+                                        int(cp_id),
+                                        cat["id"],
+                                        cp_file.name,
+                                        cp_file.type,
+                                        cp_file.size,
+                                        cp_file.getvalue(),
+                                        uploaded_by="System User",
+                                        notes=stored_notes or "",
+                                    )
+                                    st.success("Contact Person Document Uploaded.")
+
+                            if dir_list:
+                                render_sub_sub_header("Director Documents")
+                                dir_options = [(d["id"], d.get("full_name") or f"Director #{d['id']}") for d in dir_list]
+                                ddp_a, ddp_b, ddp_c, ddp_d = st.columns(4)
+                                with ddp_a:
+                                    dir_id = st.selectbox(
+                                        "Select Director",
+                                        options=[x[0] for x in dir_options],
+                                        format_func=lambda i: next((n for (did, n) in dir_options if did == i), str(i)),
+                                        key=f"dir_doc_pick_{loaded_id}",
+                                    )
+                                with ddp_b:
+                                    dir_doc_type = st.selectbox(
+                                        "Document Type",
+                                        sorted(name_to_cat.keys()),
+                                        key=f"dir_doc_type_{loaded_id}",
+                                    )
+                                with ddp_c:
+                                    dir_notes = st.text_input(
+                                        "Notes (Optional)",
+                                        key=f"dir_doc_notes_{loaded_id}",
+                                    )
+                                with ddp_d:
+                                    dir_file = st.file_uploader(
+                                        "Choose File",
+                                        type=["pdf", "png", "jpg", "jpeg"],
+                                        key=f"dir_doc_file_{loaded_id}",
+                                    )
+                                dir_other_desc = ""
+                                if dir_doc_type == "Other":
+                                    dir_other_desc = st.text_input(
+                                        "Other Document Name",
+                                        key=f"dir_doc_other_{loaded_id}",
+                                    )
+                                if st.button("Upload Director Document", key=f"dir_doc_upload_{loaded_id}") and dir_file is not None:
+                                    cat = name_to_cat[dir_doc_type]
+                                    stored_notes = dir_other_desc.strip() if dir_doc_type == "Other" else dir_notes.strip()
+                                    upload_document(
+                                        "director",
+                                        int(dir_id),
+                                        cat["id"],
+                                        dir_file.name,
+                                        dir_file.type,
+                                        dir_file.size,
+                                        dir_file.getvalue(),
+                                        uploaded_by="System User",
+                                        notes=stored_notes or "",
+                                    )
+                                    st.success("Director Document Uploaded.")
 
 
 def render_agents_tab(
@@ -1287,19 +1343,23 @@ def render_agents_tab(
             )
         else:
             st.info("No Agents Found.")
-        ag_col1, ag_col2 = st.columns(2)
-        with ag_col1:
-            show_add_agent = st.checkbox(
-                "Add Agent",
-                value=False,
-                key="agent_show_add_toggle",
-            )
-        with ag_col2:
-            show_edit_agent = st.checkbox(
-                "Edit Agent",
-                value=False,
-                key="agent_show_edit_toggle",
-            )
+        ap_l1, ap_l2, ap_l3 = st.columns([1.05, 1.05, 3.9])
+        with ap_l1:
+            if st.button("Add agent", type="tertiary", key="agent_link_add_panel"):
+                cur = st.session_state.get("agent_ui_panel") or ""
+                st.session_state["agent_ui_panel"] = "" if cur == "add" else "add"
+                if st.session_state["agent_ui_panel"] == "add":
+                    st.session_state.pop("agent_edit_loaded_id", None)
+                st.rerun()
+        with ap_l2:
+            if st.button("Edit agent", type="tertiary", key="agent_link_edit_panel"):
+                cur = st.session_state.get("agent_ui_panel") or ""
+                st.session_state["agent_ui_panel"] = "" if cur == "edit" else "edit"
+                st.rerun()
+        with ap_l3:
+            st.empty()
+        show_add_agent = st.session_state.get("agent_ui_panel") == "add"
+        show_edit_agent = st.session_state.get("agent_ui_panel") == "edit"
 
         if show_add_agent:
             render_sub_sub_header("Add Agent")
@@ -1370,7 +1430,7 @@ def render_agents_tab(
                     else:
                         st.info("Document Module Is Unavailable.")
 
-                submitted_create_agent = st.form_submit_button("Create Agent")
+                submitted_create_agent = st.form_submit_button("Create agent", type="primary")
                 if submitted_create_agent and aname.strip():
                     try:
                         atype_internal = "individual" if atype_label.lower().startswith("individual") else "corporate"
@@ -1425,7 +1485,7 @@ def render_agents_tab(
         if show_edit_agent:
             render_sub_sub_header("Edit Agent")
             edit_agent_id = st.number_input("Agent ID To Edit", min_value=1, value=1, step=1, key="edit_agent_id")
-            if st.button("Load Agent", key="agent_load_btn"):
+            if st.button("Load agent", key="agent_load_btn", type="tertiary"):
                 st.session_state["agent_edit_loaded_id"] = edit_agent_id
             loaded_agent_id = st.session_state.get("agent_edit_loaded_id")
             if loaded_agent_id is not None:
@@ -1460,7 +1520,7 @@ def render_agents_tab(
                             index=0 if (arec.get("agent_type") or "individual") == "individual" else 1,
                             key="edit_agent_type",
                         )
-                        submitted_update_agent = st.form_submit_button("Update Agent")
+                        submitted_update_agent = st.form_submit_button("Update agent", type="primary")
                         st.caption("If You Change The Name, You MUST Provide A Supporting Document Reference.")
                         supp_doc = st.text_input(
                             "Supporting Document Link/Reference (Required If Name Changed)",
@@ -1543,6 +1603,8 @@ def render_customers_ui(
             f"({customers_error})"
         )
         return
+
+    inject_tertiary_hyperlink_css_once()
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(
         ["Add Individual", "Add Corporate", "View & Manage", "Agents", "Approvals"]

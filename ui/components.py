@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from html import escape
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 from pandas.io.formats.style import Styler
@@ -87,6 +87,45 @@ def _format_schedule_money_columns_for_html(df: pd.DataFrame) -> pd.DataFrame:
         if c in out.columns:
             out[c] = out[c].map(lambda v, _s=s: format_display_amount(v, settings=_s))
     return out
+
+
+def schedule_readonly_dataframe_column_config(
+    df: pd.DataFrame,
+    *,
+    money_df_column_config: Callable[..., Any],
+) -> dict[str, Any]:
+    """
+    Column config for read-only schedule ``st.dataframe`` / alignment parity with customised ``st.data_editor``:
+    Period and Date left; amount columns right (via ``money_column_alignment``).
+    """
+    return money_df_column_config(
+        df,
+        overrides={
+            "Period": {**st.column_config.NumberColumn(), "alignment": "left"},
+            "Date": {**st.column_config.TextColumn(), "alignment": "left"},
+        },
+        column_disabled={},
+        money_column_alignment="right",
+    )
+
+
+def render_schedule_readonly_dataframe(
+    df: pd.DataFrame,
+    *,
+    money_df_column_config: Callable[..., Any] | None,
+) -> None:
+    """Numeric repayment schedule in the Streamlit grid (same family as customised editor; not editable)."""
+    if money_df_column_config is not None:
+        st.dataframe(
+            df,
+            column_config=schedule_readonly_dataframe_column_config(
+                df, money_df_column_config=money_df_column_config
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+    else:
+        st.dataframe(df, hide_index=True, width="stretch")
 
 
 def render_centered_html_table(df: pd.DataFrame | Any, headers: list[str]) -> None:

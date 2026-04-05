@@ -184,11 +184,15 @@ def build_dataframe_money_column_config(
     overrides: dict[str, Any] | None = None,
     column_disabled: dict[str, bool] | None = None,
     step: float | None = None,
+    money_column_alignment: str | None = None,
 ) -> dict[str, Any]:
     """
     Build column_config for st.dataframe / st.data_editor: money-like columns get NumberColumn
     with configured Streamlit preset. New numeric columns match automatically via name heuristics
     (or auto_format_all_float_columns). Explicit overrides win and are not replaced.
+
+    money_column_alignment: optional *left* / *center* / *right* merged into each generated
+    NumberColumn dict (Streamlit aligns header and cell content).
     """
     s = settings or get_display_format_settings(system_config=system_config)
     decimals = max(0, min(14, int(s.get("amount_decimals", 2))))
@@ -205,5 +209,8 @@ def build_dataframe_money_column_config(
         kw: dict[str, Any] = {"format": fmt, "step": step}
         if dis.get(col):
             kw["disabled"] = True
-        out[col] = st_column_config.NumberColumn(**kw)
+        cfg = st_column_config.NumberColumn(**kw)
+        if money_column_alignment and isinstance(cfg, dict):
+            cfg = {**cfg, "alignment": money_column_alignment}
+        out[col] = cfg
     return out

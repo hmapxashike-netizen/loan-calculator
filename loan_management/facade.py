@@ -88,4 +88,9 @@ from .unapplied_queries import (
     get_unapplied_ledger_entries_for_statement,
 )
 from .unapplied_recast import apply_unapplied_funds_recast
+from .recast_orchestration import (
+    execute_recast_from_unapplied,
+    list_unapplied_credit_rows_for_recast,
+    preview_recast_from_unapplied,
+)
 from .waterfall_core import BUCKET_TO_ALLOC, _get_waterfall_config, compute_waterfall_allocation

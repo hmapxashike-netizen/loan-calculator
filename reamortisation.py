@@ -305,6 +305,108 @@ def _build_recast_schedule(
     return df, new_installment
 
 
+def _qsched(v: float) -> float:
+    return float(as_10dp(v))
+
+
+def _build_recast_schedule_maintain_instalment(
+    loan_id: int,
+    recast_date: date,
+    new_principal_balance: float,
+    fixed_instalment: float,
+) -> tuple[pd.DataFrame, float]:
+    """
+    Keep contractual instalment amount; shorten effective principal paydown per period (balloon on last due).
+    Uses actual/360 between schedule dates, same anniversary logic as maintain_term.
+    """
+    loan = get_loan(loan_id)
+    if not loan:
+        raise ValueError(f"Loan {loan_id} not found.")
+    last_due = _last_due_date_from_loan(loan)
+    if not last_due:
+        raise ValueError(f"Cannot determine maturity for loan {loan_id}.")
+    if recast_date > last_due:
+        raise ValueError("Recast date cannot be after the last due date.")
+    if new_principal_balance <= 0:
+        raise ValueError("New principal balance must be positive.")
+    if fixed_instalment <= 0:
+        raise ValueError("Fixed instalment must be positive for maintain_instalment.")
+
+    start_dt = datetime.combine(recast_date, datetime.min.time())
+    end_dt = datetime.combine(last_due, datetime.min.time())
+    remaining_months = max(1, (end_dt.year - start_dt.year) * 12 + (end_dt.month - start_dt.month))
+    annual_rate = float(loan.get("annual_rate") or 0)
+    if annual_rate > 1:
+        annual_rate = annual_rate / 100.0
+    first_repayment_date = add_months(start_dt, 1)
+    dates_list = repayment_dates(start_dt, first_repayment_date, remaining_months, use_anniversary=True)
+
+    schedule: list[dict[str, Any]] = []
+    schedule.append(
+        {
+            "Period": 0,
+            "Date": start_dt.strftime("%d-%b-%Y"),
+            "Monthly Installment": 0.0,
+            "Principal": 0.0,
+            "Interest": 0.0,
+            "Principal Balance": _qsched(new_principal_balance),
+            "Total Outstanding": _qsched(new_principal_balance),
+        }
+    )
+    balance = float(new_principal_balance)
+    principal_balance = float(new_principal_balance)
+    prev_date = start_dt
+    pmt = float(fixed_instalment)
+    num_periods = len(dates_list)
+
+    for i in range(num_periods):
+        end_date = dates_list[i]
+        days = (end_date - prev_date).days
+        interest = balance * annual_rate * (days / 360.0)
+        is_last = i == num_periods - 1
+        if is_last:
+            principal = max(0.0, balance)
+            payment = interest + principal
+        else:
+            principal = max(0.0, min(balance, pmt - interest))
+            payment = interest + principal
+        balance = max(0.0, float(as_10dp(balance - principal)))
+        principal_balance = max(0.0, float(as_10dp(principal_balance - principal)))
+        pb, to = _qsched(principal_balance), _qsched(balance)
+        schedule.append(
+            {
+                "Period": i + 1,
+                "Date": end_date.strftime("%d-%b-%Y"),
+                "Monthly Installment": _qsched(payment),
+                "Principal": _qsched(principal),
+                "Interest": _qsched(interest),
+                "Principal Balance": pb,
+                "Total Outstanding": to,
+            }
+        )
+        prev_date = end_date
+
+    return pd.DataFrame(schedule), pmt
+
+
+def build_recast_schedule_for_mode(
+    loan_id: int,
+    recast_date: date,
+    new_principal_balance: float,
+    mode: str,
+) -> tuple[pd.DataFrame, float]:
+    """Dispatch maintain_term vs maintain_instalment recast schedule builders."""
+    if mode == "maintain_instalment":
+        loan = get_loan(loan_id)
+        if not loan:
+            raise ValueError(f"Loan {loan_id} not found.")
+        inst = float(loan.get("installment") or 0)
+        if inst <= 0:
+            raise ValueError("Loan has no positive installment; use maintain_term instead.")
+        return _build_recast_schedule_maintain_instalment(loan_id, recast_date, new_principal_balance, inst)
+    return _build_recast_schedule(loan_id, recast_date, new_principal_balance)
+
+
 def preview_loan_recast(
     loan_id: int,
     recast_date: date,

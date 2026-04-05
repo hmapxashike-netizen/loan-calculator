@@ -98,8 +98,8 @@ def apply_unapplied_funds_to_arrears_eod(
     with _connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COALESCE(SUM(amount), 0) FROM unapplied_funds WHERE loan_id = %s", (loan_id,))
-            overall_unapplied = float(cur.fetchone()[0] or 0)
-    unapplied = round(max(0.0, min(unapplied_as_of, overall_unapplied)), 2)
+            overall_unapplied = float(as_10dp(cur.fetchone()[0] or 0))
+    unapplied = float(as_10dp(max(0.0, min(unapplied_as_of, overall_unapplied))))
 
     if unapplied <= 1e-6:
         return 0.0
@@ -109,13 +109,15 @@ def apply_unapplied_funds_to_arrears_eod(
         return 0.0
 
     # Arrears buckets only (waterfall order, excluding interest_accrued and principal_not_due for standard)
-    interest_arrears = float(state.get("interest_arrears_balance") or 0)
-    penalty_balance = float(state.get("penalty_interest_balance") or 0)
-    default_balance = float(state.get("default_interest_balance") or 0)
-    principal_arrears = float(state.get("principal_arrears") or 0)
-    fees_balance = float(state.get("fees_charges_balance") or 0)
+    interest_arrears = float(as_10dp(state.get("interest_arrears_balance") or 0))
+    penalty_balance = float(as_10dp(state.get("penalty_interest_balance") or 0))
+    default_balance = float(as_10dp(state.get("default_interest_balance") or 0))
+    principal_arrears = float(as_10dp(state.get("principal_arrears") or 0))
+    fees_balance = float(as_10dp(state.get("fees_charges_balance") or 0))
 
-    arrears_total = interest_arrears + penalty_balance + default_balance + principal_arrears + fees_balance
+    arrears_total = float(
+        as_10dp(interest_arrears + penalty_balance + default_balance + principal_arrears + fees_balance)
+    )
     if arrears_total <= 1e-6:
         return 0.0
 
@@ -123,7 +125,7 @@ def apply_unapplied_funds_to_arrears_eod(
     # Standard profile skips interest_accrued_balance and principal_not_due
     skip = STANDARD_SKIP_BUCKETS if profile_key == "standard" else ()
 
-    target_to_apply = round(min(unapplied, arrears_total), 2)
+    target_to_apply = float(as_10dp(min(unapplied, arrears_total)))
     if target_to_apply <= 1e-6:
         return 0.0
 
@@ -168,14 +170,13 @@ def apply_unapplied_funds_to_arrears_eod(
         for row in credit_rows:
             if remaining_to_consume <= 1e-6:
                 break
-            uf_amount = float(row["amount"] or 0)
-            consume = min(uf_amount, remaining_to_consume)
-            consume = float(as_10dp(consume))
+            uf_amount = float(as_10dp(row["amount"] or 0))
+            consume = float(as_10dp(min(uf_amount, remaining_to_consume)))
             if consume <= 0:
                 continue
             src_rep = row.get("repayment_id")
             consumptions.append((int(src_rep) if src_rep is not None else None, consume))
-            remaining_to_consume -= consume
+            remaining_to_consume = float(as_10dp(remaining_to_consume - consume))
         amount_applied = float(as_10dp(sum(c for _s, c in consumptions)))
         if amount_applied <= 1e-6:
             # Nothing actually consumable from unapplied ledger -> no mutation.
@@ -186,9 +187,9 @@ def apply_unapplied_funds_to_arrears_eod(
         #       EOD unapplied-to-arrears events are tracked in unapplied_funds (debits)
         #       and loan_daily_state only; no system repayment or allocation row is created.
         bucket_balances: dict[str, float] = {
-            "principal_not_due": float(state.get("principal_not_due") or 0),
+            "principal_not_due": float(as_10dp(state.get("principal_not_due") or 0)),
             "principal_arrears": principal_arrears,
-            "interest_accrued_balance": float(state.get("interest_accrued_balance") or 0),
+            "interest_accrued_balance": float(as_10dp(state.get("interest_accrued_balance") or 0)),
             "interest_arrears_balance": interest_arrears,
             "default_interest_balance": default_balance,
             "penalty_interest_balance": penalty_balance,
@@ -205,18 +206,18 @@ def apply_unapplied_funds_to_arrears_eod(
         alloc_fees_charges = 0.0
 
         for src_repayment_id, consumed in consumptions:
-            remaining = consumed
+            remaining = float(as_10dp(consumed))
             src_alloc: dict[str, float] = {k: 0.0 for k in BUCKET_TO_ALLOC}
 
             for bucket_name in bucket_order:
                 if bucket_name not in BUCKET_TO_ALLOC or bucket_name in skip:
                     continue
                 alloc_key, state_key = BUCKET_TO_ALLOC[bucket_name]
-                bucket_balance = max(0.0, bucket_balances.get(state_key, 0))
-                to_alloc = min(remaining, bucket_balance)
+                bucket_balance = float(as_10dp(max(0.0, bucket_balances.get(state_key, 0))))
+                to_alloc = float(as_10dp(min(remaining, bucket_balance)))
                 src_alloc[alloc_key] = to_alloc
-                remaining -= to_alloc
-                bucket_balances[state_key] = bucket_balance - to_alloc
+                remaining = float(as_10dp(remaining - to_alloc))
+                bucket_balances[state_key] = float(as_10dp(bucket_balance - to_alloc))
                 if remaining <= 1e-6:
                     break
 
@@ -599,7 +600,7 @@ def apply_unapplied_funds_recast(
             if cur.fetchone():
                 raise ValueError(f"Unapplied funds entry {unapplied_funds_id} was already applied via recast.")
             loan_id = int(row["loan_id"])
-            amount = float(row["amount"])
+            amount = float(as_10dp(row["amount"]))
             value_date = row["value_date"]
             if hasattr(value_date, "date"):
                 value_date = value_date.date()
@@ -653,19 +654,29 @@ def apply_unapplied_funds_recast(
                     acc_daily = (0.0, 0.0, 0.0)
                     acc_period = (0.0, 0.0, 0.0)
 
-            remaining = amount
-            move_accrued_to_arrears = min(balances["interest_accrued_balance"], remaining)
-            move_accrued_to_arrears = round(move_accrued_to_arrears, 2)
-            remaining -= move_accrued_to_arrears
+            remaining = float(as_10dp(amount))
+            move_accrued_to_arrears = float(
+                as_10dp(min(balances["interest_accrued_balance"], remaining))
+            )
+            remaining = float(as_10dp(remaining - move_accrued_to_arrears))
             move_principal_not_due_to_arrears = 0.0
             if remaining > 1e-6:
-                move_principal_not_due_to_arrears = min(balances["principal_not_due"], remaining)
-                move_principal_not_due_to_arrears = round(move_principal_not_due_to_arrears, 2)
+                move_principal_not_due_to_arrears = float(
+                    as_10dp(min(balances["principal_not_due"], remaining))
+                )
 
-            new_interest_accrued = round(balances["interest_accrued_balance"] - move_accrued_to_arrears, 2)
-            new_interest_arrears = round(balances["interest_arrears_balance"] - move_accrued_to_arrears, 2)
-            new_principal_not_due = round(balances["principal_not_due"] - move_principal_not_due_to_arrears, 2)
-            new_principal_arrears = round(balances["principal_arrears"] - move_principal_not_due_to_arrears, 2)
+            new_interest_accrued = float(
+                as_10dp(balances["interest_accrued_balance"] - move_accrued_to_arrears)
+            )
+            new_interest_arrears = float(
+                as_10dp(balances["interest_arrears_balance"] - move_accrued_to_arrears)
+            )
+            new_principal_not_due = float(
+                as_10dp(balances["principal_not_due"] - move_principal_not_due_to_arrears)
+            )
+            new_principal_arrears = float(
+                as_10dp(balances["principal_arrears"] - move_principal_not_due_to_arrears)
+            )
             net_alloc = get_net_allocation_for_loan_date(loan_id, eff_date, conn=conn)
             unalloc = get_unallocated_for_loan_date(loan_id, eff_date, conn=conn)
             liquidation_amount = move_accrued_to_arrears + move_principal_not_due_to_arrears

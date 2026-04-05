@@ -341,7 +341,7 @@ def render_approve_loans_ui(
                             sp = details.get("split") or {}
                             nsp = int(details.get("split_leg_count") or 2)
                             st.write(
-                                f"The Split: **{nsp}** loan(s) (schedules A–{chr(ord('A') + min(nsp, 4) - 1)}; "
+                                f"Modified Loans: **{nsp}** loan(s) (schedules A–{chr(ord('A') + min(nsp, 4) - 1)}; "
                                 "**A** = amount to restructure)"
                             )
                             st.write(

@@ -14,6 +14,7 @@ from .db import RealDictCursor, _connection
 from .product_catalog import load_system_config_from_db
 from .repayment_types import ReverseRepaymentResult, _reversal_posting_calendar_date
 from .repayment_waterfall import allocate_repayment_waterfall
+from .recast_orchestration import try_undo_recast_after_parent_receipt_reversed
 from .repost_gl_range import repost_gl_for_loan_date_range
 from .unapplied_refs import (
     _repayment_journal_reference,
@@ -689,6 +690,7 @@ def reverse_repayment(
                 "UPDATE loan_repayments SET status = 'reversed' WHERE id = %s",
                 (original_repayment_id,),
             )
+            try_undo_recast_after_parent_receipt_reversed(cur, loan_id, original_repayment_id)
             saved_new_id = new_id
             saved_loan_id = loan_id
             saved_value_date = eff_date

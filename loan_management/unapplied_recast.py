@@ -47,7 +47,7 @@ def apply_unapplied_funds_recast(
             if cur.fetchone():
                 raise ValueError(f"Unapplied funds entry {unapplied_funds_id} was already applied via recast.")
             loan_id = int(row["loan_id"])
-            amount = float(row["amount"])
+            amount = float(as_10dp(row["amount"]))
             value_date = row["value_date"]
             if hasattr(value_date, "date"):
                 value_date = value_date.date()
@@ -103,19 +103,29 @@ def apply_unapplied_funds_recast(
                     acc_daily = (0.0, 0.0, 0.0)
                     acc_period = (0.0, 0.0, 0.0)
 
-            remaining = amount
-            move_accrued_to_arrears = min(balances["interest_accrued_balance"], remaining)
-            move_accrued_to_arrears = round(move_accrued_to_arrears, 2)
-            remaining -= move_accrued_to_arrears
+            remaining = float(as_10dp(amount))
+            move_accrued_to_arrears = float(
+                as_10dp(min(balances["interest_accrued_balance"], remaining))
+            )
+            remaining = float(as_10dp(remaining - move_accrued_to_arrears))
             move_principal_not_due_to_arrears = 0.0
             if remaining > 1e-6:
-                move_principal_not_due_to_arrears = min(balances["principal_not_due"], remaining)
-                move_principal_not_due_to_arrears = round(move_principal_not_due_to_arrears, 2)
+                move_principal_not_due_to_arrears = float(
+                    as_10dp(min(balances["principal_not_due"], remaining))
+                )
 
-            new_interest_accrued = round(balances["interest_accrued_balance"] - move_accrued_to_arrears, 2)
-            new_interest_arrears = round(balances["interest_arrears_balance"] - move_accrued_to_arrears, 2)
-            new_principal_not_due = round(balances["principal_not_due"] - move_principal_not_due_to_arrears, 2)
-            new_principal_arrears = round(balances["principal_arrears"] - move_principal_not_due_to_arrears, 2)
+            new_interest_accrued = float(
+                as_10dp(balances["interest_accrued_balance"] - move_accrued_to_arrears)
+            )
+            new_interest_arrears = float(
+                as_10dp(balances["interest_arrears_balance"] - move_accrued_to_arrears)
+            )
+            new_principal_not_due = float(
+                as_10dp(balances["principal_not_due"] - move_principal_not_due_to_arrears)
+            )
+            new_principal_arrears = float(
+                as_10dp(balances["principal_arrears"] - move_principal_not_due_to_arrears)
+            )
             net_alloc = get_net_allocation_for_loan_date(loan_id, eff_date, conn=conn)
             unalloc = get_unallocated_for_loan_date(loan_id, eff_date, conn=conn)
             liquidation_amount = move_accrued_to_arrears + move_principal_not_due_to_arrears

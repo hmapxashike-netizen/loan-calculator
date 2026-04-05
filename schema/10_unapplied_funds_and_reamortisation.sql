@@ -51,7 +51,13 @@ CREATE TABLE IF NOT EXISTS loan_recasts (
     new_installment     NUMERIC(18, 2) NOT NULL,
     trigger_repayment_id INTEGER REFERENCES loan_repayments(id) ON DELETE SET NULL,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    notes               TEXT
+    notes               TEXT,
+    recast_mode              VARCHAR(32),
+    previous_principal       NUMERIC(18, 2),
+    previous_installment     NUMERIC(18, 2),
+    previous_end_date        DATE,
+    unapplied_credit_id      INTEGER REFERENCES unapplied_funds(id) ON DELETE SET NULL,
+    liquidation_repayment_id INTEGER REFERENCES loan_repayments(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_loan_recasts_loan_id ON loan_recasts(loan_id);

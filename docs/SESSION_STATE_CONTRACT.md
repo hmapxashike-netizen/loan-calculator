@@ -118,8 +118,10 @@ Do not rename without checking nested widgets.
 ### Session state (non-widget)
 
 - **`ind_docs_staged`**, **`corp_docs_staged`**, **`corp_contact_docs_staged`**, **`corp_director_docs_staged`**, **`agent_docs_staged`** — staged document rows before create/submit.
-- **`cust_loaded_id`** — selected entity id for View & Manage action panel; removed when no action checkbox is enabled.
-- **`agent_edit_loaded_id`** — agent id after “Load Agent” on the Agents tab.
+- **`cust_loaded_id`** — selected customer/agent in View & Manage (from the **Name** link); cleared on **Close** or when the row is not in the filtered list.
+- **`cust_vm_active_tool`** — `""` | `status` | `contact_docs` | `edit`; which action link is active for the loaded View & Manage entity.
+- **`agent_ui_panel`** — `""` | `add` | `edit`; which Agents tab link panel is open.
+- **`agent_edit_loaded_id`** — agent id after “Load agent” on the Agents tab.
 - **`_cust_appr_panel_css`** — one-shot flag so Approvals injects panel CSS once.
 - **`_farnda_cust_tbl_css`** — one-shot flag so View & Manage / Agents HTML entity tables inject shared table CSS once.
 
@@ -127,8 +129,8 @@ Do not rename without checking nested widgets.
 
 - **Add Individual:** `ind_*` (e.g. `ind_full_name`, `ind_sector`, `ind_doc_type`, `ind_doc_file`, …).
 - **Add Corporate:** `corp_*` (company), `cp_*` / `dir_*` / `corp_sh_*` (contact person, director, shareholder fields and doc staging).
-- **View & Manage:** `cust_status_filter`, `cust_type_filter`, `cust_show_status_tools_top`, `cust_show_contact_docs_tools_top`, `cust_show_edit_tools_top`, `cust_action_select`, `cust_set_status`, `cust_update_status`; embedded agent editor **`eam_*`**, **`agt_*`**; customer editor **`edit_ind_*`**, **`edit_corp_*`**, **`edit_sector`**, **`edit_subsector`**, **`edit_supp_doc`**; corporate sub-entity uploads use keys with a **dynamic suffix** `_{loaded_id}` (e.g. `cp_doc_pick_{loaded_id}`, `dir_doc_upload_{loaded_id}`).
-- **Agents tab:** `agent_status_filter`, `agent_show_add_toggle`, `agent_show_edit_toggle`, `agent_*` on create form, `edit_agent_*` on edit flow, `agent_load_btn`.
+- **View & Manage:** `cust_status_filter`, `cust_type_filter`, `vm_open_{entity_id}` (Name link), `vm_ag_link_*_{id}`, `vm_cu_link_*_{id}`, `cust_set_status`, `cust_update_status`; embedded agent editor **`eam_*`**, **`agt_*`**; customer editor **`edit_ind_*`**, **`edit_corp_*`**, **`edit_sector`**, **`edit_subsector`**, **`edit_supp_doc`**; corporate sub-entity uploads use keys with a **dynamic suffix** `_{loaded_id}` (e.g. `cp_doc_pick_{loaded_id}`, `dir_doc_upload_{loaded_id}`).
+- **Agents tab:** `agent_status_filter`, `agent_link_add_panel`, `agent_link_edit_panel`, `agent_*` on create form, `edit_agent_*` on edit flow, `agent_load_btn`.
 - **Approvals:** `cust_appr_draft_id`, `cust_appr_action`, `cust_appr_note`, `cust_appr_submit`; read-only JSON previews **`cust_appr_old_{selected_id}`**, **`cust_appr_new_{selected_id}`**.
 
 ## Teller UI (`teller_*`)
@@ -147,8 +149,9 @@ Do not rename without checking nested widgets.
 - **`teller_loan_select`**: loan selectbox  
 - **`teller_source_cash_gl`**: source cash / bank GL (cached A100000 list)  
 - **`teller_amount`**, **`teller_cust_ref`**, **`teller_company_ref`**: form fields  
-- **`teller_value_date`**, **`teller_system_date`**: form date inputs  
+- **`teller_value_date`**: value date (system date for posting is taken from configured system date, not a widget)  
 - Form id: `teller_single_form` (Streamlit form container; do not rename without checking widget nesting)
+- **`_farnda_teller_green_submit_css`**: one-shot flag for Teller brand-green primary submit styling
 
 ### Batch payments tab
 
@@ -165,15 +168,13 @@ Do not rename without checking nested widgets.
 
 ### Payment of borrowings tab
 
-- **`teller_borrowing_value_date`**, **`teller_borrowing_amount`**, **`teller_borrowing_ref`**  
-- **`teller_borrowing_system_date`**, **`teller_borrowing_desc`**  
+- **`teller_borrowing_value_date`**, **`teller_borrowing_amount`**, **`teller_borrowing_ref`**, **`teller_borrowing_desc`**  
 - Form id: `teller_borrowing_payment_form`
 
 ### Write-off recovery tab
 
 - **`teller_wr_cust_select`**, **`teller_wr_loan`**: customer / loan pickers  
-- **`teller_wr_value_date`**, **`teller_wr_amount`**, **`teller_wr_cust_ref`**  
-- **`teller_wr_system_date`**, **`teller_wr_company_ref`**  
+- **`teller_wr_value_date`**, **`teller_wr_amount`**, **`teller_wr_cust_ref`**, **`teller_wr_company_ref`**  
 - Form id: `teller_writeoff_recovery_form`
 
 ## Journals UI (`journals_*`, `mj_pick_*`, `bal_adj_*`)

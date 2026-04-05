@@ -598,7 +598,7 @@ def consumer_loan_ui():
         get_system_date=_get_system_date,
         get_global_loan_settings=_get_global_loan_settings,
         compute_consumer_schedule=compute_consumer_schedule,
-        format_schedule_df=_format_schedule_df,
+        money_df_column_config=_money_df_column_config,
     )
 
 def term_loan_ui():
@@ -609,7 +609,7 @@ def term_loan_ui():
         get_system_config=_get_system_config,
         get_system_date=_get_system_date,
         compute_term_schedule=compute_term_schedule,
-        format_schedule_df=_format_schedule_df,
+        money_df_column_config=_money_df_column_config,
     )
 
 def bullet_loan_ui():
@@ -620,7 +620,7 @@ def bullet_loan_ui():
         get_system_config=_get_system_config,
         get_system_date=_get_system_date,
         compute_bullet_schedule=compute_bullet_schedule,
-        format_schedule_df=_format_schedule_df,
+        money_df_column_config=_money_df_column_config,
     )
 
 def customised_repayments_ui():
@@ -630,7 +630,6 @@ def customised_repayments_ui():
         get_global_loan_settings=_get_global_loan_settings,
         get_system_config=_get_system_config,
         get_system_date=_get_system_date,
-        format_schedule_df=_format_schedule_df,
         money_df_column_config=_money_df_column_config,
         schedule_editor_disabled_amounts=_SCHEDULE_EDITOR_DISABLED_AMOUNTS,
         first_repayment_from_customised_table=_first_repayment_from_customised_table,
@@ -843,7 +842,6 @@ def capture_loan_ui():
         get_consumer_schemes=_get_consumer_schemes,
         get_product_rate_basis=_get_product_rate_basis,
         get_system_date=_get_system_date,
-        format_schedule_df=_format_schedule_df,
         money_df_column_config=_money_df_column_config,
         schedule_editor_disabled_amounts=_SCHEDULE_EDITOR_DISABLED_AMOUNTS,
         compute_consumer_schedule=compute_consumer_schedule,
@@ -967,6 +965,20 @@ def teller_ui():
     )
 
 
+def _user_can_reamort_direct_principal_tab() -> bool:
+    """Direct principal recast (no unapplied): admin-only extra tab."""
+    try:
+        from middleware import get_current_user
+
+        u = get_current_user()
+        if not u:
+            return False
+        role = str(u.get("role") or "").strip().upper()
+        return role in ("ADMIN", "SUPERADMIN")
+    except Exception:
+        return False
+
+
 def _reamod_created_by() -> str:
     try:
         from middleware import get_current_user
@@ -996,11 +1008,15 @@ def reamortisation_ui():
         loan_management_available=_loan_management_available,
         loan_management_error=_loan_management_error or "",
         customers_available=_customers_available,
+        customers_error=_customers_error or "",
         list_customers=globals().get("list_customers") or (lambda **k: []),
         get_display_name=globals().get("get_display_name") or (lambda _id: str(_id)),
         get_system_date=_get_system_date,
         format_schedule_df=_format_schedule_df,
         schedule_export_downloads=_schedule_export_downloads,
+        money_df_column_config=_money_df_column_config,
+        schedule_editor_disabled_amounts=_SCHEDULE_EDITOR_DISABLED_AMOUNTS,
+        first_repayment_from_customised_table=_first_repayment_from_customised_table,
         apply_unapplied_funds_recast=globals().get("apply_unapplied_funds_recast"),
         list_products=list_products if _loan_management_available else (lambda active_only=True: []),
         get_product_config_from_db=get_product_config_from_db,
@@ -1028,6 +1044,7 @@ def reamortisation_ui():
         list_provision_security_subtypes=list_provision_security_subtypes,
         source_cash_gl_cached_labels_and_ids=_cash_pairs,
         created_by=_reamod_created_by(),
+        direct_principal_tab=_user_can_reamort_direct_principal_tab(),
     )
 
 
