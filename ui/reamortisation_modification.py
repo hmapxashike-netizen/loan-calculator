@@ -20,7 +20,6 @@ from loans import (
 )
 from services.modification_capture_bridge import (
     EOD_SUMMARY_BUCKET_ROWS,
-    as_of_balance_date,
     bucket_snapshot_for_json,
     loan_type_db,
     loan_type_display,
@@ -456,7 +455,7 @@ def render_loan_modification_tab(
     schedule_editor_disabled_amounts: dict[str, bool] | None = None,
     first_repayment_from_customised_table: Callable[[pd.DataFrame], Any] | None = None,
 ) -> None:
-    from loan_management.daily_state import get_loan_daily_state_balances
+    from loan_management.daily_state import get_loan_daily_state_balances_for_recast_preview
 
     render_sub_sub_header("Select Customer and Loan to Modify")
 
@@ -541,17 +540,26 @@ def render_loan_modification_tab(
         st.error("Restructure date cannot be after the last due date.")
         gate_ok = False
 
-    as_of = as_of_balance_date(restructure_date)
-    bal = get_loan_daily_state_balances(loan_id, as_of) if gate_ok else None
+    bal = None
+    as_of = restructure_date
+    if gate_ok:
+        bal, as_of = get_loan_daily_state_balances_for_recast_preview(loan_id, restructure_date)
 
     if gate_ok:
         if bal is None:
             st.warning(
-                f"No **loan_daily_state** row on or before **{as_of.isoformat()}**. "
-                "Run EOD for that date (or pick a later restructure date) to see the breakdown."
+                f"No **loan_daily_state** row on or before **{restructure_date.isoformat()}** "
+                f"(or the prior day). Run EOD through the restructure date first."
             )
         else:
-            render_sub_sub_header(f"Balance Outstanding as of {as_of.strftime('%d/%m/%Y')}")
+            _cap = (
+                " (same day as restructure — first persisted EOD row)"
+                if as_of == restructure_date
+                else ""
+            )
+            render_sub_sub_header(
+                f"Balance Outstanding as of {as_of.strftime('%d/%m/%Y')}{_cap}"
+            )
             row_eod: dict[str, float] = {}
             for lab, key in EOD_SUMMARY_BUCKET_ROWS:
                 row_eod[lab] = float(as_10dp(bal.get(key) or 0))

@@ -7,19 +7,25 @@ Statements module: generate statements on demand (no persistence).
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from typing import Any
 
 from decimal_utils import as_10dp
 
 from loan_management import (
+    apply_schedule_version_bumps,
+    collect_due_dates_in_range_all_schedule_versions,
     get_loan,
     get_loan_daily_state_range,
     get_repayments_with_allocations,
     get_loan_daily_state_balances,
     get_repayment_opening_delinquency_total,
     get_unapplied_ledger_entries_for_statement,
+    get_max_schedule_due_date_on_or_before,
+    get_original_facility_for_statements,
+    get_schedule_line_on_version_for_date,
     get_schedule_lines,
+    list_schedule_bumping_events,
 )
 
 
@@ -80,7 +86,11 @@ CUSTOMER_FACING_STATEMENT_HEADINGS = [
 ]
 
 
-def _get_drawdown_breakdown(loan: dict[str, Any]) -> list[tuple[str, float]]:
+def _get_drawdown_breakdown(
+    loan: dict[str, Any],
+    *,
+    facility_principal: float | None = None,
+) -> list[tuple[str, float]]:
     """
     Return drawdown breakdown as [(narration, amount), ...] for statement display.
     Parts always sum to principal (facility amount) so the statement reconciles.
@@ -90,31 +100,37 @@ def _get_drawdown_breakdown(loan: dict[str, Any]) -> list[tuple[str, float]]:
     amounts from rate * principal as a fallback.
 
     Identity: Disbursed Amount + Administration Fees + Drawdown Fees + Arrangement Fees = Principal
+
+    ``facility_principal``: original facility at booking. When omitted, uses
+    ``loan['principal']`` (after recast this is the **new** balance — use the explicit
+    argument from :func:`get_original_facility_for_statements` for correct drawdown).
     """
-    principal = float(loan.get("principal") or 0)
+    principal_dec = as_10dp(
+        Decimal(str(facility_principal if facility_principal is not None else (loan.get("principal") or 0)))
+    )
 
     # Prefer stored absolute amounts; derive from rate * principal if absent
-    def _fee_amount(amount_key: str, rate_key: str) -> float:
-        stored = float(loan.get(amount_key) or 0)
+    def _fee_amount(amount_key: str, rate_key: str) -> Decimal:
+        stored = as_10dp(Decimal(str(loan.get(amount_key) or 0)))
         if stored > 0:
             return stored
-        rate = float(loan.get(rate_key) or 0)
-        return round(principal * rate, 2) if rate > 0 else 0.0
+        rate = Decimal(str(loan.get(rate_key) or 0))
+        return as_10dp(principal_dec * rate) if rate > 0 else Decimal("0")
 
     admin_fee_amt = _fee_amount("admin_fee_amount", "admin_fee")
     drawdown_fee_amt = _fee_amount("drawdown_fee_amount", "drawdown_fee")
     arrangement_fee_amt = _fee_amount("arrangement_fee_amount", "arrangement_fee")
 
-    total_fees = round(admin_fee_amt + drawdown_fee_amt + arrangement_fee_amt, 2)
-    net_proceeds = round(principal - total_fees, 2)
+    total_fees = as_10dp(admin_fee_amt + drawdown_fee_amt + arrangement_fee_amt)
+    net_proceeds = as_10dp(principal_dec - total_fees)
 
     parts: list[tuple[str, float]] = [("Disbursed Amount", net_proceeds)]
     if admin_fee_amt > 0:
-        parts.append(("Administration Fees", round(admin_fee_amt, 2)))
+        parts.append(("Administration Fees", as_10dp(admin_fee_amt)))
     if drawdown_fee_amt > 0:
-        parts.append(("Drawdown Fees", round(drawdown_fee_amt, 2)))
+        parts.append(("Drawdown Fees", as_10dp(drawdown_fee_amt)))
     if arrangement_fee_amt > 0:
-        parts.append(("Arrangement Fees", round(arrangement_fee_amt, 2)))
+        parts.append(("Arrangement Fees", as_10dp(arrangement_fee_amt)))
     return parts
 
 
@@ -146,10 +162,6 @@ def _date_conv(d: Any) -> date | None:
     return None
 
 
-CENT = Decimal("0.01")
-MILLI = Decimal("0.001")
-
-
 def _to_dec(v: Any) -> Decimal:
     if v is None:
         return Decimal("0")
@@ -158,28 +170,23 @@ def _to_dec(v: Any) -> Decimal:
     return Decimal(str(v))
 
 
-def _q2(v: Any) -> Decimal:
-    return _to_dec(v).quantize(CENT, rounding=ROUND_HALF_UP)
-
-
-def _f2(v: Any) -> float:
-    return float(_q2(v))
-
-
-def _q3(v: Any) -> Decimal:
-    return _to_dec(v).quantize(MILLI, rounding=ROUND_HALF_UP)
-
-
-def _f3(v: Any) -> float:
-    return float(_q3(v))
-
-
 def _f10(v: Any) -> float:
     """Money on statements: align with ledger / COA 10dp policy."""
     try:
         return float(as_10dp(Decimal(str(v if v is not None else 0))))
     except Exception:
         return float(Decimal(str(v or 0)))
+
+
+def _f3(v: Any) -> float:
+    """Statement numeric fields use 10dp (same as ``_f10``); name retained for call-site churn."""
+
+    return _f10(v)
+
+
+def _quantize_statement_decimal(v: Decimal) -> Decimal:
+    """Component split / residual logic at 10dp (matches ``_f10``)."""
+    return Decimal(str(as_10dp(v)))
 
 
 def _liq_rev_interleave_sort(narr: str) -> tuple[int, int, str]:
@@ -258,6 +265,23 @@ def _repayment_statement_narration(
         return f"Reversal of {base} (Receipt {amt_txt})"
     base = f"Repayment id {repayment_id}: {ref}" if repayment_id else ref
     return f"{base} (Receipt {amt_txt})"
+
+
+def _is_internal_unapplied_liquidation_repayment_for_statement(r: dict[str, Any]) -> bool:
+    """
+    Synthetic repayment rows for applying unapplied (EOD, recast, cascade unwind).
+    They must not appear as duplicate cash-style receipt lines: the unapplied_funds_ledger
+    already emits LIQ-*/REV-LIQ-* rows for the same economics.
+    """
+    ref = f"{r.get('reference') or ''} {r.get('customer_reference') or ''} {r.get('company_reference') or ''}"
+    rl = ref.lower()
+    if "unapplied funds allocation" in rl:
+        return True
+    if "reversal of unapplied funds" in rl:
+        return True
+    if "loan recast" in rl and "unapplied" in rl:
+        return True
+    return False
 
 
 def _is_statement_reversal_narration(narration: str) -> bool:
@@ -470,18 +494,30 @@ def _apply_customer_facing_unapplied_from_ledger(loan_id: int, meta: dict[str, A
     raw = get_unapplied_ledger_entries_for_statement(loan_id, start, end)
     lines_sorted = _sort_unapplied_ledger_for_statement(raw)
 
-    has_separate_credit_line: set[tuple[date, int]] = set()
-    for u in lines_sorted:
-        vd = _date_conv(u.get("value_date"))
-        if not vd or str(u.get("entry_kind") or "").lower() != "credit":
-            continue
-        rid = u.get("repayment_id")
-        if rid is None:
-            continue
-        try:
-            has_separate_credit_line.add((vd, int(rid)))
-        except (TypeError, ValueError):
-            pass
+    overpay_narr_re = re.compile(r"Overpayment from Repayment id\s+(\d+)", re.I)
+    op_key_re = re.compile(r"^OP-(\d+)(?:\s|$)", re.I)
+
+    def _stmt_has_dedicated_overpayment_line_for_receipt(d0: date, rid0: int) -> bool:
+        """True when customer output already has a same-day line that shows the unapplied credit for this receipt."""
+        for pr in out:
+            if _date_conv(pr.get("Due Date")) != d0:
+                continue
+            n = str(pr.get("Narration") or "")
+            m = overpay_narr_re.search(n)
+            if m:
+                try:
+                    if int(m.group(1)) == rid0:
+                        return True
+                except (TypeError, ValueError):
+                    pass
+            op_m = op_key_re.match(n.strip())
+            if op_m:
+                try:
+                    if int(op_m.group(1)) == rid0:
+                        return True
+                except (TypeError, ValueError):
+                    pass
+        return False
 
     rep_re = re.compile(r"^Repayment id\s+(\d+)", re.I)
     running = Decimal("0")
@@ -535,7 +571,10 @@ def _apply_customer_facing_unapplied_from_ledger(loan_id: int, meta: dict[str, A
         mrep = rep_re.match(narr)
         if mrep:
             rid = int(mrep.group(1))
-            if (d, rid) not in has_separate_credit_line:
+            # Ledger always has a 'credit' row for overpayment, but the periodic statement often
+            # does not emit a separate "Overpayment from Repayment id …" line. In that case the
+            # increase belongs on this receipt row (post-receipt running balance from ledger).
+            if not _stmt_has_dedicated_overpayment_line_for_receipt(d, rid):
                 best: Decimal | None = None
                 for u in lines_sorted:
                     if _date_conv(u.get("value_date")) != d:
@@ -651,13 +690,16 @@ def _generate_periodic_statement(
     if start > end:
         start, end = end, start
 
+    orig_facility = get_original_facility_for_statements(loan_id, loan)
+    booked_principal = float(loan.get("principal") or 0)
     meta = {
         "loan_id": loan_id,
         "customer_id": loan.get("customer_id"),
         "start_date": start,
         "end_date": end,
         "loan_type": loan.get("loan_type"),
-        "principal": float(loan.get("principal") or 0),
+        "principal": booked_principal,
+        "original_facility": float(orig_facility) if orig_facility is not None else booked_principal,
         "currency": (loan.get("metadata") or {}).get("currency") or "USD",
         "generated_at": datetime.now(),
         "statement_type": "periodic",
@@ -667,29 +709,28 @@ def _generate_periodic_statement(
     if not schedule_lines:
         return [], meta
 
-    # Build (due_date, period_start, interest_component, principal_component, include_period_start_day)
-    # for each due in range.
-    prev_due: date | None = None
-    period_start = disbursement or start
-    due_entries: list[tuple[date, date, float, float, bool]] = []  # (due_date, period_start, interest, principal, include_start_day)
-    for sl in schedule_lines:
-        due_d = _parse_schedule_date(sl.get("Date"))
-        if not due_d:
+    # Instalment dates in range can exist only on older schedule versions (pre-recast).
+    # For each due date D, use lines from the version in force on D (recast/modification audit).
+    bump_events = list_schedule_bumping_events(loan_id)
+    due_dates_win = collect_due_dates_in_range_all_schedule_versions(loan_id, start, end)
+    due_entries: list[tuple[date, date, float, float, bool]] = []
+    for due_d in due_dates_win:
+        ver_eff = apply_schedule_version_bumps(due_d, bump_events)
+        sl = get_schedule_line_on_version_for_date(loan_id, ver_eff, due_d)
+        if sl is None:
             continue
-        is_first_period = prev_due is None
-        if prev_due is not None:
-            period_start = prev_due
         interest_c = float(sl.get("interest") or sl.get("Interest") or 0)
         principal_c = float(sl.get("principal") or sl.get("Principal") or 0)
-        # Some schedules include a same-day stub row at disbursement/start with only
-        # pro-rated interest. Exclude it from periodic statement rows to avoid
-        # double-counting against the first real period movement.
-        if is_first_period and due_d == (disbursement or start) and abs(principal_c) <= 1e-9:
-            prev_due = due_d
+        bound = due_d - timedelta(days=1)
+        anchor0 = get_max_schedule_due_date_on_or_before(loan_id, bound)
+        if anchor0 is not None and (disbursement is None or anchor0 >= disbursement):
+            period_start = anchor0
+        else:
+            period_start = disbursement or start
+        # Same-day stub at disbursement: pro-rated interest only (no principal movement).
+        if disbursement and due_d == disbursement and abs(principal_c) <= 1e-9:
             continue
-        if start <= due_d <= end:
-            due_entries.append((due_d, period_start, interest_c, principal_c, is_first_period))
-        prev_due = due_d
+        due_entries.append((due_d, period_start, interest_c, principal_c, False))
     if disbursement and due_entries and due_entries[0][0] == disbursement:
         due_entries = due_entries[1:]
 
@@ -816,10 +857,10 @@ def _generate_periodic_statement(
 
     rows: list[dict[str, Any]] = []
     processed_repayment_ids: set[int] = set()
-    fac = float(loan.get("principal") or 0)
+    drawdown_facility = float(orig_facility) if orig_facility is not None else booked_principal
 
-    if disbursement and start <= disbursement <= end and fac > 0:
-        breakdown = _get_drawdown_breakdown(loan)
+    if disbursement and start <= disbursement <= end and drawdown_facility > 0:
+        breakdown = _get_drawdown_breakdown(loan, facility_principal=drawdown_facility)
         for narration, amt in breakdown:
             if amt <= 0:
                 continue
@@ -830,10 +871,6 @@ def _generate_periodic_statement(
             rows.append(row)
 
     from eod.core import load_system_config_from_db
-    from accrual_convention import (
-        ACCRUAL_START_EFFECTIVE_DAY,
-        normalize_accrual_start_convention,
-    )
     sys_cfg = load_system_config_from_db() or {}
     try:
         from eod.core import get_product_config_from_db
@@ -842,19 +879,14 @@ def _generate_periodic_statement(
             sys_cfg = {**sys_cfg, **p_cfg}
     except Exception:
         pass
-    conv = normalize_accrual_start_convention(sys_cfg.get("accrual_start_convention"))
 
     prev_fees = 0.0
     for due_d, period_start_d, interest_c, principal_c, include_start_day in due_entries:
         state_at_due = _state_at(due_d)
         
-        # Accrued interest, default, penalty: from loan daily state period_to_date at due date.
-        # For EFFECTIVE_DAY, the due_date is the FIRST day of the NEW period, so the previous 
-        # period's accrual resets on due_d. We pull the accruals from the day before.
-        if conv == ACCRUAL_START_EFFECTIVE_DAY:
-            state_for_accruals = _state_at(due_d - timedelta(days=1))
-        else:
-            state_for_accruals = state_at_due
+        # Accrued interest, default, penalty: period_to_date for the instalment period ends the
+        # calendar day before the due date (due date starts the next period).
+        state_for_accruals = _state_at(due_d - timedelta(days=1))
 
         sum_regular_from_state = (
             float(state_for_accruals.get("regular_interest_period_to_date") or 0) if state_for_accruals else 0.0
@@ -921,20 +953,12 @@ def _generate_periodic_statement(
             parts.append("Default")
         due_narration = " & ".join(parts) if parts else "Due date"
 
-        # Calculate date range strings for explicit narration
-        if conv == ACCRUAL_START_EFFECTIVE_DAY:
-            end_d_for_label = due_d - timedelta(days=1)
-            if end_d_for_label < period_start_d:
-                end_d_for_label = period_start_d
-            start_str = period_start_d.strftime('%d/%m/%y')
-            end_str = end_d_for_label.strftime('%d/%m/%y')
-        else:
-            start_d_for_label = period_start_d + timedelta(days=1)
-            if start_d_for_label > due_d:
-                start_d_for_label = due_d
-            start_str = start_d_for_label.strftime('%d/%m/%y')
-            end_str = due_d.strftime('%d/%m/%y')
-            
+        # Date range: accrual from period start through the day before instalment due.
+        end_d_for_label = due_d - timedelta(days=1)
+        if end_d_for_label < period_start_d:
+            end_d_for_label = period_start_d
+        start_str = period_start_d.strftime('%d/%m/%y')
+        end_str = end_d_for_label.strftime('%d/%m/%y')
         period_range_sfx = f" ({start_str} to {end_str})"
 
         row = _blank_row_periodic()
@@ -968,6 +992,16 @@ def _generate_periodic_statement(
         for r in repayments:
             vd = _date_conv(r.get("value_date") or r.get("payment_date"))
             if not vd or vd <= period_start_d or vd > due_d:
+                continue
+            try:
+                _rpid_inner = int(r.get("id") or 0)
+            except (TypeError, ValueError):
+                _rpid_inner = 0
+            if _rpid_inner and _rpid_inner in processed_repayment_ids:
+                continue
+            if _is_internal_unapplied_liquidation_repayment_for_statement(r):
+                if _rpid_inner:
+                    processed_repayment_ids.add(_rpid_inner)
                 continue
             amount = float(r.get("amount") or 0)
             alloc_total = float(r.get("alloc_total") or 0)
@@ -1073,6 +1107,10 @@ def _generate_periodic_statement(
         vd = _date_conv(r.get("value_date") or r.get("payment_date"))
         if not vd or vd < repay_start or vd > end:
             continue
+        if _is_internal_unapplied_liquidation_repayment_for_statement(r):
+            if rid_int is not None:
+                processed_repayment_ids.add(rid_int)
+            continue
         amount = float(r.get("amount") or 0)
         alloc_total = float(r.get("alloc_total") or 0)
         rec_row = _blank_row_periodic()
@@ -1142,8 +1180,8 @@ def _generate_periodic_statement(
         if not vd or vd < start or vd > end:
             continue
         kind = (u.get("entry_kind") or "").strip().lower()
-        delta = float(u.get("unapplied_delta") or 0)
-        if abs(delta) < 1e-9:
+        delta = _f10(float(u.get("unapplied_delta") or 0))
+        if delta == 0.0:
             continue
             
         row = _blank_row_periodic()
@@ -1163,7 +1201,7 @@ def _generate_periodic_statement(
             src_amt = u.get("source_receipt_amount")
             if src_amt is not None:
                 row["Narration"] = (
-                    f"Overpayment from Repayment id {rid_disp} (Receipt {_f2(float(src_amt))})"
+                    f"Overpayment from Repayment id {rid_disp} (Receipt {_f10(float(src_amt))})"
                 )
             else:
                 row["Narration"] = f"Overpayment from Repayment id {rid_disp}"
@@ -1227,9 +1265,10 @@ def _generate_periodic_statement(
     # Current (incomplete) period interest -- emitted BEFORE the non-cash residual
     # so it is counted in current_charge_total and the residual is zero for clean loans.
     # Fires when:
-    #   (a) there are due dates in range and end is beyond the last one, OR
+    #   (a) there are due dates in range and end is strictly after the last one (tail of a period), OR
     #   (b) no due dates have fallen yet (statement is entirely in the first period).
-    #   (c) end is exactly on the due date AND the accrual convention is EFFECTIVE_DAY (first day of new period).
+    # When end equals a schedule due date, accrual through the prior day is already on that due
+    # row — do not emit a duplicate stub for the same window.
     last_due_in_range = due_entries[-1][0] if due_entries else None
     period_boundary = last_due_in_range or disbursement
     # Only treat end-day daily_state as "exact" for current-period accrual lines if EOD ran for that date.
@@ -1241,29 +1280,27 @@ def _generate_periodic_statement(
 
     has_current_period = False
     if period_boundary is not None:
-        if conv == ACCRUAL_START_EFFECTIVE_DAY:
-            has_current_period = (end >= period_boundary)
+        if due_entries and last_due_in_range is not None:
+            has_current_period = end > last_due_in_range
         else:
-            has_current_period = (end > period_boundary)
+            has_current_period = end >= period_boundary
 
     if has_current_period:
         # Period-to-date stub: row date = **statement end** (`end`, capped to system date).
         # Label window = **most recent due (inclusive)** through **end − 1 day (inclusive)**.
         stub_row_date = end
         stub_period_end = end - timedelta(days=1)
+        # Accrual period start for the stub must follow schedule boundaries across all saved
+        # versions (post-recast latest schedule often omits historical dues such as 29-Mar).
+        stub_anchor_due = get_max_schedule_due_date_on_or_before(loan_id, stub_period_end)
         skip_accrual = False
         if disbursement is None:
             if stub_period_end < stub_row_date:
                 skip_accrual = True
         elif stub_period_end < disbursement:
             skip_accrual = True
-        elif conv == ACCRUAL_START_EFFECTIVE_DAY:
-            if last_due_in_range and stub_period_end < last_due_in_range:
-                skip_accrual = True
-        else:
-            if last_due_in_range and stub_period_end <= last_due_in_range:
-                skip_accrual = True
-            if disbursement and stub_period_end <= disbursement and not last_due_in_range:
+        elif last_due_in_range and stub_period_end < last_due_in_range:
+            if end != last_due_in_range:
                 skip_accrual = True
 
         stub_ds_exact = ds_by_date.get(stub_period_end) if _has_completed_eod_for_date(stub_period_end) else None
@@ -1283,16 +1320,21 @@ def _generate_periodic_statement(
                     ad = _date_conv(ds.get("as_of_date"))
                     if not ad or ad > stub_period_end:
                         continue
-                    if conv == ACCRUAL_START_EFFECTIVE_DAY:
-                        if last_due_in_range and ad < last_due_in_range:
-                            continue
-                        if not last_due_in_range and disbursement and ad < disbursement:
-                            continue
-                    else:
-                        if last_due_in_range and ad <= last_due_in_range:
-                            continue
-                        if not last_due_in_range and disbursement and ad <= disbursement:
-                            continue
+                    if stub_anchor_due and ad < stub_anchor_due:
+                        continue
+                    if (
+                        not stub_anchor_due
+                        and last_due_in_range
+                        and ad < last_due_in_range
+                    ):
+                        continue
+                    if (
+                        not stub_anchor_due
+                        and not last_due_in_range
+                        and disbursement
+                        and ad < disbursement
+                    ):
+                        continue
 
                     cur_regular += float(ds.get("regular_interest_daily") or 0)
                     cur_penalty += float(ds.get("penalty_interest_daily") or 0)
@@ -1301,7 +1343,10 @@ def _generate_periodic_statement(
             cur_fees = 0.0
             if st_as_of:
                 fe_now = float(st_as_of.get("fees_charges_balance") or 0)
-                if last_due_in_range:
+                if stub_anchor_due:
+                    st_ld = _state_at(stub_anchor_due)
+                    fe_ld = float(st_ld.get("fees_charges_balance") or 0) if st_ld else 0.0
+                elif last_due_in_range:
                     st_ld = _state_at(last_due_in_range)
                     fe_ld = float(st_ld.get("fees_charges_balance") or 0) if st_ld else 0.0
                 elif disbursement:
@@ -1318,16 +1363,9 @@ def _generate_periodic_statement(
         if abs(current_period_total) > 0.005:
             row = _blank_row_periodic()
             row["Due Date"] = stub_row_date
-            if conv == ACCRUAL_START_EFFECTIVE_DAY:
-                curr_start = last_due_in_range or disbursement or stub_period_end
-                if disbursement and (not last_due_in_range) and curr_start < disbursement:
-                    curr_start = disbursement
-            else:
-                curr_start = (
-                    (last_due_in_range + timedelta(days=1))
-                    if last_due_in_range
-                    else ((disbursement + timedelta(days=1)) if disbursement else stub_period_end)
-                )
+            curr_start = stub_anchor_due or last_due_in_range or disbursement or stub_period_end
+            if disbursement and curr_start < disbursement:
+                curr_start = disbursement
             if curr_start > stub_period_end:
                 curr_start = stub_period_end
             curr_start_str = curr_start.strftime("%d/%m/%y")
@@ -1383,6 +1421,37 @@ def _generate_periodic_statement(
 
     rows.sort(key=_sort_key)
     return rows, meta
+
+
+def recalculate_flow_statement_running_balances(
+    rows: list[dict[str, Any]],
+    *,
+    opening_loan: Any,
+    opening_unapplied: Any,
+) -> None:
+    """
+    Recompute ``Balance`` and ``Unapplied funds`` from openings in **strict row order**
+    (print / CSV / PDF). Call after roll-up or any reorder that moves rows without updating
+    those columns. Matches :func:`reporting.statement_events.apply_dual_running_customer_events`
+    when each row carries optional ``_unapplied_delta`` from unapplied ledger meta.
+    """
+    lb = _to_dec(opening_loan)
+    ub = _to_dec(opening_unapplied)
+    for r in rows:
+        if r.get("_debit_dec") is not None:
+            deb = _to_dec(r.get("_debit_dec"))
+        else:
+            deb = _to_dec(r.get("Debits") or 0)
+        if r.get("_credit_dec") is not None:
+            cred = _to_dec(r.get("_credit_dec"))
+        else:
+            cred = _to_dec(r.get("Credits") or 0)
+        ud_raw = r.get("_unapplied_delta")
+        if ud_raw is not None:
+            ub = Decimal(str(as_10dp(ub + _to_dec(ud_raw))))
+        lb = Decimal(str(as_10dp(lb + deb - cred)))
+        r["Balance"] = _f3(lb)
+        r["Unapplied funds"] = _f3(ub)
 
 
 def generate_customer_facing_statement(
@@ -1448,6 +1517,7 @@ def generate_customer_facing_statement(
             m = re.search(r"\(Receipt ([0-9.]+)\)", narration)
             if m and float(delta_val) == 0.0:
                 delta_val = float(m.group(1))
+            delta_val = _f10(delta_val)
 
             out.append({
                 "Due Date": r.get("Due Date"),
@@ -1475,7 +1545,8 @@ def generate_customer_facing_statement(
             m = re.search(r"\(Receipt ([0-9.]+)\)", narration)
             if m and float(delta_val) == 0.0:
                 delta_val = -float(m.group(1))
-                
+            delta_val = _f10(delta_val)
+
             out.append({
                 "Due Date": r.get("Due Date"),
                 "Narration": narration,
@@ -1498,7 +1569,8 @@ def generate_customer_facing_statement(
                     delta_val = val
                 else:
                     delta_val = -val
-            
+            delta_val = _f10(delta_val)
+
             # Use delta_val to show the credit properly
             # if it's an unapplied funds credit, make sure delta_val represents the credit
             out.append({
@@ -1556,7 +1628,7 @@ def generate_customer_facing_statement(
                 })
         else:
             # Scheduled-period charges: emit separate rows per component.
-            # Quantize to 3dp and distribute residual to largest component so
+            # Quantize to 10dp and distribute residual to largest component so
             # component rows sum exactly to the quantized period total.
             interest = _to_dec(r.get("Interest") or 0)
             penalty = _to_dec(r.get("Penalty") or 0)
@@ -1584,8 +1656,12 @@ def generate_customer_facing_statement(
                 or "fees & charges paid" in narr_l
             )
             if raw_components:
-                rounded_total = _q3(sum((v for _, v in raw_components), Decimal("0")))
-                rounded_components = [(n, _q3(v), v) for n, v in raw_components]
+                rounded_total = _quantize_statement_decimal(
+                    sum((v for _, v in raw_components), Decimal("0"))
+                )
+                rounded_components = [
+                    (n, _quantize_statement_decimal(v), v) for n, v in raw_components
+                ]
                 rounded_sum = sum((v for _, v, _ in rounded_components), Decimal("0"))
                 residual = rounded_total - rounded_sum
                 if residual != Decimal("0"):
@@ -1634,8 +1710,8 @@ def generate_customer_facing_statement(
                             pass
                     out.append(comp_row)
 
-    # Same-day presentation: accruals/charges first, external cash receipts last; closing line last.
-    out = _reorder_customer_facing_rows_receipts_last(out)
+    # Preserve periodic/engine row order so printed Balance is a true running total (no same-day
+    # reshuffle that reordered rows without recomputing Balance).
     _apply_customer_facing_arrears_before_first_receipt(loan_id, out)
 
     # Guardrail: for any repayment_id, total statement Credits attributed to that repayment
@@ -1694,70 +1770,20 @@ def generate_customer_facing_statement(
     except Exception:
         opening_arrears_d = Decimal("0")
 
-    indices_by_due_date: dict[date, list[int]] = {}
-    last_idx_by_due_date: dict[Any, int] = {}
     # Last movement row per date (exclude closing "Total outstanding" line). Arrears snap to
-    # loan_daily_state must run here — otherwise the true last row is closing, snap never runs,
-    # and prior same-day rows show running arrears that disagree with persisted EOD delinquency.
+    # loan_daily_state on that row so same-day lines before it stay on the running delinquency path.
     last_non_closing_idx_by_due_date: dict[Any, int] = {}
     for idx, row in enumerate(out):
         d = row.get("Due Date")
         if d is None:
             continue
-        indices_by_due_date.setdefault(d, []).append(idx)
-        last_idx_by_due_date[d] = idx
         narr_lc = str(row.get("Narration") or "")
         if not narr_lc.startswith("Total outstanding balance as at"):
             last_non_closing_idx_by_due_date[d] = idx
 
-    # Balance snap dates = schedule payment due dates only (from meta).
-    # Do not infer from arbitrary periodic rows with charge columns — that would treat
-    # same-day receipt allocation lines (e.g. 17 Jun default paid) as a "due date"
-    # and wrongly overwrite the running Balance with EOD daily_state on the reversal row.
-    due_dates: set[date] = set()
-    for d0 in meta.get("schedule_due_dates") or []:
-        dd = _date_conv(d0)
-        if dd is not None:
-            due_dates.add(dd)
-            
-    # Also treat the final closing statement date as a due date for snapping purposes
-    stmt_end_d = _date_conv(meta.get("end_date"))
-    if stmt_end_d:
-        due_dates.add(stmt_end_d)
-
-    def _unapplied_from_ds(ds: dict | None) -> float:
-        if not ds:
-            return 0.0
-        return float(ds.get("unallocated") or ds.get("unapplied_funds") or 0.0)
-
-    # Compute running unapplied funds in display order using ONLY the ledger delta.
-    opening_unapplied_d = Decimal("0")
-    try:
-        start_d = meta.get("start_date")
-        start_d = _date_conv(start_d) if start_d is not None else None
-        if start_d is not None:
-            # Query ledger strictly before start_date
-            raw_all = get_unapplied_ledger_entries_for_statement(loan_id, date(1970,1,1), start_d - timedelta(days=1))
-            if raw_all:
-                opening_unapplied_d = _to_dec(_f3(float(raw_all[-1].get("unapplied_running_balance") or 0)))
-    except Exception:
-        pass
-
-    running_unapplied_d = opening_unapplied_d
-    for i, _ar_row in enumerate(out):
-        narr = str(_ar_row.get("Narration") or "")
-        
-        u_delta = _to_dec(_ar_row.get("_unapplied_delta", 0))
-        if u_delta != 0:
-            running_unapplied_d += u_delta
-        if running_unapplied_d < Decimal("0"):
-            running_unapplied_d = Decimal("0")
-
-        _ar_row["Unapplied funds"] = _f3(running_unapplied_d)
-            
-        # Clean up markers
-        if "_unapplied_delta" in _ar_row:
-            del _ar_row["_unapplied_delta"]
+    # Unapplied column: align to unapplied_funds_ledger (running_balance / matched rows).
+    # The old _unapplied_delta accumulator drifted for LIQ/RECAST flows and never matched DB.
+    _apply_customer_facing_unapplied_from_ledger(loan_id, meta, out)
 
     running_arrears_d = opening_arrears_d
     for i, _ar_row in enumerate(out):
@@ -1812,10 +1838,7 @@ def generate_customer_facing_statement(
             + float(ds.get("fees_charges_balance") or 0)
         )
 
-    # Compute running Balance as:
-    # - start from prior-day daily_state total outstanding (day-start before statement start)
-    # - then Balance += Debits - Credits for each row in display order
-    # - at each schedule due date (end-of-date), snap Balance to persisted daily_state total outstanding.
+    # Running Balance: prior-day opening + sum(Debits − Credits) in strict print order (no EOD snaps).
     running_bal = Decimal("0")
     stmt_start = meta.get("start_date")
     try:
@@ -1831,22 +1854,8 @@ def generate_customer_facing_statement(
         running_bal += _to_dec(_rb_row.get("Debits") or 0) - _to_dec(_rb_row.get("Credits") or 0)
         _rb_row["Balance"] = _f3(running_bal)
 
-        d = _rb_row.get("Due Date")
-        if d is None or last_idx_by_due_date.get(d) != i:
-            continue
-
-        # Due-date reconciliation: due date and closing line must equal daily_state.
-        narr = str(_rb_row.get("Narration") or "")
-        if d in due_dates or narr.startswith("Total outstanding balance as at"):
-            try:
-                exact_ds = get_loan_daily_state_balances(loan_id, d)
-                if exact_ds:
-                    running_bal = _to_dec(_f3(_total_outstanding_from_ds(exact_ds)))
-                    _rb_row["Balance"] = _f3(running_bal)
-            except Exception:
-                pass
-            
-            # (Unapplied funds snapping logic removed to rely strictly on unapplied_funds_ledger deltas)
+        # No mid-statement snaps to loan_daily_state: they matched EOD on one row but left prior
+        # same-day lines with a Balance that did not read as a continuous running total when printed.
 
     # (Drift notification logic removed.)
 
@@ -1856,6 +1865,140 @@ def generate_customer_facing_statement(
         _row.pop("_arrears_debit_impact", None)
 
     return out, meta
+
+
+def generate_customer_facing_flow_statement(
+    loan_id: int,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    *,
+    as_of_date: date | None = None,
+    allowed_customer_ids: list[int] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Customer-facing statement from discrete subledger events: drawdown, daily accruals,
+    repayment bucket allocations, and unapplied ledger rows. **No mid-statement balance
+    snap** — ``Balance`` is a running total; ``Unapplied funds`` runs from signed deltas.
+
+    Arrears shown as total delinquency **as at** ``end_date`` on every row (static for this v1).
+
+    Does **not** change GL. See ``docs/STATEMENT_FLOW_AND_RECONCILIATION_PLAN.md``.
+    """
+    from decimal import Decimal
+
+    from reporting.statement_events import (
+        apply_dual_running_customer_events,
+        build_merged_customer_flow_events,
+        reconcile_running_to_loan_daily_state,
+        total_outstanding_decimal,
+    )
+
+    loan = get_loan(loan_id)
+    if not loan:
+        raise ValueError(f"Loan {loan_id} not found.")
+    if allowed_customer_ids is not None:
+        cust_id = loan.get("customer_id")
+        if cust_id is None or cust_id not in allowed_customer_ids:
+            raise ValueError("You are not authorized to view this loan statement.")
+
+    today = as_of_date or _get_effective_date()
+    disbursement = _date_conv(loan.get("disbursement_date") or loan.get("start_date"))
+    start = start_date or disbursement or today
+    end = end_date or today
+    if end > today:
+        end = today
+    if start > end:
+        start, end = end, start
+
+    prior_ds = get_loan_daily_state_balances(loan_id, start - timedelta(days=1))
+    opening_loan = total_outstanding_decimal(prior_ds) if prior_ds else Decimal("0")
+
+    merged, opening_unapplied = build_merged_customer_flow_events(loan_id, start, end)
+    dual = apply_dual_running_customer_events(merged, opening_loan, opening_unapplied)
+
+    ds_end = get_loan_daily_state_balances(loan_id, end)
+    arrears_row = _f3(_total_delinquency_arrears(ds_end))
+
+    out: list[dict[str, Any]] = []
+    for ev, loan_b, u_b in dual:
+        deb_d = as_10dp(ev.debit)
+        cred_d = as_10dp(ev.credit)
+        row_ev: dict[str, Any] = {
+            "Due Date": ev.event_date,
+            "Narration": ev.narration,
+            "Debits": float(deb_d),
+            "Credits": float(cred_d),
+            "Balance": _f3(loan_b),
+            "Arrears": arrears_row,
+            "Unapplied funds": _f3(u_b),
+            "_event_type": ev.event_type,
+            # Exact 10dp for roll-up + balance replay (float Debits alone drifts vs Decimal events).
+            "_debit_dec": deb_d,
+            "_credit_dec": cred_d,
+        }
+        if ev.meta.get("unapplied_delta") is not None:
+            row_ev["_unapplied_delta"] = _f10(ev.meta["unapplied_delta"])
+        out.append(row_ev)
+
+    loan_closing = dual[-1][1] if dual else opening_loan
+    unapplied_closing = dual[-1][2] if dual else opening_unapplied
+    out.append(
+        {
+            "Due Date": end,
+            "Narration": f"Total outstanding (flow) as at {end.isoformat()}",
+            "Debits": 0.0,
+            "Credits": 0.0,
+            "Balance": _f3(loan_closing),
+            "Arrears": arrears_row,
+            "Unapplied funds": _f3(unapplied_closing),
+        }
+    )
+
+    recon = reconcile_running_to_loan_daily_state(loan_closing, loan_id, end)
+    meta = {
+        "loan_id": loan_id,
+        "customer_id": loan.get("customer_id"),
+        "start_date": start,
+        "end_date": end,
+        "statement_type": "customer_facing_flow",
+        "opening_loan": _f3(opening_loan),
+        "opening_unapplied": _f3(opening_unapplied),
+        "reconcile_loan_total": recon,
+        "currency": (loan.get("metadata") or {}).get("currency") or "USD",
+        "generated_at": datetime.now(),
+    }
+    notifications: list[str] = []
+    if not recon.get("ok"):
+        notifications.append(
+            f"Flow statement loan total vs loan_daily_state: diff {recon.get('diff')} "
+            f"(subledger {recon.get('subledger_closing')}). Mid-life fee posts or other gaps may apply."
+        )
+    meta["notifications"] = notifications
+    return out, meta
+
+
+def preview_statement_eod_flow_events(
+    loan_id: int,
+    start_date: date,
+    end_date: date,
+    *,
+    eod_only: bool = False,
+) -> dict[str, Any]:
+    """
+    Build discrete flow events, running loan outstanding (opening = end of day before
+    ``start_date``), and reconcile to ``loan_daily_state`` at ``end_date``.
+
+    ``eod_only=False`` (default): drawdown + daily accruals + repayment bucket allocations
+    (see ``reporting/statement_events.build_complete_loan_flow_events``).
+
+    ``eod_only=True``: daily accruals + fee-balance deltas only (diagnostic; do not mix with
+    full payment fee allocations in one narrative).
+
+    See ``docs/STATEMENT_FLOW_AND_RECONCILIATION_PLAN.md``.
+    """
+    from reporting.statement_events import build_flow_preview_for_loan
+
+    return build_flow_preview_for_loan(loan_id, start_date, end_date, eod_only=eod_only)
 
 
 def _blank_row_periodic() -> dict[str, Any]:

@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from decimal_utils import as_10dp
-from services.modification_capture_bridge import EOD_SUMMARY_BUCKET_ROWS, as_of_balance_date
+from services.modification_capture_bridge import EOD_SUMMARY_BUCKET_ROWS
 
 def _section_heading(title: str) -> None:
     """Section title that renders reliably inside tab panels."""
@@ -95,7 +95,7 @@ def render_reamortisation_ui(
         if customers_ctx_ok:
             from loan_management import (
                 execute_recast_from_unapplied,
-                get_loan_daily_state_balances,
+                get_loan_daily_state_balances_for_recast_preview,
                 list_unapplied_credit_rows_for_recast,
                 preview_recast_from_unapplied,
             )
@@ -124,15 +124,23 @@ def render_reamortisation_ui(
                     value=get_system_date(),
                     key="recast_date",
                 )
-                as_of_bal = as_of_balance_date(recast_date)
-                bal_recast = get_loan_daily_state_balances(loan_id_r, as_of_bal)
+                bal_recast, as_of_bal = get_loan_daily_state_balances_for_recast_preview(
+                    loan_id_r, recast_date
+                )
                 if bal_recast is None:
                     st.warning(
-                        f"No **loan_daily_state** on or before **{as_of_bal.isoformat()}**. "
-                        "Run EOD for that date (or change the effective date) to see balances."
+                        f"No **loan_daily_state** on or before **{recast_date.isoformat()}** "
+                        f"(or the prior day). Run EOD through the recast effective date first."
                     )
                 else:
-                    _section_heading(f"Balance outstanding as of {as_of_bal.strftime('%d/%m/%Y')}")
+                    _cap = (
+                        " (same calendar day as recast — first persisted EOD row)"
+                        if as_of_bal == recast_date
+                        else ""
+                    )
+                    _section_heading(
+                        f"Balance outstanding as of {as_of_bal.strftime('%d/%m/%Y')}{_cap}"
+                    )
                     row_eod: dict[str, float] = {}
                     for lab, key in EOD_SUMMARY_BUCKET_ROWS:
                         row_eod[lab] = float(as_10dp(bal_recast.get(key) or 0))

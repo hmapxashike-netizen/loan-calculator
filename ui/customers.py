@@ -106,39 +106,39 @@ def render_add_individual_tab(
     upload_document,
 ) -> None:
     render_sub_sub_header("New Individual Customer")
-    with st.form("individual_form", clear_on_submit=True):
+            with st.form("individual_form", clear_on_submit=True):
         ir1a, ir1b, ir1c, ir1d = st.columns(4)
         with ir1a:
             name = st.text_input("Full Name *", placeholder="e.g. John Doe", key="ind_full_name")
         with ir1b:
-            national_id = st.text_input("National ID", placeholder="Optional", key="ind_national_id")
+                    national_id = st.text_input("National ID", placeholder="Optional", key="ind_national_id")
         with ir1c:
             phone1 = st.text_input("Phone 1", placeholder="Optional", key="ind_phone1")
         with ir1d:
             phone2 = st.text_input("Phone 2", placeholder="Optional", key="ind_phone2")
 
-        sector_id, subsector_id = None, None
+                sector_id, subsector_id = None, None
         ir2a, ir2b, ir2c, ir2d = st.columns(4)
         with ir2a:
             email1 = st.text_input("Email 1", placeholder="Optional", key="ind_email1")
         with ir2b:
             email2 = st.text_input("Email 2", placeholder="Optional", key="ind_email2")
-        if customers_available:
-            sectors_list = list_sectors()
-            subsectors_list = list_subsectors()
-            if sectors_list:
+                if customers_available:
+                    sectors_list = list_sectors()
+                    subsectors_list = list_subsectors()
+                    if sectors_list:
                 with ir2c:
-                    sector_names = ["(None)"] + [s["name"] for s in sectors_list]
-                    sel_sector_name = st.selectbox("Sector", sector_names, key="ind_sector")
+                        sector_names = ["(None)"] + [s["name"] for s in sectors_list]
+                        sel_sector_name = st.selectbox("Sector", sector_names, key="ind_sector")
                 sector_id = (
                     next((s["id"] for s in sectors_list if s["name"] == sel_sector_name), None)
                     if sel_sector_name != "(None)"
                     else None
                 )
-                subs_by_sector = [ss for ss in subsectors_list if sector_id and ss["sector_id"] == sector_id]
-                sub_names = ["(None)"] + [s["name"] for s in subs_by_sector]
+                        subs_by_sector = [ss for ss in subsectors_list if sector_id and ss["sector_id"] == sector_id]
+                        sub_names = ["(None)"] + [s["name"] for s in subs_by_sector]
                 with ir2d:
-                    sel_subsector_name = st.selectbox("Subsector", sub_names, key="ind_subsector")
+                        sel_subsector_name = st.selectbox("Subsector", sub_names, key="ind_subsector")
                 subsector_id = (
                     next((s["id"] for s in subs_by_sector if s["name"] == sel_subsector_name), None)
                     if sel_subsector_name != "(None)"
@@ -169,120 +169,120 @@ def render_add_individual_tab(
             with iadr1c:
                 line2 = st.text_input("Address Line 2", key="ind_addr_line2")
             with iadr1d:
-                city = st.text_input("City", key="ind_addr_city")
+                    city = st.text_input("City", key="ind_addr_city")
             iadr2a, iadr2b, iadr2c, iadr2d = st.columns(4)
             with iadr2a:
-                region = st.text_input("Region", key="ind_addr_region")
+                    region = st.text_input("Region", key="ind_addr_region")
             with iadr2b:
                 postal_code = st.text_input("Postal Code", key="ind_addr_postal_code")
             with iadr2c:
-                country = st.text_input("Country", key="ind_addr_country")
+                    country = st.text_input("Country", key="ind_addr_country")
             with iadr2d:
                 use_addr = st.checkbox("Include This Address", value=False, key="ind_use_addr")
-
-        # Individual customer documents: single dropdown + uploader + staged list
-        if "ind_docs_staged" not in st.session_state:
-            st.session_state["ind_docs_staged"] = []
+    
+                # Individual customer documents: single dropdown + uploader + staged list
+                if "ind_docs_staged" not in st.session_state:
+                    st.session_state["ind_docs_staged"] = []
         with st.expander("Documents (Optional)"):
-            staged_ind_docs = st.session_state["ind_docs_staged"]
-            if documents_available:
+                    staged_ind_docs = st.session_state["ind_docs_staged"]
+                    if documents_available:
                 st.write("Upload Individual KYC Documents Here. Max Size 200MB Per File.")
-                doc_cats = list_document_categories(active_only=True)
-                name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
-                if not name_to_cat:
+                        doc_cats = list_document_categories(active_only=True)
+                        name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
+                        if not name_to_cat:
                     st.info("No Matching Document Categories (Individual KYC) Configured.")
-                else:
+                        else:
                     d1a, d1b, d1c, d1d = st.columns(4)
                     with d1a:
-                        doc_type = st.selectbox(
+                            doc_type = st.selectbox(
                             "Document Type",
-                            sorted(name_to_cat.keys()),
-                            key="ind_doc_type",
-                        )
-                    other_label = ""
-                    if doc_type == "Other":
-                        with d1b:
-                            other_label = st.text_input(
-                                "If Other, Describe The Document",
-                                key="ind_doc_other_label",
+                                sorted(name_to_cat.keys()),
+                                key="ind_doc_type",
                             )
+                            other_label = ""
+                            if doc_type == "Other":
+                        with d1b:
+                                other_label = st.text_input(
+                                "If Other, Describe The Document",
+                                    key="ind_doc_other_label",
+                                )
                     with d1c:
-                        f = st.file_uploader(
+                            f = st.file_uploader(
                             "Choose File",
-                            type=["pdf", "png", "jpg", "jpeg"],
-                            key="ind_doc_file",
-                        )
+                                type=["pdf", "png", "jpg", "jpeg"],
+                                key="ind_doc_file",
+                            )
                     with d1d:
                         notes = st.text_input("Notes (Optional)", key="ind_doc_notes")
                     doc_add = st.form_submit_button("Save Document To List", key="ind_doc_add")
-                    if doc_add and f is not None:
-                        cat = name_to_cat[doc_type]
-                        label = other_label.strip() if doc_type == "Other" else notes.strip()
-                        staged_ind_docs.append(
-                            {
-                                "category_id": cat["id"],
-                                "file": f,
-                                "notes": label or "",
-                            }
-                        )
-                        st.session_state["ind_docs_staged"] = staged_ind_docs
-                        st.success(f"Staged {f.name} as {doc_type}.")
-                if staged_ind_docs:
+                            if doc_add and f is not None:
+                                cat = name_to_cat[doc_type]
+                                label = other_label.strip() if doc_type == "Other" else notes.strip()
+                                staged_ind_docs.append(
+                                    {
+                                        "category_id": cat["id"],
+                                        "file": f,
+                                        "notes": label or "",
+                                    }
+                                )
+                                st.session_state["ind_docs_staged"] = staged_ind_docs
+                                st.success(f"Staged {f.name} as {doc_type}.")
+                        if staged_ind_docs:
                     st.markdown("**Staged Documents:**")
-                    for idx, row in enumerate(staged_ind_docs, start=1):
+                            for idx, row in enumerate(staged_ind_docs, start=1):
                         st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'No Notes'})")
-            else:
+                    else:
                 st.info("Document Module Is Unavailable.")
-
+    
         submitted = st.form_submit_button("Create individual", type="primary")
-        if submitted and name.strip():
-            addresses = None
-            if use_addr and line1.strip():
-                addresses = [{"address_type": addr_type or None, "line1": line1 or None, "line2": line2 or None, "city": city or None, "region": region or None, "postal_code": postal_code or None, "country": country or None}]
-            try:
-                cid = create_individual(
-                    name=name.strip(),
-                    national_id=national_id.strip() or None,
-                    employer_details=employer_details.strip() or None,
-                    phone1=phone1.strip() or None,
-                    phone2=phone2.strip() or None,
-                    email1=email1.strip() or None,
-                    email2=email2.strip() or None,
-                    addresses=addresses,
-                    sector_id=sector_id,
-                    subsector_id=subsector_id,
-                )
+                if submitted and name.strip():
+                    addresses = None
+                    if use_addr and line1.strip():
+                        addresses = [{"address_type": addr_type or None, "line1": line1 or None, "line2": line2 or None, "city": city or None, "region": region or None, "postal_code": postal_code or None, "country": country or None}]
+                    try:
+                        cid = create_individual(
+                            name=name.strip(),
+                            national_id=national_id.strip() or None,
+                            employer_details=employer_details.strip() or None,
+                            phone1=phone1.strip() or None,
+                            phone2=phone2.strip() or None,
+                            email1=email1.strip() or None,
+                            email2=email2.strip() or None,
+                            addresses=addresses,
+                            sector_id=sector_id,
+                            subsector_id=subsector_id,
+                        )
                 st.success(f"Individual Customer Created. Customer ID: **{cid}**.")
-
-                staged_ind_docs = st.session_state.get("ind_docs_staged") or []
-                if documents_available and staged_ind_docs:
-                    doc_count = 0
-                    for row in staged_ind_docs:
-                        cat_id = row["category_id"]
-                        f = row["file"]
-                        notes = row.get("notes") or ""
-                        try:
-                            upload_document(
-                                "customer",
-                                cid,
-                                cat_id,
-                                f.name,
-                                f.type,
-                                f.size,
-                                f.getvalue(),
-                                uploaded_by="System User",
-                                notes=notes,
-                            )
-                            doc_count += 1
-                        except Exception as e:
-                            st.error(f"Failed to upload {f.name}: {e}")
-                    if doc_count > 0:
+    
+                        staged_ind_docs = st.session_state.get("ind_docs_staged") or []
+                        if documents_available and staged_ind_docs:
+                            doc_count = 0
+                            for row in staged_ind_docs:
+                                cat_id = row["category_id"]
+                                f = row["file"]
+                                notes = row.get("notes") or ""
+                                try:
+                                    upload_document(
+                                        "customer",
+                                        cid,
+                                        cat_id,
+                                        f.name,
+                                        f.type,
+                                        f.size,
+                                        f.getvalue(),
+                                        uploaded_by="System User",
+                                        notes=notes,
+                                    )
+                                    doc_count += 1
+                                except Exception as e:
+                                    st.error(f"Failed to upload {f.name}: {e}")
+                            if doc_count > 0:
                         st.success(f"Successfully Uploaded {doc_count} Documents.")
-                st.session_state["ind_docs_staged"] = []
-
-            except Exception as e:
+                        st.session_state["ind_docs_staged"] = []
+    
+                    except Exception as e:
                 st.error(f"Could Not Create Customer: {e}")
-        elif submitted and not name.strip():
+                elif submitted and not name.strip():
             st.warning("Please Enter A Name.")
 
 
@@ -1620,7 +1620,7 @@ def render_customers_ui(
             list_document_categories=list_document_categories,
             upload_document=upload_document,
         )
-
+    
     with tab2:
         render_add_corporate_tab(
             customers_available=customers_available,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -10,6 +10,26 @@ from decimal_utils import as_10dp
 
 from .db import RealDictCursor, _connection
 from .serialization import _date_conv
+
+
+def get_loan_daily_state_balances_for_recast_preview(
+    loan_id: int, recast_effective_date: date
+) -> tuple[dict[str, float] | None, date]:
+    """
+    Balances to show before a recast / restructure.
+
+    Prefer the latest row on or before **recast_effective_date − 1** (end of day before
+    the event). If there is no row on or before that date — e.g. first EOD row is on the
+    recast day itself — fall back to the row on or before **recast_effective_date**.
+    """
+    prior = recast_effective_date - timedelta(days=1)
+    b = get_loan_daily_state_balances(loan_id, prior)
+    if b is not None:
+        return b, prior
+    b2 = get_loan_daily_state_balances(loan_id, recast_effective_date)
+    if b2 is not None:
+        return b2, recast_effective_date
+    return None, prior
 
 
 def get_loan_daily_state_balances(loan_id: int, as_of_date: date) -> dict[str, float] | None:

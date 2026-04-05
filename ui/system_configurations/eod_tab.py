@@ -10,10 +10,7 @@ import streamlit as st
 
 from style import render_main_header, render_sub_header, render_sub_sub_header
 
-from accrual_convention import (
-    ACCRUAL_START_EFFECTIVE_DAY,
-    ACCRUAL_START_NEXT_DAY,
-)
+from accrual_convention import ACCRUAL_START_EFFECTIVE_DAY
 
 
 class EodConfigSnapshot(NamedTuple):
@@ -91,28 +88,13 @@ def render_eod_config_tab(
         "Configure how and when EOD runs, and which high-level tasks should be included. "
         "The detailed orchestration is fixed in code for safety and auditability."
     )
-    _accr_opts = (ACCRUAL_START_NEXT_DAY, ACCRUAL_START_EFFECTIVE_DAY)
-    _accr_ix = (
-        _accr_opts.index(accrual_start_convention_selected)
-        if accrual_start_convention_selected in _accr_opts
-        else 0
+    st.caption(
+        "Scheduled regular interest: **disbursement** and **each instalment due date** start a "
+        "period; interest accrues on every calendar day from that start through the day **before** "
+        "the next due (the due date begins the next period). Stored config key "
+        "`accrual_start_convention` is normalised to EFFECTIVE_DAY."
     )
-    accrual_start_convention_selected = st.selectbox(
-        "Interest accrual start (regular / scheduled)",
-        options=list(_accr_opts),
-        index=_accr_ix,
-        format_func=lambda x: {
-            ACCRUAL_START_NEXT_DAY: "Next day after period start (legacy)",
-            ACCRUAL_START_EFFECTIVE_DAY: "Effective period start (includes disbursement day)",
-        }[x],
-        key="syscfg_accrual_start_convention",
-        help=(
-            "Controls which calendar days receive scheduled regular interest from the saved "
-            "amortisation schedule. NEXT_DAY matches the previous behaviour (no accrual on "
-            "disbursement day). EFFECTIVE_DAY accrues from period start and does not accrue on "
-            "the due date, so the number of accrual days per period is unchanged."
-        ),
-    )
+    accrual_start_convention_selected = ACCRUAL_START_EFFECTIVE_DAY
 
     mode_label = st.radio(
         "EOD mode",

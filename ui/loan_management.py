@@ -64,11 +64,11 @@ def render_update_loans_ui(
         # ~45% + 45% + 10% spacer; small gap between the two selects for clarity
         _cust_col, _loan_col, _upd_sp = st.columns([9, 9, 2], gap="small", vertical_alignment="center")
         with _cust_col:
-            cust_sel = st.selectbox(
-                "Select Customer",
-                [get_display_name(c["id"]) for c in customers],
+        cust_sel = st.selectbox(
+            "Select Customer",
+            [get_display_name(c["id"]) for c in customers],
                 key="update_loan_cust",
-            )
+        )
         cust_id = next(c["id"] for c in customers if get_display_name(c["id"]) == cust_sel)
     
         loans = get_loans_by_customer(cust_id)
@@ -200,18 +200,18 @@ def render_update_loans_ui(
     
                         draft_details["approval_action"] = "TERMINATE"
                         draft_details["termination_reason"] = reason.strip()
-
+    
                         draft_id = run_with_spinner(
                             "Submitting termination request…",
                             lambda: save_loan_approval_draft(
-                                customer_id=loan["customer_id"],
-                                loan_type=loan["loan_type"],
-                                details=draft_details,
-                                schedule_df=None,
-                                product_code=loan.get("product_code"),
-                                created_by="ui_user",
-                                status="PENDING",
-                                loan_id=loan_id,
+                            customer_id=loan["customer_id"],
+                            loan_type=loan["loan_type"],
+                            details=draft_details,
+                            schedule_df=None,
+                            product_code=loan.get("product_code"),
+                            created_by="ui_user",
+                            status="PENDING",
+                            loan_id=loan_id,
                             ),
                         )
                         st.session_state["update_loans_flash"] = f"Termination request submitted (Draft #{draft_id})."
@@ -301,7 +301,7 @@ def render_approve_loans_ui(
                     else f"Customer #{draft['customer_id']}"
                 )
                 ap_action = str(details.get("approval_action") or "").strip().upper()
-
+    
                 st.markdown("### Draft inspection")
                 p1, p2, p3, p4 = st.columns(4)
                 with p1:
@@ -360,27 +360,27 @@ def render_approve_loans_ui(
                         st.caption("Status")
                         st.write(f"**{draft.get('status')}**")
                 else:
-                    with p2:
-                        st.caption("Amounts")
-                        st.write(f"Principal: **{float(details.get('principal') or 0):,.2f}**")
-                        st.write(f"Disbursed: **{float(details.get('disbursed_amount') or 0):,.2f}**")
-                        st.write(f"Installment: **{float(details.get('installment') or 0):,.2f}**")
-                        st.write(f"Total payment: **{float(details.get('total_payment') or 0):,.2f}**")
-                    with p3:
-                        st.caption("Pricing")
-                        st.write(f"Annual rate: **{float(details.get('annual_rate') or 0) * 100:.2f}%**")
-                        st.write(f"Monthly rate: **{float(details.get('monthly_rate') or 0) * 100:.2f}%**")
-                        st.write(f"Penalty: **{float(details.get('penalty_rate_pct') or 0):.2f}%**")
+                with p2:
+                    st.caption("Amounts")
+                    st.write(f"Principal: **{float(details.get('principal') or 0):,.2f}**")
+                    st.write(f"Disbursed: **{float(details.get('disbursed_amount') or 0):,.2f}**")
+                    st.write(f"Installment: **{float(details.get('installment') or 0):,.2f}**")
+                    st.write(f"Total payment: **{float(details.get('total_payment') or 0):,.2f}**")
+                with p3:
+                    st.caption("Pricing")
+                    st.write(f"Annual rate: **{float(details.get('annual_rate') or 0) * 100:.2f}%**")
+                    st.write(f"Monthly rate: **{float(details.get('monthly_rate') or 0) * 100:.2f}%**")
+                    st.write(f"Penalty: **{float(details.get('penalty_rate_pct') or 0):.2f}%**")
                         st.write(
                             f"Fees: **{float(details.get('drawdown_fee') or 0) * 100:.2f}% / "
                             f"{float(details.get('arrangement_fee') or 0) * 100:.2f}%**"
                         )
-                    with p4:
-                        st.caption("Dates & status")
-                        st.write(f"Tenor: **{int(details.get('term') or 0)} months**")
-                        st.write(f"First repay: **{details.get('first_repayment_date') or '—'}**")
-                        st.write(f"Disbursed on: **{details.get('disbursement_date') or '—'}**")
-                        st.write(f"Status: **{draft.get('status')}**")
+                with p4:
+                    st.caption("Dates & status")
+                    st.write(f"Tenor: **{int(details.get('term') or 0)} months**")
+                    st.write(f"First repay: **{details.get('first_repayment_date') or '—'}**")
+                    st.write(f"Disbursed on: **{details.get('disbursement_date') or '—'}**")
+                    st.write(f"Status: **{draft.get('status')}**")
     
                 with st.expander("View documents", expanded=False):
                     if documents_available:
@@ -688,7 +688,7 @@ def render_approve_loans_ui(
                             st.info("No journal simulation for this action type.")
                     except Exception as _je:
                         st.warning(f"Journal preview unavailable: {_je}")
-
+    
                 note = st.text_input("Reviewer note (optional)", key="approve_reviewer_note")
                 st.caption(
                     "**Send back to schedule builder** sets the draft to REWORK so capture staff can reload it under "
@@ -712,7 +712,7 @@ def render_approve_loans_ui(
                                 new_loan_id = approve_loan_approval_draft(
                                     int(selected_id), approved_by="approver_ui"
                                 )
-                                doc_count = 0
+                            doc_count = 0
                                 refreshed = get_loan_approval_draft(int(selected_id))
                                 dj = (refreshed or {}).get("details_json") or {}
                                 _sids = dj.get("split_created_loan_ids")
@@ -733,27 +733,27 @@ def render_approve_loans_ui(
                                             targets.append(int(id_b))
                                         except (TypeError, ValueError):
                                             pass
-                                if documents_available:
+                            if documents_available:
                                     docs = list_documents(
                                         entity_type="loan_approval_draft", entity_id=int(selected_id)
                                     )
                                     for lid in targets:
-                                        for row in docs:
-                                            full = get_document(int(row["id"]))
-                                            if not full:
-                                                continue
-                                            upload_document(
-                                                "loan",
+                                for row in docs:
+                                    full = get_document(int(row["id"]))
+                                    if not full:
+                                        continue
+                                    upload_document(
+                                        "loan",
                                                 int(lid),
-                                                int(full["category_id"]),
-                                                str(full["file_name"]),
-                                                str(full["file_type"]),
-                                                int(full["file_size"]),
-                                                full["file_content"],
-                                                uploaded_by="System User",
-                                                notes=str(full.get("notes") or ""),
-                                            )
-                                            doc_count += 1
+                                        int(full["category_id"]),
+                                        str(full["file_name"]),
+                                        str(full["file_type"]),
+                                        int(full["file_size"]),
+                                        full["file_content"],
+                                        uploaded_by="System User",
+                                        notes=str(full.get("notes") or ""),
+                                    )
+                                    doc_count += 1
                                 ap_done = str(dj.get("approval_action") or ap_action or "").strip().upper()
                                 if ap_done == "LOAN_MODIFICATION":
                                     msg = (
@@ -774,7 +774,7 @@ def render_approve_loans_ui(
                                 else:
                                     msg = (
                                         f"Loan approved successfully. Loan #{new_loan_id} created. "
-                                        f"{doc_count} document(s) copied."
+                                f"{doc_count} document(s) copied."
                                     )
                                 return int(new_loan_id), doc_count, msg
 
@@ -975,20 +975,20 @@ def render_view_schedule_ui(
         if search_by == "Loan ID":
             _half_l, _half_r = st.columns([1, 1])
             with _half_l:
-                id_col, btn_col = st.columns([2, 1])
-                with id_col:
-                    lid_input = st.number_input("Loan ID", min_value=1, value=1, step=1, key="view_sched_loan_id")
-                with btn_col:
-                    st.write("")
-                    st.write("")
-                    load_by_id = st.button("Load schedule", key="view_sched_load_by_id", use_container_width=True)
-                if load_by_id:
-                    loan = get_loan(int(lid_input)) if loan_management_available else None
-                    if not loan:
-                        st.warning(f"Loan #{lid_input} not found.")
-                    else:
-                        loan_id = int(lid_input)
-                        st.session_state["view_schedule_loan_id"] = loan_id
+            id_col, btn_col = st.columns([2, 1])
+            with id_col:
+                lid_input = st.number_input("Loan ID", min_value=1, value=1, step=1, key="view_sched_loan_id")
+            with btn_col:
+                st.write("")
+                st.write("")
+                load_by_id = st.button("Load schedule", key="view_sched_load_by_id", use_container_width=True)
+            if load_by_id:
+                loan = get_loan(int(lid_input)) if loan_management_available else None
+                if not loan:
+                    st.warning(f"Loan #{lid_input} not found.")
+                else:
+                    loan_id = int(lid_input)
+                    st.session_state["view_schedule_loan_id"] = loan_id
             loan_id = st.session_state.get("view_schedule_loan_id")
             with _half_r:
                 st.empty()
@@ -1004,16 +1004,16 @@ def render_view_schedule_ui(
                     cust_labels = [t[1] for t in cust_options]
                     cust_col, loan_col = st.columns([1, 1])
                     with cust_col:
-                        cust_sel = st.selectbox("Customer", cust_labels, key="view_sched_cust")
-                        cid = cust_options[cust_labels.index(cust_sel)][0] if cust_sel else None
+                    cust_sel = st.selectbox("Customer", cust_labels, key="view_sched_cust")
+                    cid = cust_options[cust_labels.index(cust_sel)][0] if cust_sel else None
                     with loan_col:
                         if not cid:
                             st.caption("Select a customer to choose a loan.")
                         else:
-                            loans_list = get_loans_by_customer(cid)
-                            if not loans_list:
-                                st.info("No loans for this customer.")
-                            else:
+                        loans_list = get_loans_by_customer(cid)
+                        if not loans_list:
+                            st.info("No loans for this customer.")
+                        else:
                                 loan_options = [
                                     (
                                         l["id"],
@@ -1021,10 +1021,10 @@ def render_view_schedule_ui(
                                     )
                                     for l in loans_list
                                 ]
-                                loan_labels = [t[1] for t in loan_options]
-                                loan_sel = st.selectbox("Loan", loan_labels, key="view_sched_loan_sel")
-                                if loan_sel:
-                                    loan_id = loan_options[loan_labels.index(loan_sel)][0]
+                            loan_labels = [t[1] for t in loan_options]
+                            loan_sel = st.selectbox("Loan", loan_labels, key="view_sched_loan_sel")
+                            if loan_sel:
+                                loan_id = loan_options[loan_labels.index(loan_sel)][0]
     
         if loan_id:
             try:

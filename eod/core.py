@@ -24,6 +24,7 @@ Security and scalability notes
 """
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -35,7 +36,6 @@ from psycopg2.extras import RealDictCursor
 
 from config import get_database_url
 from decimal_utils import as_10dp
-from accrual_convention import accrual_start_convention_from_config
 from eod.loan_daily_engine import LoanConfig, ScheduleEntry, Loan
 from accounting.periods import normalize_accounting_period_config, is_eom, is_eoy
 from eod.audit import (
@@ -46,6 +46,12 @@ from eod.audit import (
     finish_run as audit_finish_run,
     log_stage_event,
 )
+from loan_management.schedules import (
+    apply_schedule_version_bumps,
+    list_schedule_bumping_events,
+    parse_schedule_line_date,
+)
+
 from loan_management import (
     get_allocation_totals_for_loan_date,
     get_net_allocation_for_loan_date,
@@ -54,7 +60,6 @@ from loan_management import (
     get_loan_ids_with_reversed_receipts_on_date,
     get_loans_with_unapplied_balance,
     get_repayment_ids_for_loan_and_date,
-    get_schedule_lines,
     reallocate_repayment,
     save_loan_daily_state,
     apply_unapplied_funds_to_arrears_eod,
@@ -66,6 +71,8 @@ from loan_management import (
 
 # Treat balances below this as zero for "no arrears" and default/penalty zeroing (avoids float drift).
 ARREARS_ZERO_TOLERANCE = 1e-6
+
+_logger = logging.getLogger(__name__)
 
 
 def _persist_accrual_blocked_for_as_of(
@@ -140,6 +147,62 @@ def _fetch_active_loans(
     return result
 
 
+def _batch_fetch_schedule_versions_by_loan(
+    conn, loan_ids: List[int]
+) -> Dict[int, Dict[int, List[Dict[str, Any]]]]:
+    """
+    All saved schedule versions per loan: ``loan_id -> version -> [schedule_line rows]``.
+
+    EOD replays accrual with the version **in force on each calendar day** (recast/modification
+    bumps). Using only the latest version mis-states history (gaps on bump days, or a synthetic
+    [disbursement → recast] period with Period 0's zero interest).
+    """
+    result: Dict[int, Dict[int, List[Dict[str, Any]]]] = {lid: {} for lid in loan_ids}
+    if not loan_ids:
+        return result
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT ls.loan_id, ls.version,
+                   sl.id AS line_id, sl.loan_schedule_id, sl."Period", sl."Date",
+                   sl.payment, sl.principal, sl.interest, sl.principal_balance, sl.total_outstanding
+            FROM schedule_lines sl
+            INNER JOIN loan_schedules ls ON sl.loan_schedule_id = ls.id
+            WHERE ls.loan_id = ANY(%s)
+            ORDER BY ls.loan_id, ls.version, sl."Period"
+            """,
+            (loan_ids,),
+        )
+        for row in cur.fetchall():
+            lid = int(row["loan_id"])
+            ver = int(row["version"])
+            d = {
+                "id": row.get("line_id"),
+                "loan_schedule_id": row.get("loan_schedule_id"),
+                "Period": row.get("Period"),
+                "Date": row.get("Date"),
+                "payment": row.get("payment"),
+                "principal": row.get("principal"),
+                "interest": row.get("interest"),
+                "principal_balance": row.get("principal_balance"),
+                "total_outstanding": row.get("total_outstanding"),
+            }
+            result[lid].setdefault(ver, []).append(d)
+    return result
+
+
+def _schedule_rows_for_version(
+    ver_rows: Dict[int, List[Dict[str, Any]]], version: int
+) -> List[Dict[str, Any]]:
+    """Lines for ``version``, or the nearest lower version that has rows."""
+    if ver_rows.get(version):
+        return ver_rows[version]
+    for v in range(int(version), 0, -1):
+        if ver_rows.get(v):
+            return ver_rows[v]
+    return []
+
+
 def _batch_fetch_schedules(
     conn, loan_ids: List[int]
 ) -> Dict[int, List[Dict[str, Any]]]:
@@ -172,6 +235,39 @@ def _batch_fetch_schedules(
             if lid is not None:
                 result[lid].append(dict(row))
     return result
+
+
+def _batch_fetch_all_schedule_due_dates(conn, loan_ids: List[int]) -> Dict[int, frozenset[date]]:
+    """
+    Every due date appearing on any saved schedule version per loan.
+
+    Used for ``*_interest_period_to_date`` resets: persisted period-to-date must restart
+    after each contractual due.  After recast, the *latest* schedule often omits historical
+    dues (e.g. 29 Mar); if we only checked that version, ``due_yesterday`` would never fire
+    on the real boundary and ``regular_interest_period_to_date`` would drift from the sum
+    of ``regular_interest_daily`` in the open period (and disagree with ``interest_accrued_balance`` evolution).
+    """
+    if not loan_ids:
+        return {}
+    buckets: Dict[int, set[date]] = {}
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT ls.loan_id AS loan_id, sl."Date" AS d
+            FROM schedule_lines sl
+            INNER JOIN loan_schedules ls ON sl.loan_schedule_id = ls.id
+            WHERE ls.loan_id = ANY(%s)
+            """,
+            (loan_ids,),
+        )
+        for row in cur.fetchall():
+            lid = int(row["loan_id"])
+            raw = row.get("d")
+            parsed = parse_schedule_line_date(raw)
+            if parsed is None:
+                continue
+            buckets.setdefault(lid, set()).add(parsed)
+    return {lid: frozenset(ds) for lid, ds in buckets.items()}
 
 
 _EMPTY_ALLOC: Dict[str, float] = {
@@ -430,8 +526,6 @@ def _loan_config_from_row(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> 
 
     flat_interest = (sys_cfg.get("interest_method") or "Reducing balance") == "Flat rate"
 
-    accrual_conv = accrual_start_convention_from_config(sys_cfg)
-
     return LoanConfig(
         regular_rate_per_month=monthly_rate,
         default_interest_absolute_rate_per_month=default_abs_monthly,
@@ -440,8 +534,37 @@ def _loan_config_from_row(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> 
         penalty_on_principal_arrears_only=penalty_on_principal_arrears_only,
         waterfall_bucket_order=waterfall_bucket_order,
         flat_interest=flat_interest,
-        accrual_start_convention=accrual_conv,
     )
+
+
+def _parse_schedule_row_due(row: Dict[str, Any]) -> date | None:
+    raw_date = row.get("Date") or row.get("date")
+    if raw_date is None or raw_date == "":
+        return None
+    return parse_schedule_line_date(raw_date)
+
+
+def _validate_schedule_accrual_periods(
+    entries: List[ScheduleEntry], disbursement_date: date
+) -> None:
+    """
+    Enforce contiguous accrual periods: first period starts on disbursement; each instalment
+    due date equals the next period's start (no gaps or overlaps before final maturity).
+    """
+    if not entries:
+        return
+    if entries[0].period_start < disbursement_date:
+        raise ValueError(
+            f"Schedule accrual: first period_start ({entries[0].period_start}) must be on or after "
+            f"disbursement_date ({disbursement_date})."
+        )
+    for i in range(len(entries) - 1):
+        cur, nxt = entries[i], entries[i + 1]
+        if cur.due_date != nxt.period_start:
+            raise ValueError(
+                "Schedule accrual: periods must chain without gaps — instalment due "
+                f"{cur.due_date} must equal next period_start ({nxt.period_start})."
+            )
 
 
 def _build_schedule_entries(
@@ -451,28 +574,47 @@ def _build_schedule_entries(
     Convert DB schedule_lines rows into engine ScheduleEntry objects.
 
     Period start is taken as:
-      - disbursement_date for the first row;
+      - disbursement_date for the first **instalment** row (after any Period 0 opening rows);
       - previous row's due_date for subsequent rows.
+
+    **Period 0** rows (opening balance at booking or recast) do not create a ScheduleEntry: they
+    only set where the next accrual period starts, so we do not fabricate a long
+    [disbursement → recast] window with zero scheduled interest from the opening line.
+
+    Rows are ordered by instalment due date before building so the period chain is chronological.
     """
+    schedule_rows = sorted(
+        schedule_rows,
+        key=lambda r: (_parse_schedule_row_due(r) or date.max,),
+    )
     entries: List[ScheduleEntry] = []
     prev_due: date | None = None
 
     disb_date = loan_row.get("disbursement_date") or loan_row.get("start_date")
     if hasattr(disb_date, "isoformat"):
         period_start: date = disb_date
+        disb_for_validate: date = disb_date
     else:
         from eod.system_business_date import get_effective_date
+
         period_start = get_effective_date()
+        disb_for_validate = period_start
 
     for row in schedule_rows:
-        raw_date = row.get("Date") or row.get("date")
-        if not raw_date:
+        due_date = _parse_schedule_row_due(row)
+        if due_date is None:
             continue
-        # Stored as string like "31-Mar-2026"
-        if isinstance(raw_date, str):
-            due_date = datetime.strptime(raw_date[:32], "%d-%b-%Y").date()
-        else:
-            due_date = raw_date
+
+        try:
+            pnum = int(row.get("Period") or row.get("period") or 0)
+        except (TypeError, ValueError):
+            pnum = 0
+
+        if pnum == 0:
+            # Opening row: next contractual period accrues from this date (recast/modification
+            # effective date), not from original disbursement.
+            period_start = due_date
+            continue
 
         if prev_due is not None:
             period_start = prev_due
@@ -480,8 +622,7 @@ def _build_schedule_entries(
         principal_component = Decimal(str(row.get("principal") or row.get("Principal") or 0))
         interest_component = Decimal(str(row.get("interest") or row.get("Interest") or 0))
 
-        # Skip zero-length periods (e.g. Period 0 at disbursement from term-loan generator).
-        # Those rows have due_date == period_start and break accrual window math for both conventions.
+        # Skip zero-length periods (e.g. stub line with due on period_start).
         if due_date <= period_start:
             continue
 
@@ -495,7 +636,41 @@ def _build_schedule_entries(
         )
         prev_due = due_date
 
+    _validate_schedule_accrual_periods(entries, disb_for_validate)
     return entries
+
+
+def _eod_sync_engine_schedule_for_date(
+    engine_loan: Loan,
+    loan_row: Dict[str, Any],
+    on_date: date,
+    bumps: List[tuple[date, int]],
+    ver_rows: Dict[int, List[Dict[str, Any]]],
+) -> None:
+    """Swap ``engine_loan.schedule`` when ``loan_schedules.version`` in force changes on ``on_date``."""
+    v = apply_schedule_version_bumps(on_date, bumps)
+    if v == getattr(engine_loan, "_eod_schedule_version", None):
+        return
+    rows = _schedule_rows_for_version(ver_rows, v)
+    if not rows:
+        _logger.warning(
+            "EOD loan_id=%s: no schedule lines for version %s on %s; keeping prior schedule entries.",
+            loan_row.get("id"),
+            v,
+            on_date.isoformat(),
+        )
+        return
+    try:
+        engine_loan.schedule = _build_schedule_entries(loan_row, rows)
+        engine_loan._eod_schedule_version = v
+    except ValueError as e:
+        _logger.warning(
+            "EOD loan_id=%s: version %s invalid on %s: %s",
+            loan_row.get("id"),
+            v,
+            on_date.isoformat(),
+            e,
+        )
 
 
 @dataclass
@@ -538,29 +713,40 @@ def get_engine_state_for_loan_date(loan_id: int, as_of_date: date) -> Dict[str, 
         if not row:
             return None
         loan_row = dict(row)
-    schedule_rows = get_schedule_lines(loan_id)
-    if not schedule_rows:
+        ver_map = _batch_fetch_schedule_versions_by_loan(conn, [loan_id])
+    ver_rows = ver_map.get(loan_id, {})
+    if not ver_rows or not any(ver_rows.values()):
         return None
     effective_cfg = _effective_config_for_loan(loan_row, sys_cfg)
     config = _loan_config_from_row(loan_row, effective_cfg)
-    schedule_entries = _build_schedule_entries(loan_row, schedule_rows)
-    if not schedule_entries:
-        return None
     principal = Decimal(str(loan_row.get("principal") or loan_row.get("disbursed_amount") or 0))
     disb_date = loan_row.get("disbursement_date") or loan_row.get("start_date")
     if not isinstance(disb_date, date):
         disb_date = as_of_date
     if disb_date > as_of_date:
         return None
+    bumps = list_schedule_bumping_events(loan_id)
+    v0 = apply_schedule_version_bumps(disb_date, bumps)
+    rows0 = _schedule_rows_for_version(ver_rows, v0)
+    if not rows0:
+        return None
+    try:
+        schedule_entries0 = _build_schedule_entries(loan_row, rows0)
+    except ValueError:
+        return None
+    if not schedule_entries0:
+        return None
     engine_loan = Loan(
         loan_id=str(loan_id),
         disbursement_date=disb_date,
         original_principal=principal,
         config=config,
-        schedule=schedule_entries,
+        schedule=schedule_entries0,
     )
+    setattr(engine_loan, "_eod_schedule_version", v0)
     current = disb_date
     while current <= as_of_date:
+        _eod_sync_engine_schedule_for_date(engine_loan, loan_row, current, bumps, ver_rows)
         engine_loan.process_day(current)
         current += timedelta(days=1)
     return {
@@ -614,23 +800,26 @@ def _run_loan_engine_for_date(
 
         # Batch-load all auxiliary data: O(1) queries regardless of portfolio size.
         schedules_map          = _batch_fetch_schedules(conn, loan_ids)
+        schedules_versions_map = _batch_fetch_schedule_versions_by_loan(conn, loan_ids)
+        all_schedule_due_dates_map = _batch_fetch_all_schedule_due_dates(conn, loan_ids)
         alloc_map              = _batch_fetch_allocation_totals(conn, loan_ids, as_of_date)
         yesterday_map          = _batch_fetch_yesterday_states(conn, loan_ids, yesterday)
         net_alloc_map, unalloc_map = _batch_fetch_net_alloc_and_unallocated(conn, loan_ids, as_of_date)
 
     for loan_row in loans:
         loan_id_int = int(loan_row["id"])
-        schedule_rows = schedules_map.get(loan_id_int, [])
-        if not schedule_rows:
-            # Skip loans without schedules; nothing to accrue yet.
+        ver_rows = schedules_versions_map.get(loan_id_int, {})
+        if not ver_rows or not any(ver_rows.values()):
+            if not schedules_map.get(loan_id_int):
+                continue
+            _logger.warning(
+                "EOD loan_id=%s: latest schedule pointer exists but version map is empty; skipping.",
+                loan_id_int,
+            )
             continue
 
         effective_cfg = _effective_config_for_loan(loan_row, sys_cfg)
         config = _loan_config_from_row(loan_row, effective_cfg)
-        schedule_entries = _build_schedule_entries(loan_row, schedule_rows)
-        if not schedule_entries:
-            # No valid instalment rows after dropping zero-length stubs (e.g. only Period 0).
-            continue
 
         # Opening principal for the engine is the total loan amount (principal column),
         # not the disbursed amount. This ensures interest is charged on the full debt.
@@ -644,17 +833,43 @@ def _run_loan_engine_for_date(
         if disb_date > as_of_date:
             continue
 
+        bumps = list_schedule_bumping_events(loan_id_int)
+        v0 = apply_schedule_version_bumps(disb_date, bumps)
+        rows0 = _schedule_rows_for_version(ver_rows, v0)
+        if not rows0:
+            _logger.warning("EOD skipped loan_id=%s: no schedule lines for version %s at disbursement.", loan_id_int, v0)
+            continue
+        try:
+            schedule_entries0 = _build_schedule_entries(loan_row, rows0)
+        except ValueError as e:
+            _logger.warning(
+                "EOD skipped loan_id=%s: invalid schedule v%s at disbursement (%s).",
+                loan_id_int,
+                v0,
+                e,
+            )
+            continue
+        if not schedule_entries0:
+            _logger.warning(
+                "EOD skipped loan_id=%s: version %s produces no accrual periods.",
+                loan_id_int,
+                v0,
+            )
+            continue
+
         engine_loan = Loan(
             loan_id=str(loan_id_int),
             disbursement_date=disb_date,
             original_principal=principal,
             config=config,
-            schedule=schedule_entries,
+            schedule=schedule_entries0,
         )
+        setattr(engine_loan, "_eod_schedule_version", v0)
 
-        # Run engine to yesterday to get engine state at end of yesterday (for deltas)
+        # Run engine to yesterday: use schedule **version in force on each day** (recast/modification).
         current = disb_date
         while current <= yesterday:
+            _eod_sync_engine_schedule_for_date(engine_loan, loan_row, current, bumps, ver_rows)
             engine_loan.process_day(current)
             current += timedelta(days=1)
 
@@ -671,6 +886,7 @@ def _run_loan_engine_for_date(
 
         # Run one more day to get engine state at end of today
         if as_of_date > yesterday and not block_accruals:
+            _eod_sync_engine_schedule_for_date(engine_loan, loan_row, as_of_date, bumps, ver_rows)
             engine_loan.process_day(as_of_date)
         elif block_accruals:
             # Force daily accrual metrics to zero since we blocked processing for today
@@ -705,8 +921,15 @@ def _run_loan_engine_for_date(
 
         # Non-due-date guard: arrears principal/interest must only move by persisted allocations.
         # This prevents hidden drift from engine/session recomputation on dates without due transitions.
-        due_today = any(e.due_date == as_of_date for e in schedule_entries)
-        due_yesterday = any(e.due_date == yesterday for e in schedule_entries)
+        v_asof = apply_schedule_version_bumps(as_of_date, bumps)
+        rows_asof = _schedule_rows_for_version(ver_rows, v_asof)
+        try:
+            entries_asof = _build_schedule_entries(loan_row, rows_asof)
+        except ValueError:
+            entries_asof = list(engine_loan.schedule)
+        due_today = any(e.due_date == as_of_date for e in entries_asof)
+        # Period-to-date resets: any contractual due on any saved version (not latest only).
+        due_yesterday = yesterday in all_schedule_due_dates_map.get(loan_id_int, frozenset())
         if yesterday_saved is not None and not due_today:
             principal_not_due = max(
                 0.0,

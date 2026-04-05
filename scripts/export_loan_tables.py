@@ -421,6 +421,18 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
                     COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
                     OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
                     OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR EXISTS (
+                        SELECT 1
+                        FROM loan_repayment_allocation sysalloc
+                        WHERE sysalloc.repayment_id = lr.id
+                          AND (
+                                sysalloc.event_type = 'unapplied_funds_allocation'
+                             OR (
+                                  sysalloc.event_type = 'unallocation_parent_reversed'
+                                  AND sysalloc.source_repayment_id IS NOT NULL
+                                )
+                              )
+                    )
                   )
                 GROUP BY lr.id, lr.loan_id, lr.value_date, lr.payment_date, lr.amount
             ),
@@ -567,6 +579,18 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                     COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
                     OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
                     OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
+                    OR EXISTS (
+                        SELECT 1
+                        FROM loan_repayment_allocation sysalloc
+                        WHERE sysalloc.repayment_id = lr.id
+                          AND (
+                                sysalloc.event_type = 'unapplied_funds_allocation'
+                             OR (
+                                  sysalloc.event_type = 'unallocation_parent_reversed'
+                                  AND sysalloc.source_repayment_id IS NOT NULL
+                                )
+                              )
+                    )
                   )
                 GROUP BY
                     lr.loan_id, lr.id, lr.value_date, lr.payment_date,

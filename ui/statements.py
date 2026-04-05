@@ -13,8 +13,22 @@ import pandas as pd
 import streamlit as st
 
 from display_formatting import format_display_amount
+from reporting.statements import PERIODIC_NUMERIC_HEADINGS
+from style import BRAND_GREEN
 
 from ui.streamlit_feedback import run_with_spinner
+
+# Money columns for both periodic and customer/flow statements (10dp in row dicts; CSV keeps full precision).
+_STATEMENT_MONEY_COLUMNS = frozenset(
+    {
+        "Debits",
+        "Credits",
+        "Balance",
+        "Arrears",
+        "Unapplied funds",
+        *PERIODIC_NUMERIC_HEADINGS,
+    }
+)
 
 def _make_statement_pdf(df, customer_name, cust_id, loan_id, start_fmt, end_fmt, statement_title):
     """Build PDF bytes for statement with header (customer, ID, period) and table. statement_title e.g. 'Loan Statement (Internal – Daily)' or 'Customer loan statement'."""
@@ -94,6 +108,8 @@ def _statement_table_html(
 
     def _th_td_classes(col_name: str) -> str:
         parts: list[str] = []
+        if col_name in _STATEMENT_MONEY_COLUMNS:
+            parts.append("num")
         if col_name in center_set:
             parts.append("center")
         if col_name == "Due Date":
@@ -129,7 +145,7 @@ _STMT_PRINT_WINDOW_CSS = (
     ".stmt-table td.num,.stmt-table th.num{text-align:right;}"
     ".stmt-table td.center,.stmt-table th.center{text-align:center;}"
     ".stmt-table th.stmt-due-date,.stmt-table td.stmt-due-date{width:1%;white-space:nowrap;max-width:5.75rem;"
-    "font-size:0.88rem;text-align:center;vertical-align:middle;}"
+    "font-size:0.88rem;text-align:left;vertical-align:middle;}"
     ".stmt-table tbody tr:nth-child(even){background:#f8fafc;}"
     ".stmt-closing{margin-top:0.75rem;text-align:center;font-size:1rem;padding:0.5rem;"
     "border-top:1px solid #e2e8f0;color:#334155;}"
@@ -145,13 +161,13 @@ def _statement_export_bar_html(
     csv_file_name: str,
     pdf_file_name: str,
 ) -> str:
-    """Single-row HTML: equal-width green Download CSV / Download PDF / Print (statement-only print)."""
-    csv_b64 = base64.standard_b64encode(csv_bytes).decode("ascii")
+    """Single-row HTML: brand-themed Download PDF + Print."""
     print_b64 = base64.standard_b64encode(print_inner_html.encode("utf-8")).decode("ascii")
     uid = uuid.uuid4().hex[:12]
-    csv_fn = html_module.escape(csv_file_name, quote=True)
-    pdf_fn = html_module.escape(pdf_file_name, quote=True)
+    css_js = json.dumps(_STMT_PRINT_WINDOW_CSS)
+    btn_bg = BRAND_GREEN
     if pdf_bytes:
+        pdf_fn = html_module.escape(pdf_file_name, quote=True)
         pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
         pdf_el = (
             f'<a class="stmt-exp" href="data:application/pdf;base64,{pdf_b64}" '
@@ -159,21 +175,21 @@ def _statement_export_bar_html(
         )
     else:
         pdf_el = '<span class="stmt-exp stmt-exp--disabled">Download PDF</span>'
-    css_js = json.dumps(_STMT_PRINT_WINDOW_CSS)
     return f"""<div style="width:100%;box-sizing:border-box;">
 <style>
 .stmt-exp-wrap {{ display:flex; gap:0.65rem; width:100%; align-items:stretch; box-sizing:border-box; }}
 .stmt-exp {{
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 0 0 auto;
+  width: 10.5rem;
   text-align: center;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 2.85rem;
-  padding: 0.45rem 0.5rem;
+  min-height: 2.25rem;
+  height: 2.25rem;
+  padding: 0.2rem 0.6rem;
   box-sizing: border-box;
-  background: #16a34a;
+  background: {btn_bg};
   color: #fff !important;
   border: none;
   border-radius: 6px;
@@ -183,7 +199,7 @@ def _statement_export_bar_html(
   text-decoration: none !important;
   font-family: system-ui, Segoe UI, sans-serif;
 }}
-.stmt-exp:hover {{ background: #15803d !important; color: #fff !important; }}
+.stmt-exp:hover {{ filter: brightness(0.93) !important; color: #fff !important; }}
 .stmt-exp--disabled {{
   background: #94a3b8 !important;
   cursor: not-allowed;
@@ -192,10 +208,9 @@ def _statement_export_bar_html(
 }}
 .stmt-exp--disabled:hover {{ background: #94a3b8 !important; color: #fff !important; }}
 </style>
-<div class="stmt-exp-wrap">
-<a class="stmt-exp" href="data:text/csv;charset=utf-8;base64,{csv_b64}" download="{csv_fn}">Download CSV</a>
+<div class="stmt-exp-wrap" style="display:grid;grid-template-columns:1fr;gap:0.45rem;justify-items:start;">
+<button type="button" class="stmt-exp" id="stmt-print-{uid}">Print PDF</button>
 {pdf_el}
-<button type="button" class="stmt-exp" id="stmt-print-{uid}">Print</button>
 </div>
 <textarea id="stmt-b64-{uid}" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none" aria-hidden="true" readonly>{print_b64}</textarea>
 <script>
@@ -252,7 +267,12 @@ def render_statements_ui(
             return
     
         try:
-            from reporting.statements import generate_customer_facing_statement
+            from reporting.statements import (
+                generate_customer_facing_flow_statement,
+                generate_customer_facing_statement,
+                recalculate_flow_statement_running_balances,
+            )
+            from reporting.statement_events import rollup_flow_statement_rows_for_display
         except ImportError as e:
             st.error(f"Statements module not available: {e}")
             return
@@ -292,6 +312,21 @@ def render_statements_ui(
             nm_s = str(nm or "").strip()
             return nm_s if nm_s else f"Customer #{cid_n}"
     
+        st.markdown(
+            """
+<style>
+button[aria-label="Generate statement"]{
+  min-height:2.25rem !important;
+  height:2.25rem !important;
+  width:10.5rem !important;
+  padding:0.2rem 0.6rem !important;
+  font-size:0.9rem !important;
+}
+</style>
+""",
+            unsafe_allow_html=True,
+        )
+
         tab_loan, tab_gl = st.tabs(["Customer loan statement", "General Ledger"])
         with tab_loan:
             st.markdown("##### Customer loan statement")
@@ -405,7 +440,7 @@ def render_statements_ui(
                         disbursement = datetime.fromisoformat(disbursement[:10]).date()
                     start_default = disbursement or get_system_date()
                     dr0, dr1, dr2, dr3, dr4, dr5 = st.columns(
-                        [0.95, 0.95, 0.55, 0.55, 0.55, 1.05],
+                        [0.9, 0.9, 1.45, 0.6, 0.6, 0.9],
                         gap="xsmall",
                     )
                     with dr0:
@@ -423,27 +458,65 @@ def render_statements_ui(
                             key="stmt_end",
                             help="Statement runs through this date.",
                         )
+                    stmt_type_labels = [
+                        "Customer Statement - Letterhead",
+                        "Customer Statement - Daily",
+                        "Customer Statement - Stock based (Legacy)",
+                    ]
+                    stmt_type_map = {
+                        "Customer Statement - Letterhead": "letterhead",
+                        "Customer Statement - Daily": "daily",
+                        "Customer Statement - Stock based (Legacy)": "stock_legacy",
+                    }
                     with dr2:
-                        show_pa_billing = st.checkbox(
-                            "Principal arrears billing",
-                            value=True,
-                            key="stmt_show_pa_billing",
-                            help="Include principal arrears billing (informational) lines.",
+                        stmt_type_label = st.selectbox(
+                            "Statement type",
+                            stmt_type_labels,
+                            index=0,
+                            key="stmt_type",
+                            help="Choose one of the 3 customer statement formats.",
                         )
-                    with dr3:
-                        show_arrears_col = st.checkbox(
-                            "Arrears column",
-                            value=True,
-                            key="stmt_show_arrears_col",
-                            help="Show arrears column on the statement.",
-                        )
-                    with dr4:
-                        show_unapplied_col = st.checkbox(
-                            "Unapplied funds column",
-                            value=True,
-                            key="stmt_show_unapplied_col",
-                            help="Show unapplied funds column on the statement.",
-                        )
+                    stmt_type_key = stmt_type_map.get(stmt_type_label, "letterhead")
+
+                    if stmt_type_key == "letterhead":
+                        use_flow_statement = True
+                        rollup_flow_accruals = True
+                        show_pa_billing = False
+                        show_arrears_col = True
+                        show_unapplied_col = True
+                    elif stmt_type_key == "daily":
+                        use_flow_statement = True
+                        rollup_flow_accruals = False
+                        show_pa_billing = True
+                        show_arrears_col = True
+                        show_unapplied_col = True
+                    else:
+                        use_flow_statement = False
+                        rollup_flow_accruals = False
+                        with dr3:
+                            show_pa_billing = st.checkbox(
+                                "Principal arrears billing",
+                                value=True,
+                                key="stmt_show_pa_billing",
+                                help="Include principal arrears billing (informational) lines.",
+                            )
+                        with dr4:
+                            show_arrears_col = st.checkbox(
+                                "Arrears column",
+                                value=True,
+                                key="stmt_show_arrears_col",
+                                help="Show arrears column on the statement.",
+                            )
+                    if stmt_type_key == "stock_legacy":
+                        with dr5:
+                            show_unapplied_col = st.checkbox(
+                                "Unapplied funds column",
+                                value=True,
+                                key="stmt_show_unapplied_col",
+                                help="Show unapplied funds column on the statement.",
+                            )
+                    else:
+                        show_unapplied_col = True
                     with dr5:
                         gen_stmt = st.button(
                             "Generate statement",
@@ -455,12 +528,49 @@ def render_statements_ui(
                     if gen_stmt:
                         try:
                             def _do_generate_statement() -> None:
-                                rows, meta = generate_customer_facing_statement(
-                                    loan_id,
-                                    start_date=start_date,
-                                    end_date=end_date,
-                                    include_principal_arrears_billing=show_pa_billing,
-                                )
+                                cust_for_auth = _normalize_customer_id(loan_info.get("customer_id"))
+                                allowed_ids = [cust_for_auth] if cust_for_auth is not None else None
+                                if use_flow_statement:
+                                    rows, meta = generate_customer_facing_flow_statement(
+                                        loan_id,
+                                        start_date=start_date,
+                                        end_date=end_date,
+                                        allowed_customer_ids=allowed_ids,
+                                    )
+                                    if rollup_flow_accruals:
+                                        disb_r = loan_info.get("disbursement_date") or loan_info.get("start_date")
+                                        if hasattr(disb_r, "date"):
+                                            disb_r = disb_r.date()
+                                        elif isinstance(disb_r, str):
+                                            from datetime import datetime as _dt
+
+                                            disb_r = _dt.fromisoformat(disb_r[:10]).date()
+                                        else:
+                                            disb_r = None
+                                        sys_biz = get_system_date()
+                                        rows = rollup_flow_statement_rows_for_display(
+                                            rows,
+                                            loan_id=loan_id,
+                                            disbursement_date=disb_r,
+                                            system_business_date=sys_biz,
+                                        )
+                                        recalculate_flow_statement_running_balances(
+                                            rows,
+                                            opening_loan=meta.get("opening_loan"),
+                                            opening_unapplied=meta.get("opening_unapplied"),
+                                        )
+                                    rows = [
+                                        {k: v for k, v in r.items() if not str(k).startswith("_")}
+                                        for r in rows
+                                    ]
+                                else:
+                                    rows, meta = generate_customer_facing_statement(
+                                        loan_id,
+                                        start_date=start_date,
+                                        end_date=end_date,
+                                        include_principal_arrears_billing=show_pa_billing,
+                                        allowed_customer_ids=allowed_ids,
+                                    )
                                 if not rows:
                                     st.info("No statement lines for this period.")
                                 else:
@@ -478,10 +588,9 @@ def render_statements_ui(
                                         else (str(gen) if gen else "")
                                     )
 
-                                    statement_title = "Customer loan statement"
-                                    numeric_cols = ["Debits", "Credits", "Balance", "Arrears", "Unapplied funds"]
-                                    for c in numeric_cols:
-                                        if c in df.columns:
+                                    statement_title = stmt_type_label
+                                    for c in df.columns:
+                                        if c in _STATEMENT_MONEY_COLUMNS:
                                             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
                                     visible_df = df.copy()
@@ -502,15 +611,10 @@ def render_statements_ui(
                                             stmt_df = visible_df
                                     else:
                                         stmt_df = visible_df
-                                    center_cols = [
-                                        c
-                                        for c in ["Debits", "Credits", "Balance", "Arrears", "Unapplied funds"]
-                                        if c in stmt_df.columns
-                                    ]
                                     table_html = _statement_table_html(
                                         stmt_df,
                                         display_headers,
-                                        center_columns=center_cols,
+                                        center_columns=[],
                                         get_system_config=get_system_config,
                                     )
                                     closing_html = ""
@@ -548,59 +652,12 @@ def render_statements_ui(
                                         "</div>"
                                     )
                                     stmt_inner = header_fragment + table_html + closing_html
-                                    stmt_html = (
-                                        "<style>"
-                                        "main .block-container { max-width: 100% !important; padding-left: 1.5rem; padding-right: 1.5rem; } "
-                                        "[data-testid='stSidebar'] { width: 16rem !important; } "
-                                        ".stmt-view { width: 100%; max-width: 100%; overflow-x: auto; margin-top: 1rem; } "
-                                        ".stmt-view .stmt-header { margin-bottom: 0.5rem; padding: 0.5rem 0.75rem; border: 1px solid #e2e8f0; border-radius: 4px; background: #f8fafc; font-size: 1.1rem; } "
-                                        ".stmt-view .stmt-table { width: 100%; border-collapse: collapse; font-size: 1.1rem; background: #fff; } "
-                                        ".stmt-view .stmt-table th, .stmt-view .stmt-table td { border: 1px solid #e2e8f0; padding: 0.35rem 0.45rem; text-align: left; } "
-                                        ".stmt-view .stmt-table th { background: #f1f5f9; font-weight: 600; } "
-                                        ".stmt-view .stmt-table td.num, .stmt-view .stmt-table th.num { text-align: right; } "
-                                        ".stmt-view .stmt-table td.center, .stmt-view .stmt-table th.center { text-align: center; } "
-                                        ".stmt-view .stmt-table th.stmt-due-date, .stmt-view .stmt-table td.stmt-due-date { "
-                                        "width: 1%; white-space: nowrap; max-width: 5.75rem; font-size: 0.92rem; "
-                                        "text-align: center; vertical-align: middle; } "
-                                        ".stmt-view .stmt-table tbody tr:nth-child(even) { background: #f8fafc; } "
-                                        ".stmt-closing { margin-top: 0.75rem; text-align: center; font-size: 1.1rem; padding: 0.5rem; border-top: 1px solid #e2e8f0; color: #334155; } "
-                                        "</style>"
-                                        "<div class='stmt-view'>"
-                                        + stmt_inner
-                                        + "</div>"
-                                    )
-                                    st.markdown(stmt_html, unsafe_allow_html=True)
-
-                                    for note in meta.get("notifications") or []:
-                                        st.warning(note)
-
-                                    st.markdown(
-                                        "<div style='margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #e2e8f0; color: #64748b; font-size: 1.125rem;'>"
-                                        f"For the period from {start_fmt} to {end_fmt}<br>"
-                                        f"<strong>Generated:</strong> {generated_fmt}"
-                                        "</div>",
-                                        unsafe_allow_html=True,
-                                    )
-                                    # CSV with header (comment lines at top) so all formats include header
-                                    stmt_slug = "customer"
-                                    csv_header_lines = [
-                                        f"# {statement_title}",
-                                        f"# Customer: {customer_name}",
-                                        f"# Customer ID: {cust_id if cust_id is not None else '—'}",
-                                        f"# Loan ID: {loan_id}",
-                                        f"# Period covered: {start_fmt} to {end_fmt}",
-                                        "#",
-                                    ]
-                                    buf = BytesIO()
-                                    buf.write(("\n".join(csv_header_lines) + "\n").encode("utf-8"))
-                                    visible_df.to_csv(
-                                        buf,
-                                        index=False,
-                                        date_format="%Y-%m-%d",
-                                        float_format="%.2f",
-                                    )
-                                    buf.seek(0)
-                                    csv_raw = buf.getvalue()
+                                    stmt_slug = {
+                                        "letterhead": "customer_letterhead",
+                                        "daily": "customer_daily",
+                                        "stock_legacy": "customer_stock_legacy",
+                                    }.get(stmt_type_key, "customer")
+                                    _pdf_name = f"loan_statement_{stmt_slug}_{loan_id}_{start_date}_{end_date}.pdf"
                                     pdf_bytes = _make_statement_pdf(
                                         visible_df,
                                         customer_name,
@@ -610,19 +667,67 @@ def render_statements_ui(
                                         end_fmt,
                                         statement_title,
                                     )
-                                    _csv_name = f"loan_statement_{stmt_slug}_{loan_id}_{start_date}_{end_date}.csv"
-                                    _pdf_name = f"loan_statement_{stmt_slug}_{loan_id}_{start_date}_{end_date}.pdf"
+
                                     st.components.v1.html(
                                         _statement_export_bar_html(
-                                            csv_bytes=csv_raw,
+                                            csv_bytes=b"",
                                             pdf_bytes=pdf_bytes,
                                             print_inner_html=stmt_inner,
-                                            csv_file_name=_csv_name,
+                                            csv_file_name="",
                                             pdf_file_name=_pdf_name,
                                         ),
                                         height=96,
                                     )
 
+                                    st.markdown(f"##### {statement_title}")
+                                    st.caption(
+                                        f"Customer: {customer_name} | Customer ID: {cust_id if cust_id is not None else '—'} | "
+                                        f"Loan ID: {loan_id} | Period: {start_fmt} to {end_fmt}"
+                                    )
+                                    stmt_df_display = stmt_df.rename(columns=display_headers)
+                                    if money_df_column_config is not None:
+                                        st.dataframe(
+                                            stmt_df_display,
+                                            column_config=money_df_column_config(
+                                                stmt_df_display,
+                                                overrides={
+                                                    "Due Date": {
+                                                        **st.column_config.TextColumn(),
+                                                        "alignment": "left",
+                                                    },
+                                                    "Narration": {
+                                                        **st.column_config.TextColumn(),
+                                                        "alignment": "left",
+                                                    },
+                                                },
+                                                column_disabled={},
+                                                money_column_alignment="right",
+                                            ),
+                                            hide_index=True,
+                                            width="stretch",
+                                        )
+                                    else:
+                                        st.dataframe(stmt_df_display, hide_index=True, width="stretch")
+                                    if closing_row is not None:
+                                        if show_unapplied_col:
+                                            st.info(
+                                                f"Closing balance as at {due_fmt}: {bal_fmt} | Unapplied funds: {unapp_fmt}"
+                                            )
+                                        else:
+                                            st.info(f"Closing balance as at {due_fmt}: {bal_fmt}")
+
+                                    for note in meta.get("notifications") or []:
+                                        st.warning(note)
+
+                                    st.markdown(
+                                        "<div style='margin-top:1rem;padding-top:0.75rem;border-top:1px solid #e2e8f0;"
+                                        "color:#64748b;font-size:1rem;display:flex;gap:1rem;align-items:center;"
+                                        "flex-wrap:wrap;white-space:nowrap;'>"
+                                        f"<span><strong>Period:</strong> {start_fmt} to {end_fmt}</span>"
+                                        f"<span><strong>Generated:</strong> {generated_fmt}</span>"
+                                        "</div>",
+                                        unsafe_allow_html=True,
+                                    )
                             run_with_spinner("Generating statement…", _do_generate_statement)
                         except Exception as ex:
                             st.error(str(ex))

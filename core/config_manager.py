@@ -144,7 +144,7 @@ def get_system_config(*, key: str = "system_config") -> dict:
         },
         "display_format": default_display_format(),
         # Regular scheduled interest: NEXT_DAY = first accrual day after period start (legacy).
-        "accrual_start_convention": "NEXT_DAY",
+        "accrual_start_convention": "EFFECTIVE_DAY",
     }
     try:
         from provision_config import (

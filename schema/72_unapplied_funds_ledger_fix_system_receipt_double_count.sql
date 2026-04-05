@@ -1,3 +1,9 @@
+-- Fix double-count: system liquidation repayments (unapplied_funds_allocation) and
+-- cascade unwind rows (unallocation_parent_reversed with source_repayment_id) must not
+-- appear in credits_and_reversals. Their receipt amount is negative (or mirrored) while
+-- allocation totals are positive, so (amount - sum(alloc)) ~= -2 * applied and corrupts
+-- unapplied_running_balance and statements (duplicate "Reversal" lines).
+
 DROP VIEW IF EXISTS unapplied_funds_ledger CASCADE;
 
 CREATE OR REPLACE VIEW unapplied_funds_ledger AS
@@ -52,9 +58,9 @@ credits_and_reversals AS (
         0::numeric AS alloc_default_int,
         0::numeric AS alloc_fees_charges,
         NULL::integer AS parent_repayment_id,
-        CASE 
+        CASE
             WHEN lr.status = 'reversed' AND lr.original_repayment_id IS NOT NULL THEN lr.original_repayment_id
-            ELSE NULL::integer 
+            ELSE NULL::integer
         END AS reversal_of_id
     FROM alloc_receipts ar
     JOIN loan_repayments lr ON lr.id = ar.repayment_id
@@ -85,9 +91,9 @@ liquidations AS (
         SUM(COALESCE(lra.alloc_default_interest, 0)) AS alloc_default_int,
         SUM(COALESCE(lra.alloc_fees_charges, 0)) AS alloc_fees_charges,
         lra.source_repayment_id AS parent_repayment_id,
-        CASE 
+        CASE
             WHEN lra.event_type = 'unallocation_parent_reversed' AND lr.original_repayment_id IS NOT NULL THEN lr.original_repayment_id
-            ELSE NULL::integer 
+            ELSE NULL::integer
         END AS reversal_of_id
     FROM loan_repayment_allocation lra
     JOIN loan_repayments lr ON lr.id = lra.repayment_id

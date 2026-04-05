@@ -345,7 +345,9 @@ def get_repayments_with_allocations(
     include_reversed: bool = False,
 ) -> list[dict]:
     """Repayments with value_date in range and their allocation breakdown (totals and per-bucket 1-5).
-    By default returns posted only. Set include_reversed=True to include reversed receipts (negative amount)."""
+    By default returns posted only. Set include_reversed=True to include reversed receipts (negative amount).
+    Excludes synthetic unapplied liquidations (allocation event_type ``unapplied_funds_allocation``): those
+    are represented on the unapplied ledger / flow as the liquidation line, not as PAYMENT bucket splits."""
     status_filter = "lr.status IN ('posted', 'reversed')" if include_reversed else "lr.status = 'posted'"
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -363,6 +365,8 @@ def get_repayments_with_allocations(
                        COALESCE(SUM(lra.alloc_penalty_interest), 0) AS alloc_penalty_interest,
                        COALESCE(SUM(lra.alloc_default_interest), 0) AS alloc_default_interest,
                        COALESCE(SUM(lra.alloc_interest_arrears), 0) AS alloc_interest_arrears,
+                       COALESCE(SUM(lra.alloc_interest_accrued), 0) AS alloc_interest_accrued,
+                       COALESCE(SUM(lra.alloc_principal_not_due), 0) AS alloc_principal_not_due,
                        COALESCE(SUM(lra.alloc_principal_arrears), 0) AS alloc_principal_arrears
                 FROM loan_repayments lr
                 LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
@@ -376,6 +380,12 @@ def get_repayments_with_allocations(
                     OR COALESCE(lr.reference, '') ILIKE '%%Reversal of unapplied funds%%'
                     OR COALESCE(lr.customer_reference, '') ILIKE '%%Reversal of unapplied funds%%'
                     OR COALESCE(lr.company_reference, '') ILIKE '%%Reversal of unapplied funds%%'
+                    OR EXISTS (
+                        SELECT 1
+                        FROM loan_repayment_allocation lra_sys
+                        WHERE lra_sys.repayment_id = lr.id
+                          AND lra_sys.event_type = 'unapplied_funds_allocation'
+                    )
                   )
                 GROUP BY lr.id, lr.amount, lr.payment_date, lr.value_date, lr.customer_reference,
                          lr.reference, lr.original_repayment_id

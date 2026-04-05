@@ -1,3 +1,5 @@
 id,loan_id,repayment_id,amount,currency,value_date,created_at,applied_at,status,notes,entry_type,reference,allocation_repayment_id,source_repayment_id,source_unapplied_id,movement_type
 1,1,7,1.2848286303,USD,2025-03-28,2026-03-30T11:22:28.075336+02:00,,pending,,credit,Overpayment,,,,from_receipt
 2,1,,-1.28,USD,2025-03-29,2026-03-30T11:22:47.030528+02:00,,pending,,debit,Applied to arrears (EOD),8,7,,to_loan_arrears_eod
+3,1,10,99.3333354424,USD,2025-04-04,2026-04-04T21:16:21.970435+02:00,,pending,,credit,Overpayment,,,,from_receipt
+4,1,,-99.3333354424,USD,2025-04-06,2026-04-04T21:30:37.747903+02:00,,pending,,debit,Loan recast (unapplied),12,10,3,other
