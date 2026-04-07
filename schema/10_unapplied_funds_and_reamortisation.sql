@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS loan_modifications (
     new_term            INTEGER,
     new_annual_rate     NUMERIC(12, 6),
     new_principal       NUMERIC(18, 2),
+    restructure_fee_amount NUMERIC(22, 10) NOT NULL DEFAULT 0,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     notes               TEXT
 );

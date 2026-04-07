@@ -9,7 +9,7 @@ from typing import Any, Callable
 import pandas as pd
 import streamlit as st
 
-from decimal_utils import as_10dp, amounts_equal_at_2dp
+from decimal_utils import as_10dp, as_2dp, amounts_equal_at_2dp
 from loans import (
     add_months,
     days_in_month,
@@ -164,7 +164,7 @@ def _inject_reamod_use_schedule_button_css_once() -> None:
 
 
 def _inject_reamod_save_clear_green_css_once() -> None:
-    """Brand-green **Save and Continue Later** and **Clear session schedules**."""
+    """Brand-green **Clear session schedules** button."""
     k = "_farnda_reamod_save_clear_green_css"
     if st.session_state.get(k):
         return
@@ -172,8 +172,6 @@ def _inject_reamod_save_clear_green_css_once() -> None:
     g = BRAND_GREEN
     inject_style_block(
         f"""
-[data-testid="stMain"] button[data-testid="stBaseButton-primary"][aria-label="Save and Continue Later"],
-[data-testid="stMain"] button[kind="primary"][aria-label="Save and Continue Later"],
 [data-testid="stMain"] button[data-testid="stBaseButton-primary"][aria-label="Clear session schedules"],
 [data-testid="stMain"] button[kind="primary"][aria-label="Clear session schedules"] {{
   background-color: {g} !important;
@@ -183,8 +181,6 @@ def _inject_reamod_save_clear_green_css_once() -> None:
   font-weight: 600 !important;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12) !important;
 }}
-[data-testid="stMain"] button[data-testid="stBaseButton-primary"][aria-label="Save and Continue Later"]:hover,
-[data-testid="stMain"] button[kind="primary"][aria-label="Save and Continue Later"]:hover,
 [data-testid="stMain"] button[data-testid="stBaseButton-primary"][aria-label="Clear session schedules"]:hover,
 [data-testid="stMain"] button[kind="primary"][aria-label="Clear session schedules"]:hover {{
   filter: brightness(0.93) !important;
@@ -203,6 +199,42 @@ def _reamod_field_caption(text: str, *, align: str = "left") -> None:
 
 def _leg_letter(i: int) -> str:
     return chr(ord("A") + i)
+
+
+def _short_loan_type_label(lt_display: str) -> str:
+    v = str(lt_display or "").strip().lower()
+    if v == "term loan":
+        return "Term"
+    if v == "customised repayments":
+        return "Custom"
+    if v == "bullet loan":
+        return "Bullet"
+    if v == "consumer loan":
+        return "Consumer"
+    return str(lt_display or "Loan")
+
+
+def _split_proportional_amount(total_amount: float | None, weights: list[float]) -> list[float | None]:
+    """Split total proportionally by weights, preserving total at 10dp."""
+    if total_amount is None:
+        return [None for _ in weights]
+    t = float(as_10dp(total_amount))
+    if t <= 0:
+        return [None for _ in weights]
+    w = [max(0.0, float(as_10dp(x))) for x in weights]
+    s = float(as_10dp(sum(w)))
+    if s <= 0:
+        return [None for _ in weights]
+    parts: list[float] = []
+    running = 0.0
+    for i, wi in enumerate(w):
+        if i == len(w) - 1:
+            v = float(as_10dp(max(0.0, t - running)))
+        else:
+            v = float(as_10dp((t * wi) / s))
+            running = float(as_10dp(running + v))
+        parts.append(v if v > 0 else None)
+    return parts
 
 
 def _leg_session_keys(i: int) -> tuple[str, str]:
@@ -456,6 +488,7 @@ def render_loan_modification_tab(
     first_repayment_from_customised_table: Callable[[pd.DataFrame], Any] | None = None,
 ) -> None:
     from loan_management.daily_state import get_loan_daily_state_balances_for_recast_preview
+    from loan_management import get_unapplied_balance_for_restructure
 
     render_sub_sub_header("Select Customer and Loan to Modify")
 
@@ -476,7 +509,8 @@ def render_loan_modification_tab(
     PLACEHOLDER_CUST = "-Select Customer-"
     PLACEHOLDER_LOAN = "-Select Loan-"
 
-    h1, h2, h3 = st.columns([1, 1, 1], gap="small")
+    loan_id = None
+    h1, h2, h3, h4 = st.columns([1, 1, 1, 1], gap="small")
     with h1:
         st.caption("Customer")
         cust_choices = [PLACEHOLDER_CUST] + [get_display_name(c["id"]) for c in customers]
@@ -523,12 +557,30 @@ def render_loan_modification_tab(
             key="reamod_hdr_date",
             label_visibility="collapsed",
         )
+    with h4:
+        st.caption("Rework")
+        st.write("")
+        if st.button("See loans for rework", type="secondary", key="reamod_open_rework_top"):
+            st.session_state["farnda_main_nav_choice"] = "Loan management"
+            st.session_state["loan_mgmt_subnav"] = "Loan Capture"
+            st.session_state["capture_open_draft_panel"] = "rework"
+            if loan_id is not None:
+                st.session_state["cap_rework_search"] = str(int(loan_id))
+            st.rerun()
 
     if cust_sel == PLACEHOLDER_CUST:
         st.info("Select a **customer** to load loans and continue.")
         st.stop()
 
-    info = get_loan_for_modification(loan_id)
+    # Cache expensive reads by active loan/date to avoid rerun slowness.
+    _ctx_key = f"{int(loan_id)}"
+    _ctx_cache_key = str(st.session_state.get("reamod_ctx_cache_key") or "")
+    if _ctx_cache_key != _ctx_key or "reamod_ctx_cache_val" not in st.session_state:
+        info = run_with_spinner("Loading loan context…", lambda: get_loan_for_modification(loan_id))
+        st.session_state["reamod_ctx_cache_key"] = _ctx_key
+        st.session_state["reamod_ctx_cache_val"] = info
+    else:
+        info = st.session_state.get("reamod_ctx_cache_val")
     if not info:
         st.warning("Could not load loan.")
         return
@@ -542,9 +594,27 @@ def render_loan_modification_tab(
 
     bal = None
     as_of = restructure_date
+    ua_info: dict[str, Any] = {"eligible_total": 0.0}
     if gate_ok:
-        bal, as_of = get_loan_daily_state_balances_for_recast_preview(loan_id, restructure_date)
+        _bal_key = f"{int(loan_id)}|{restructure_date.isoformat()}"
+        _bal_cache_key = str(st.session_state.get("reamod_bal_cache_key") or "")
+        if _bal_cache_key != _bal_key or "reamod_bal_cache_val" not in st.session_state:
+            def _load_balance_and_unapplied() -> tuple[Any, Any, dict[str, Any]]:
+                _bal, _as_of = get_loan_daily_state_balances_for_recast_preview(loan_id, restructure_date)
+                _ua = get_unapplied_balance_for_restructure(loan_id, restructure_date)
+                return _bal, _as_of, _ua
 
+            bal, as_of, ua_info = run_with_spinner(
+                "Loading balances and unapplied funds…",
+                _load_balance_and_unapplied,
+            )
+            st.session_state["reamod_bal_cache_key"] = _bal_key
+            st.session_state["reamod_bal_cache_val"] = (bal, as_of, ua_info)
+        else:
+            _cached = st.session_state.get("reamod_bal_cache_val") or (None, restructure_date, {"eligible_total": 0.0})
+            bal, as_of, ua_info = _cached
+
+    unapplied_balance = 0.0
     if gate_ok:
         if bal is None:
             st.warning(
@@ -552,6 +622,8 @@ def render_loan_modification_tab(
                 f"(or the prior day). Run EOD through the restructure date first."
             )
         else:
+            unapplied_balance = float(as_10dp(ua_info.get("eligible_total") or 0.0))
+            net_exposure = float(as_10dp(max(0.0, float(as_10dp(bal.get("total_exposure") or 0.0)) - unapplied_balance)))
             _cap = (
                 " (same day as restructure — first persisted EOD row)"
                 if as_of == restructure_date
@@ -564,6 +636,8 @@ def render_loan_modification_tab(
             for lab, key in EOD_SUMMARY_BUCKET_ROWS:
                 row_eod[lab] = float(as_10dp(bal.get(key) or 0))
             row_eod["Total outstanding (total_exposure)"] = float(as_10dp(bal.get("total_exposure") or 0))
+            row_eod["Unapplied Funds Balance"] = unapplied_balance
+            row_eod["Net (Balance outstanding - Unapplied Funds)"] = net_exposure
             df_eod = pd.DataFrame([row_eod])
             if money_df_column_config is not None:
                 st.dataframe(
@@ -581,6 +655,8 @@ def render_loan_modification_tab(
                 st.dataframe(df_eod, hide_index=True, width="stretch")
 
     outstanding = float(as_10dp(bal.get("total_exposure") or 0)) if bal else 0.0
+    net_outstanding = float(as_10dp(max(0.0, outstanding - unapplied_balance))) if bal else 0.0
+    net_outstanding_2dp = float(as_2dp(net_outstanding)) if bal else 0.0
 
     if not gate_ok or bal is None:
         st.stop()
@@ -591,9 +667,10 @@ def render_loan_modification_tab(
     _carry_loan_key = "reamod_carry_bound_loan_id"
     _top_disp_key = "reamod_topup_display"
     _top_loan_key = "reamod_topup_bound_loan_id"
-    if st.session_state.get(_carry_loan_key) != loan_id:
-        st.session_state[_carry_loan_key] = int(loan_id)
-        st.session_state[_carry_disp_key] = f"{float(as_10dp(outstanding)):,.2f}"
+    _carry_anchor = f"{int(loan_id)}|{restructure_date.isoformat()}|{float(as_2dp(net_outstanding_2dp)):.2f}"
+    if st.session_state.get(_carry_loan_key) != _carry_anchor:
+        st.session_state[_carry_loan_key] = _carry_anchor
+        st.session_state[_carry_disp_key] = f"{float(as_2dp(net_outstanding_2dp)):,.2f}"
     if st.session_state.get(_top_loan_key) != loan_id:
         st.session_state[_top_loan_key] = int(loan_id)
         st.session_state[_top_disp_key] = "0.00"
@@ -623,7 +700,7 @@ def render_loan_modification_tab(
     is_split = n_legs >= 2
 
     if not is_split:
-        # Empty carry is not an error: default to EOD outstanding (covers split→single and cleared field).
+        # Empty carry is not an error: default to current net outstanding (covers split→single and cleared field).
         _carry_s = str(st.session_state.get(_carry_disp_key, "")).strip()
         if not _carry_s:
             st.session_state[_carry_disp_key] = f"{float(as_10dp(outstanding)):,.2f}"
@@ -672,50 +749,58 @@ def render_loan_modification_tab(
         if _parsed_top is None:
             st.error("Enter a valid **Top-up** amount (non-negative; commas allowed), or **0.00**.")
             st.stop()
-        carry = float(as_10dp(_parsed_carry))
-        top_up = float(as_10dp(_parsed_top))
-        total_facility = float(as_10dp(carry + top_up))
+        carry = float(as_2dp(_parsed_carry))
+        top_up = float(as_2dp(_parsed_top))
+        total_facility = float(as_2dp(carry + top_up))
     else:
-        carry = float(as_10dp(outstanding))
+        carry = float(as_2dp(net_outstanding_2dp))
         top_up = 0.0
-        total_facility = float(as_10dp(outstanding))
+        total_facility = float(as_2dp(net_outstanding_2dp))
         st.caption(
-            "Split refinances **full EOD outstanding** across the new loans; allocate via **Net** under **Modified Loans**."
+            "Split refinances **net outstanding** across the new loans; allocate via **Net** under **Modified Loans**."
         )
 
-    if not is_split and carry > outstanding + 1e-6:
-        st.error("Amount to restructure cannot exceed total outstanding (total_exposure).")
+    if not is_split and (carry > net_outstanding_2dp + 1e-9 and not amounts_equal_at_2dp(as_10dp(carry), as_10dp(net_outstanding_2dp))):
+        st.error("Amount to restructure cannot exceed Net (total outstanding minus unapplied funds).")
         st.stop()
 
-    excess_outstanding = float(as_10dp(max(0.0, outstanding - total_facility)))
+    _net_cmp = float(as_2dp(net_outstanding_2dp))
+    _tf_cmp = float(as_2dp(total_facility))
+    excess_outstanding = float(as_2dp(max(0.0, _net_cmp - _tf_cmp)))
     if is_split:
         excess_policy = "SPLIT"
-        base_writeoff = float(as_10dp(outstanding - total_facility))
+        base_writeoff = float(as_2dp(max(0.0, _net_cmp - _tf_cmp)))
     else:
-        base_writeoff = (
-            float(as_10dp(outstanding - total_facility)) if excess_outstanding > 1e-6 else 0.0
-        )
+        base_writeoff = float(as_2dp(excess_outstanding)) if excess_outstanding > 1e-9 else 0.0
         excess_policy = "WRITE_OFF" if excess_outstanding > 1e-6 else "NONE"
 
     if not is_split:
         _compact_readonly_amount(
             "Excess outstanding",
             f"{excess_outstanding:,.2f}",
-            help_text="EOD **total_exposure** minus total facility (not refinanced into the new facility).",
+            help_text="Net outstanding (total exposure minus unapplied funds) minus total facility.",
         )
         if excess_outstanding > 1e-6:
             st.info(
-                f"**Write-off at approval:** **{excess_outstanding:,.2f}** — EOD outstanding not covered by total "
+                f"**Write-off at approval:** **{excess_outstanding:,.2f}** — Net outstanding not covered by total "
                 f"facility will be written off when this modification is approved."
             )
         else:
-            st.caption("No excess outstanding: total facility matches EOD **total_exposure** (2dp).")
+            st.caption("No excess outstanding: total facility matches current net outstanding (2dp).")
 
     st.divider()
     products = list_products(active_only=True) or []
     if not products:
         st.error("No active loan products.")
         st.stop()
+    _product_cfg_cache: dict[str, dict[str, Any]] = {}
+
+    def _cfg_for(code: str) -> dict[str, Any]:
+        c = str(code or "")
+        if c not in _product_cfg_cache:
+            _product_cfg_cache[c] = get_product_config_from_db(c) or {}
+        return _product_cfg_cache[c]
+
     prod_labels = [f"{p['code']} · {p['name']}" for p in products]
 
     net_legs: list[float] = []
@@ -830,20 +915,24 @@ def render_loan_modification_tab(
     pa = float(as_10dp(carry_legs[0])) if carry_legs else 0.0
     pb = float(as_10dp(carry_legs[1])) if len(carry_legs) > 1 else 0.0
 
-    writeoff_amount = float(as_10dp(base_writeoff + split_alloc_writeoff))
+    # Guard at math stage: all residual exposure beyond selected restructure funding must become write-off.
+    _funded_now = float(as_2dp(sum(net_legs))) if is_split else float(as_2dp(total_facility))
+    writeoff_amount = float(as_2dp(max(0.0, _net_cmp - _funded_now)))
 
     if is_split:
         sum_nets = float(as_10dp(sum(net_legs)))
-        balancing_writeoff = float(as_10dp(outstanding - sum_nets))
+        balancing_writeoff = float(as_10dp(net_outstanding - sum_nets))
         if not amounts_equal_at_2dp(as_10dp(writeoff_amount), as_10dp(balancing_writeoff)):
-            st.error(
-                "Split reconciliation (2dp): total **write-off at approval** must equal "
-                "**EOD total outstanding − Σ(nets)**. Adjust net proceeds or facility amounts."
-            )
-            st.stop()
+            # Auto-guard: force write-off to exact residual at 2dp so no unapplied residual reaches approval.
+            writeoff_amount = float(as_2dp(max(0.0, float(as_10dp(balancing_writeoff)))))
+
+    # Final residual guard (2dp): always close to zero after funded + write-off.
+    _residual_after_writeoff = float(as_2dp(max(0.0, _net_cmp - _funded_now - writeoff_amount)))
+    if _residual_after_writeoff > 0:
+        writeoff_amount = float(as_2dp(writeoff_amount + _residual_after_writeoff))
 
     disbursement_dt = datetime.combine(restructure_date, datetime.min.time())
-    cfg_a = get_product_config_from_db(product_code_a) or {}
+    cfg_a = _cfg_for(product_code_a)
     gls_a = cfg_a.get("global_loan_settings") or {}
     im = gls_a.get("interest_method")
     if im not in {"Reducing balance", "Flat rate"}:
@@ -1327,9 +1416,8 @@ def render_loan_modification_tab(
                 if not use_ann and not is_last_day_of_month(first_rep):
                     st.error("For last-day-of-month timing, first repayment must be the last day of that month.")
                     return
-                first_b = None
-                if "With Interest" in btype:
-                    first_b = first_rep
+                # Straight bullet must also respect selected first repayment date/timing.
+                first_b = first_rep
                 if _has_top:
                     details, df_s = compute_bullet_schedule(
                         net_total_leg,
@@ -1456,6 +1544,8 @@ def render_loan_modification_tab(
                     round(total_facility_tbl, 2),
                     _tm,
                     disbursement_date.strftime("%Y-%m-%d"),
+                    first_rep.strftime("%Y-%m-%d"),
+                    bool(use_ann),
                     irregular,
                     round(draw_leg, 6),
                     round(arr_leg, 6),
@@ -1626,7 +1716,7 @@ def render_loan_modification_tab(
             def _persist_schedule_to_session() -> None:
                 st.session_state[session_details_key] = details
                 st.session_state[session_df_key] = df_s
-                st.success(f"Schedule {leg} saved in session.")
+                st.session_state["reamod_schedule_saved_flash"] = str(leg)
                 st.rerun()
 
             if st.button("Use this schedule", type="primary", key=use_key):
@@ -1636,11 +1726,14 @@ def render_loan_modification_tab(
 
     n_sched = n_legs if is_split else 1
     st.divider()
+    _sched_flash = str(st.session_state.pop("reamod_schedule_saved_flash", "") or "")
+    if _sched_flash:
+        st.success(f"Schedule **{_sched_flash}** saved in session.")
     for si in range(n_sched):
         letter = _leg_letter(si)
         lt_d = split_lt_display[si]
         pc_leg = split_product_codes[si]
-        cfg_leg = get_product_config_from_db(pc_leg) or {}
+        cfg_leg = _cfg_for(pc_leg)
         prb_leg = get_product_rate_basis(cfg_leg)
         sk_det, sk_df = _leg_session_keys(si)
         use_k = f"reamod_use_{letter}"
@@ -1658,7 +1751,8 @@ def render_loan_modification_tab(
             )
 
         if is_split:
-            render_sub_sub_header(f"Terms & schedule - Loan {letter}")
+            _lt_short = _short_loan_type_label(lt_d)
+            render_sub_sub_header(f"Terms & schedule - Loan {letter} ({_lt_short})")
             _rl_int = (
                 "Interest rate (% per annum)" if prb_leg == "Per annum" else "Interest rate (% per month)"
             )
@@ -1734,174 +1828,137 @@ def render_loan_modification_tab(
         fee_pct = float(st.session_state.get("reamod_fee_pct_A", 0.0) or 0.0) / 100.0
 
     st.divider()
-    pol_a = _reamod_collateral_link_row(
-        key_prefix="reamod",
-        heading="Collateral — Loan A" if is_split else "Collateral",
-    )
-    _reamod_collateral_clear_confirm_block(key_prefix="reamod")
-    pol_b = "Keep existing"
+    leg_prefixes = [("reamod" if i == 0 else f"reamod_{_leg_letter(i).lower()}") for i in range(n_legs)]
+    patch_by_leg: list[dict[str, Any]] = [{} for _ in range(n_legs)]
+    collateral_mode = "per_loan"
     if is_split:
-        pol_b = _reamod_collateral_link_row(
-            key_prefix="reamod_b",
-            heading="Collateral — Loan B",
+        _cm1, _cm2 = st.columns([1.2, 1.0], gap="small")
+        with _cm1:
+            st.caption("Collateral setup")
+        with _cm2:
+            collateral_mode = st.selectbox(
+                "Collateral setup",
+                options=("shared", "per_loan"),
+                format_func=lambda v: (
+                    "One security shared proportionally"
+                    if v == "shared"
+                    else ("Two securities (per loan)" if n_legs == 2 else "One security per loan")
+                ),
+                key="reamod_collateral_mode",
+                label_visibility="collapsed",
+            )
+
+    policies: list[str] = []
+    if not is_split:
+        pol = _reamod_collateral_link_row(
+            key_prefix=leg_prefixes[0],
+            heading="Collateral",
         )
-        _reamod_collateral_clear_confirm_block(key_prefix="reamod_b")
+        _reamod_collateral_clear_confirm_block(key_prefix=leg_prefixes[0])
+        policies = [pol]
+    elif collateral_mode == "shared":
+        pol = _reamod_collateral_link_row(
+            key_prefix="reamod_shared",
+            heading="Collateral — Shared across split loans",
+        )
+        _reamod_collateral_clear_confirm_block(key_prefix="reamod_shared")
+        policies = [pol]
+    else:
+        for i in range(n_legs):
+            letter = _leg_letter(i)
+            pol = _reamod_collateral_link_row(
+                key_prefix=leg_prefixes[i],
+                heading=f"Collateral — Loan {letter}",
+            )
+            _reamod_collateral_clear_confirm_block(key_prefix=leg_prefixes[i])
+            policies.append(pol)
 
     _flash_pref = st.session_state.pop("reamod_coll_clear_flash", None)
-    if _flash_pref == "reamod":
-        st.success("Collateral for **loan A** is set to **clear** when you save or submit.")
-    elif _flash_pref == "reamod_b":
-        st.success("Collateral for **loan B** is set to **clear** when you save or submit.")
+    if _flash_pref:
+        if _flash_pref == "reamod_shared":
+            st.success("Shared collateral is set to **clear** when you save or submit.")
+        else:
+            _flash_map = {leg_prefixes[i]: _leg_letter(i) for i in range(n_legs)}
+            _which = _flash_map.get(_flash_pref)
+            if _which:
+                st.success(f"Collateral for **loan {_which}** is set to **clear** when you save or submit.")
 
-    patch_a: dict[str, Any] = {}
-    patch_b: dict[str, Any] = {}
     _docs_open = bool(st.session_state.get("reamod_docs_open", False))
     if _docs_open:
         with st.expander("Documents", expanded=True):
-            if pol_a == "Replace":
-                patch_a = _reamod_collateral_replace_patch(
-                    key_prefix="reamod",
-                    provisions_config_ok=provisions_config_ok,
-                    list_provision_security_subtypes=list_provision_security_subtypes,
-                    loan=loan,
-                )
-            else:
-                patch_a = _reamod_collateral_patch_dict_only(pol_a)
-            if is_split:
-                if pol_b == "Replace":
-                    patch_b = _reamod_collateral_replace_patch(
-                        key_prefix="reamod_b",
+            if not is_split:
+                pol = policies[0]
+                if pol == "Replace":
+                    patch_by_leg[0] = _reamod_collateral_replace_patch(
+                        key_prefix=leg_prefixes[0],
                         provisions_config_ok=provisions_config_ok,
                         list_provision_security_subtypes=list_provision_security_subtypes,
                         loan=loan,
                     )
                 else:
-                    patch_b = _reamod_collateral_patch_dict_only(pol_b)
+                    patch_by_leg[0] = _reamod_collateral_patch_dict_only(pol)
+            elif collateral_mode == "shared":
+                pol = policies[0]
+                if pol == "Replace":
+                    shared_patch = _reamod_collateral_replace_patch(
+                        key_prefix="reamod_shared",
+                        provisions_config_ok=provisions_config_ok,
+                        list_provision_security_subtypes=list_provision_security_subtypes,
+                        loan=loan,
+                    )
+                else:
+                    shared_patch = _reamod_collateral_patch_dict_only(pol)
+                if shared_patch.get("collateral_cleared"):
+                    patch_by_leg = [{"collateral_cleared": True} for _ in range(n_legs)]
+                elif shared_patch:
+                    ch_parts = _split_proportional_amount(shared_patch.get("collateral_charge_amount"), net_legs)
+                    val_parts = _split_proportional_amount(shared_patch.get("collateral_valuation_amount"), net_legs)
+                    for i in range(n_legs):
+                        patch_by_leg[i] = {
+                            "collateral_security_subtype_id": shared_patch.get("collateral_security_subtype_id"),
+                            "collateral_charge_amount": ch_parts[i],
+                            "collateral_valuation_amount": val_parts[i],
+                        }
+            else:
+                for i in range(n_legs):
+                    pol = policies[i]
+                    if pol == "Replace":
+                        patch_by_leg[i] = _reamod_collateral_replace_patch(
+                            key_prefix=leg_prefixes[i],
+                            provisions_config_ok=provisions_config_ok,
+                            list_provision_security_subtypes=list_provision_security_subtypes,
+                            loan=loan,
+                        )
+                    else:
+                        patch_by_leg[i] = _reamod_collateral_patch_dict_only(pol)
             _render_remod_documents_staging(
                 documents_available=documents_available,
                 list_document_categories=list_document_categories,
             )
     else:
-        patch_a = _reamod_collateral_patch_dict_only(pol_a)
-        if is_split:
-            patch_b = _reamod_collateral_patch_dict_only(pol_b)
+        if not is_split:
+            patch_by_leg[0] = _reamod_collateral_patch_dict_only(policies[0])
+        elif collateral_mode == "shared":
+            shared_patch = _reamod_collateral_patch_dict_only(policies[0])
+            if shared_patch.get("collateral_cleared"):
+                patch_by_leg = [{"collateral_cleared": True} for _ in range(n_legs)]
+            elif shared_patch:
+                ch_parts = _split_proportional_amount(shared_patch.get("collateral_charge_amount"), net_legs)
+                val_parts = _split_proportional_amount(shared_patch.get("collateral_valuation_amount"), net_legs)
+                for i in range(n_legs):
+                    patch_by_leg[i] = {
+                        "collateral_security_subtype_id": shared_patch.get("collateral_security_subtype_id"),
+                        "collateral_charge_amount": ch_parts[i],
+                        "collateral_valuation_amount": val_parts[i],
+                    }
+        else:
+            for i in range(n_legs):
+                patch_by_leg[i] = _reamod_collateral_patch_dict_only(policies[i])
 
     st.divider()
     _inject_reamod_save_clear_green_css_once()
-    c_save1, c_save2, c_save3 = st.columns(3, gap="medium")
+    c_save1, c_save2 = st.columns(2, gap="medium")
     with c_save1:
-        if st.button("Save and Continue Later", type="primary", key="reamod_save_staged"):
-            try:
-                snap = bucket_snapshot_for_json(bal)
-                base_details: dict[str, Any] = {
-                    "approval_action": "LOAN_MODIFICATION_SPLIT" if is_split else "LOAN_MODIFICATION",
-                    "source_loan_id": int(loan_id),
-                    "restructure_date": restructure_date.isoformat(),
-                    "as_of_balance_date": as_of.isoformat(),
-                    "bucket_snapshot": snap,
-                    "excess_policy": excess_policy,
-                    "carry_amount": str(as_10dp(carry)),
-                    "topup_amount": str(as_10dp(top_up)),
-                    "total_facility": str(as_10dp(total_facility)),
-                    "outstanding_snapshot": str(as_10dp(outstanding)),
-                    "writeoff_amount": str(
-                        as_10dp(writeoff_amount if excess_policy in ("WRITE_OFF", "SPLIT") else 0)
-                    ),
-                    "outstanding_interest_treatment": oit,
-                    "modification_notes": notes.strip(),
-                    "fee_and_proceeds": {
-                        "restructure_fee_pct": str(as_10dp(fee_pct * 100 if fee_pct else 0)),
-                        "schedule_principal_gross": str(as_10dp(principal_schedule_single))
-                        if not is_split
-                        else None,
-                        "net_proceeds_by_leg": [str(as_10dp(x)) for x in net_legs],
-                        "topup_fee_consumer_pct": str(as_10dp(top_fee_consumer * 100))
-                        if top_up > 1e-9 and lt_display_a == "Consumer Loan"
-                        else None,
-                        "topup_fee_drawdown_pct": str(as_10dp(top_fee_draw * 100))
-                        if top_up > 1e-9
-                        and lt_display_a in ("Term Loan", "Bullet Loan", "Customised Repayments")
-                        else None,
-                        "topup_fee_arrangement_pct": str(as_10dp(top_fee_arr * 100))
-                        if top_up > 1e-9
-                        and lt_display_a in ("Term Loan", "Bullet Loan", "Customised Repayments")
-                        else None,
-                    },
-                }
-                df_a = st.session_state.get("reamod_df_a") or pd.DataFrame()
-                df_b = st.session_state.get("reamod_df_b") if is_split else None
-                det_a = dict(st.session_state.get("reamod_details_a") or {})
-                det_a.update(patch_a)
-                if cash_gl_id:
-                    det_a.setdefault("cash_gl_account_id", cash_gl_id)
-                base_details["modification_loan_details"] = det_a
-                if is_split:
-                    det_list: list[dict[str, Any]] = []
-                    for si in range(n_legs):
-                        skd, _ = _leg_session_keys(si)
-                        di = dict(st.session_state.get(skd) or {})
-                        if si == 0:
-                            di.update(patch_a)
-                        elif si == 1:
-                            di.update(patch_b)
-                        if cash_gl_id:
-                            di.setdefault("cash_gl_account_id", cash_gl_id)
-                        det_list.append(di)
-                    extra_scheds: list[Any] = []
-                    for si in range(2, n_legs):
-                        _, skf = _leg_session_keys(si)
-                        dfx = st.session_state.get(skf)
-                        extra_scheds.append(
-                            dfx.to_dict(orient="records")
-                            if dfx is not None and isinstance(dfx, pd.DataFrame) and not dfx.empty
-                            else []
-                        )
-                    base_details["split_leg_count"] = int(n_legs)
-                    base_details["split_product_codes"] = list(split_product_codes)
-                    base_details["split_loan_types"] = list(split_lt_db)
-                    base_details["split_loan_details_list"] = det_list
-                    base_details["split_schedules_extra"] = extra_scheds
-                    base_details["split_net_by_leg"] = [str(as_10dp(x)) for x in net_legs]
-                    base_details["split_carry_by_leg"] = [str(as_10dp(x)) for x in carry_legs]
-                    base_details["split"] = {
-                        "principal_a": str(as_10dp(pa)),
-                        "principal_b": str(as_10dp(pb)),
-                    }
-                    base_details["split_product_code_b"] = split_product_code_b
-                    base_details["split_loan_details_a"] = det_list[0]
-                    base_details["split_loan_details_b"] = det_list[1]
-                    base_details["split_loan_type_b"] = lt_db_b
-                staged_id = st.session_state.get("reamod_staged_draft_id")
-                if staged_id:
-                    update_loan_approval_draft_staged(
-                        int(staged_id),
-                        int(cust_id),
-                        lt_db_a,
-                        base_details,
-                        df_a if not df_a.empty else pd.DataFrame(),
-                        product_code=product_code_a,
-                        schedule_df_secondary=df_b if is_split and df_b is not None else None,
-                    )
-                    flash = f"Updated staged draft #{staged_id}."
-                else:
-                    new_id = save_loan_approval_draft(
-                        int(cust_id),
-                        lt_db_a,
-                        base_details,
-                        df_a if not df_a.empty else pd.DataFrame(),
-                        product_code=product_code_a,
-                        created_by=created_by,
-                        status="STAGED",
-                        loan_id=int(loan_id),
-                        schedule_df_secondary=df_b if is_split and df_b is not None else None,
-                    )
-                    st.session_state["reamod_staged_draft_id"] = int(new_id)
-                    flash = f"Created staged draft #{new_id}."
-                st.success(flash)
-                st.rerun()
-            except Exception as ex:
-                st.error(str(ex))
-    with c_save2:
         if st.button("Clear session schedules", type="primary", key="reamod_clear_sess"):
             for k in (
                 "reamod_details_a",
@@ -1917,18 +1974,25 @@ def render_loan_modification_tab(
             for letter in ("A", "B", "C", "D", "E"):
                 st.session_state.pop(f"reamod_cust_df_{letter}", None)
                 st.session_state.pop(f"reamod_cust_params_{letter}", None)
+                st.session_state.pop(f"reamod_schedule_saved_{letter}", None)
             st.session_state.pop("reamod_docs_staged", None)
             st.session_state.pop("reamod_docs_open", None)
             st.session_state.pop("reamod_coll_clear_pending", None)
             st.session_state.pop("reamod_b_coll_clear_pending", None)
+            st.session_state.pop("reamod_c_coll_clear_pending", None)
+            st.session_state.pop("reamod_shared_coll_clear_pending", None)
+            st.session_state.pop("reamod_collateral_mode", None)
             st.session_state.pop("reamod_coll_clear_flash", None)
             st.session_state.pop("reamod_carry_display", None)
             st.session_state.pop("reamod_carry_bound_loan_id", None)
             st.session_state.pop("reamod_topup_display", None)
             st.session_state.pop("reamod_topup_bound_loan_id", None)
+            st.session_state.pop("reamod_ctx_cache_key", None)
+            st.session_state.pop("reamod_ctx_cache_val", None)
+            st.session_state.pop("reamod_bal_cache_key", None)
+            st.session_state.pop("reamod_bal_cache_val", None)
             st.rerun()
-
-    with c_save3:
+    with c_save2:
         submitted = st.button("Submit for approval", type="primary", key="reamod_submit")
     if submitted:
         df_a = st.session_state.get("reamod_df_a")
@@ -1947,7 +2011,7 @@ def render_loan_modification_tab(
         try:
             snap = bucket_snapshot_for_json(bal)
             det_a = dict(st.session_state.get("reamod_details_a") or {})
-            det_a.update(patch_a)
+            det_a.update(patch_by_leg[0] if patch_by_leg else {})
             if cash_gl_id:
                 det_a.setdefault("cash_gl_account_id", cash_gl_id)
             details: dict[str, Any] = {
@@ -1961,9 +2025,16 @@ def render_loan_modification_tab(
                 "topup_amount": str(as_10dp(top_up)),
                 "total_facility": str(as_10dp(total_facility)),
                 "outstanding_snapshot": str(as_10dp(outstanding)),
+                "unapplied_balance_snapshot": str(as_10dp(unapplied_balance)),
+                "net_snapshot": str(as_10dp(net_outstanding)),
                 "writeoff_amount": str(
                     as_10dp(writeoff_amount if excess_policy in ("WRITE_OFF", "SPLIT") else 0)
                 ),
+                "liquidation_intent": {
+                    "run_before_modification": True,
+                    "effective_date": restructure_date.isoformat(),
+                    "max_restructure_amount": str(as_10dp(net_outstanding)),
+                },
                 "outstanding_interest_treatment": oit,
                 "modification_notes": notes.strip(),
                 "modification_loan_details": det_a,
@@ -1991,10 +2062,8 @@ def render_loan_modification_tab(
                 for si in range(n_legs):
                     skd, _ = _leg_session_keys(si)
                     di = dict(st.session_state.get(skd) or {})
-                    if si == 0:
-                        di.update(patch_a)
-                    elif si == 1:
-                        di.update(patch_b)
+                    if si < len(patch_by_leg):
+                        di.update(patch_by_leg[si])
                     if cash_gl_id:
                         di.setdefault("cash_gl_account_id", cash_gl_id)
                     det_list_submit.append(di)
@@ -2052,7 +2121,11 @@ def render_loan_modification_tab(
             dc, errs = _attach_staged_docs(int(new_draft_id), staged_docs, upload_document)
             for e in errs:
                 st.warning(e)
-            st.success(f"Draft #{new_draft_id} submitted ({dc} document(s)). Open **Approve loans**.")
+            st.session_state["approve_selected_draft_id"] = int(new_draft_id)
+            st.success(
+                f"Draft #{new_draft_id} submitted ({dc} document(s)). "
+                "Open **Approve Modifications** in Reamortisation to inspect and approve."
+            )
             st.session_state.pop("reamod_staged_draft_id", None)
             st.session_state.pop("reamod_docs_staged", None)
             st.session_state.pop("reamod_details_a", None)
@@ -2065,6 +2138,11 @@ def render_loan_modification_tab(
             for letter in ("A", "B", "C", "D", "E"):
                 st.session_state.pop(f"reamod_cust_df_{letter}", None)
                 st.session_state.pop(f"reamod_cust_params_{letter}", None)
+                st.session_state.pop(f"reamod_schedule_saved_{letter}", None)
+            st.session_state.pop("reamod_ctx_cache_key", None)
+            st.session_state.pop("reamod_ctx_cache_val", None)
+            st.session_state.pop("reamod_bal_cache_key", None)
+            st.session_state.pop("reamod_bal_cache_val", None)
             st.rerun()
         except Exception as ex:
             st.error(str(ex))

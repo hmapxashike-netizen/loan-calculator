@@ -177,32 +177,32 @@
       "trigger_type": "EOD"
     },
     {
-      "event_type": "CLEAR_DAILY_ACCRUAL",
-      "system_tag": "regular_interest_income_holding",
-      "direction": "DEBIT",
-      "description": "Clear the Daily Accrual Accounts",
-      "trigger_type": "EOD"
-    },
-    {
-      "event_type": "CLEAR_DAILY_ACCRUAL",
-      "system_tag": "regular_interest_accrued",
-      "direction": "CREDIT",
-      "description": "Clear the Daily Accrual Accounts",
-      "trigger_type": "EOD"
-    },
-    {
-      "event_type": "BILLING_REGULAR_INTEREST",
+      "event_type": "REGULAR_INTEREST_BILLING_RECEIVABLE",
       "system_tag": "regular_interest_arrears",
       "direction": "DEBIT",
-      "description": "Billing of REGULAR interest arrears",
+      "description": "Regular interest billing: arrears from accrued (unbilled)",
       "trigger_type": "EOD"
     },
     {
-      "event_type": "BILLING_REGULAR_INTEREST",
+      "event_type": "REGULAR_INTEREST_BILLING_RECEIVABLE",
+      "system_tag": "regular_interest_accrued",
+      "direction": "CREDIT",
+      "description": "Regular interest billing: arrears from accrued (unbilled)",
+      "trigger_type": "EOD"
+    },
+    {
+      "event_type": "EOM_REGULAR_INTEREST_INCOME_RECOGNITION",
+      "system_tag": "regular_interest_income_holding",
+      "direction": "DEBIT",
+      "description": "EOM recognition of regular interest income (MTD accrual)",
+      "trigger_type": "EOM"
+    },
+    {
+      "event_type": "EOM_REGULAR_INTEREST_INCOME_RECOGNITION",
       "system_tag": "regular_interest_income",
       "direction": "CREDIT",
-      "description": "Billing of REGULAR interest arrears",
-      "trigger_type": "EOD"
+      "description": "EOM recognition of regular interest income (MTD accrual)",
+      "trigger_type": "EOM"
     },
     {
       "event_type": "PAYMENT_REGULAR_INTEREST",
@@ -552,6 +552,13 @@
       "system_tag": "principal_arrears",
       "direction": "CREDIT",
       "description": "Capitalisation of principal arrears (restructure)",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "LOAN_RESTRUCTURE_CAPITALISE",
+      "system_tag": "regular_interest_accrued",
+      "direction": "CREDIT",
+      "description": "Capitalisation of regular interest accrued (restructure)",
       "trigger_type": "EVENT"
     },
     {

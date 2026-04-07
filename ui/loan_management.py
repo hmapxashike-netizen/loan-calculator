@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+from collections import defaultdict
+from collections.abc import Callable
 from decimal import Decimal
 from html import escape
 
@@ -64,11 +66,11 @@ def render_update_loans_ui(
         # ~45% + 45% + 10% spacer; small gap between the two selects for clarity
         _cust_col, _loan_col, _upd_sp = st.columns([9, 9, 2], gap="small", vertical_alignment="center")
         with _cust_col:
-        cust_sel = st.selectbox(
-            "Select Customer",
-            [get_display_name(c["id"]) for c in customers],
+            cust_sel = st.selectbox(
+                "Select Customer",
+                [get_display_name(c["id"]) for c in customers],
                 key="update_loan_cust",
-        )
+            )
         cust_id = next(c["id"] for c in customers if get_display_name(c["id"]) == cust_sel)
     
         loans = get_loans_by_customer(cust_id)
@@ -222,6 +224,395 @@ def render_update_loans_ui(
                     except Exception as e:
                         st.error(f"Failed to submit termination request: {e}")
     
+def render_batch_loan_capture_ui(
+    *,
+    loan_management_available: bool,
+    loan_management_error: str,
+    customers_available: bool,
+    list_customers,
+    get_display_name,
+    save_loan,
+    list_customers_for_loan_batch_link=None,
+    source_cash_gl_cached_labels_and_ids: Callable[[], tuple[list[str], list[str]]] | None = None,
+) -> None:
+        """Batch loan migration: preview CSVs, then commit loans directly to the database."""
+        render_sub_sub_header("Batch Loan Capture (Migration)")
+        st.caption(
+            "Upload a loan header CSV and schedule CSV, preview the rows, then **Commit loans to database** "
+            "(same pattern as customer batch import — no approval queue). "
+            "Link each loan to a customer using **customer_ref** (same value as customer **migration_ref**), "
+            "or **customer_display_name** (matches the UI label), or a valid **customer_id**. "
+            "Run `python scripts/run_migration_75.py` once so migration_ref is stored. "
+            "When the **source cash account cache** is populated, choose a **default source cash GL** below "
+            "(used when **cash_gl_account_id** is blank in the CSV); a non-empty per-row value overrides it. "
+            "Schedule **Date** values should use a **four-digit year** (YYYY-MM-DD or dd-Mon-2024). "
+            "If the database column was ever VARCHAR(10), run `python scripts/run_migration_76.py` before imports. "
+            "Regenerate `test_schedules.csv` with `scripts/generate_test_loans.py` if dates look like `…-202` (truncated year)."
+        )
+        if not loan_management_available:
+            st.error(f"Loan management module is not available. ({loan_management_error})")
+            return
+        if not customers_available:
+            st.error("Customer module is required before loading migration loans.")
+            return
+    
+        customers = list_customers() or []
+        valid_customer_ids = {int(c["id"]) for c in customers if c.get("id") is not None}
+    
+        template_loans = pd.DataFrame(
+            [
+                {
+                    "import_key": "LN-001",
+                    "customer_ref": "CUST-0001",
+                    "customer_display_name": "",
+                    "customer_id": "",
+                    "loan_type": "Term Loan",
+                    "product_code": "",
+                    "principal": 1000.00,
+                    "disbursed_amount": 980.00,
+                    "term": 6,
+                    "annual_rate": 24.0,
+                    "monthly_rate": 2.0,
+                    "drawdown_fee_amount": 20.0,
+                    "arrangement_fee_amount": 0.0,
+                    "admin_fee_amount": 0.0,
+                    "drawdown_fee": 0.0,
+                    "arrangement_fee": 0.0,
+                    "admin_fee": 0.0,
+                    "disbursement_date": "2026-01-01",
+                    "first_repayment_date": "2026-02-01",
+                    "end_date": "2026-07-01",
+                    "installment": 176.67,
+                    "total_payment": 1060.00,
+                    "payment_timing": "anniversary",
+                    "cash_gl_account_id": "",
+                    "loan_purpose_id": "",
+                    "agent_id": "",
+                    "relationship_manager_id": "",
+                }
+            ]
+        )
+        template_schedule = pd.DataFrame(
+            [
+                {
+                    "import_key": "LN-001",
+                    "Period": 1,
+                    "Date": "2026-02-01",
+                    "Payment": 176.67,
+                    "Principal": 156.67,
+                    "Interest": 20.00,
+                    "Principal Balance": 843.33,
+                    "Total Outstanding": 843.33,
+                },
+                {
+                    "import_key": "LN-001",
+                    "Period": 2,
+                    "Date": "2026-03-01",
+                    "Payment": 176.67,
+                    "Principal": 159.80,
+                    "Interest": 16.87,
+                    "Principal Balance": 683.53,
+                    "Total Outstanding": 683.53,
+                },
+            ]
+        )
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            st.download_button(
+                "Download Loan Header Template",
+                data=template_loans.to_csv(index=False).encode("utf-8"),
+                file_name="loan_batch_template.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with dl2:
+            st.download_button(
+                "Download Loan Schedule Template",
+                data=template_schedule.to_csv(index=False).encode("utf-8"),
+                file_name="loan_schedule_batch_template.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        loan_csv = st.file_uploader(
+            "Upload loan header CSV",
+            type=["csv"],
+            key="loan_batch_header_upload",
+        )
+        sched_csv = st.file_uploader(
+            "Upload schedule CSV",
+            type=["csv"],
+            key="loan_batch_schedule_upload",
+        )
+        if loan_csv is None or sched_csv is None:
+            return
+    
+        try:
+            loans_df = pd.read_csv(loan_csv)
+            sched_df = pd.read_csv(sched_csv)
+        except Exception as e:
+            st.error(f"Could not read CSV file(s): {e}")
+            return
+    
+        st.markdown("**Loan rows preview**")
+        st.dataframe(loans_df.head(50), hide_index=True, width="stretch")
+        st.markdown("**Schedule rows preview**")
+        st.dataframe(sched_df.head(50), hide_index=True, width="stretch")
+
+        required_loan_cols = {"import_key", "loan_type", "principal", "term", "disbursement_date"}
+        required_sched_cols = {"import_key", "Period", "Date", "Payment", "Principal", "Interest"}
+        miss_loan = sorted(c for c in required_loan_cols if c not in loans_df.columns)
+        miss_sched = sorted(c for c in required_sched_cols if c not in sched_df.columns)
+        if miss_loan:
+            st.error(f"Loan CSV missing required column(s): {', '.join(miss_loan)}")
+            return
+        if miss_sched:
+            st.error(f"Schedule CSV missing required column(s): {', '.join(miss_sched)}")
+            return
+
+        batch_default_source_cash_gl_id: str | None = None
+        if source_cash_gl_cached_labels_and_ids:
+            try:
+                _cg_lab, _cg_ids = source_cash_gl_cached_labels_and_ids()
+            except Exception:
+                _cg_lab, _cg_ids = [], []
+            if _cg_ids:
+                st.markdown("**Source cash GL**")
+                _cg_i = st.selectbox(
+                    "Default source cash / bank GL (used when CSV cash_gl_account_id is empty; per-row overrides)",
+                    range(len(_cg_lab)),
+                    format_func=lambda i: _cg_lab[i],
+                    key="loan_batch_default_cash_gl_sel",
+                )
+                batch_default_source_cash_gl_id = _cg_ids[_cg_i]
+
+        if not st.button("Commit loans to database", type="primary", key="loan_batch_commit"):
+            return
+
+        def _opt_float(raw: object) -> float | None:
+            if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+                return None
+            s = str(raw).strip()
+            if not s:
+                return None
+            return float(as_10dp(float(s)))
+
+        def _opt_int(raw: object) -> int | None:
+            if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+                return None
+            s = str(raw).strip()
+            if not s:
+                return None
+            return int(float(s))
+
+        def _opt_text(raw: object) -> str | None:
+            if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+                return None
+            s = str(raw).strip()
+            return s or None
+
+        def _run_batch_commit() -> tuple[list[dict], list[dict]]:
+            grouped_sched: dict[str, pd.DataFrame] = {
+                str(k): g.copy()
+                for k, g in sched_df.groupby(sched_df["import_key"].astype(str), dropna=False)
+            }
+            created_rows: list[dict] = []
+            error_rows: list[dict] = []
+
+            ref_exact: dict[str, int] = {}
+            ref_lower: dict[str, int] = {}
+            display_sets: dict[str, set[int]] = defaultdict(set)
+            legal_sets: dict[str, set[int]] = defaultdict(set)
+            indiv_sets: dict[str, set[int]] = defaultdict(set)
+            if list_customers_for_loan_batch_link:
+                link_rows = list_customers_for_loan_batch_link() or []
+                for lr in link_rows:
+                    cid = int(lr["id"])
+                    mr = lr.get("migration_ref")
+                    if mr is not None and str(mr).strip():
+                        s = str(mr).strip()
+                        ref_exact[s] = cid
+                        ref_lower[s.lower()] = cid
+                    ctype = str(lr.get("type") or "")
+                    if ctype == "individual":
+                        nm = (lr.get("individual_name") or "").strip()
+                        if nm:
+                            display_sets[nm.lower()].add(cid)
+                            indiv_sets[nm.lower()].add(cid)
+                    elif ctype == "corporate":
+                        tn = (lr.get("trading_name") or "").strip()
+                        ln = (lr.get("legal_name") or "").strip()
+                        disp = tn if tn else ln
+                        if disp:
+                            display_sets[disp.lower()].add(cid)
+                        if ln:
+                            legal_sets[ln.lower()].add(cid)
+                        if tn:
+                            display_sets[tn.lower()].add(cid)
+
+            def _resolve_customer_id_for_row(row: object) -> tuple[int, str]:
+                """Returns (customer_id, how_matched)."""
+                cid0 = _opt_int(row.get("customer_id"))
+                if cid0 is not None and cid0 in valid_customer_ids:
+                    return cid0, "customer_id"
+
+                cref = _opt_text(row.get("customer_ref")) or _opt_text(row.get("migration_ref"))
+                if cref:
+                    hit = ref_exact.get(cref) or ref_lower.get(cref.lower())
+                    if hit is not None and hit in valid_customer_ids:
+                        return hit, "customer_ref"
+                    raise ValueError(
+                        f"customer_ref '{cref}' not found. Import customers with the same migration_ref, "
+                        "or fix the spelling."
+                    )
+
+                cdn = _opt_text(row.get("customer_display_name"))
+                if cdn:
+                    ids = list(display_sets.get(cdn.lower(), set()))
+                    if len(ids) == 1:
+                        return ids[0], "customer_display_name"
+                    if len(ids) > 1:
+                        raise ValueError(
+                            f"customer_display_name '{cdn}' matches {len(ids)} customers; use customer_ref or customer_id."
+                        )
+                    raise ValueError(f"customer_display_name '{cdn}' not found.")
+
+                cle = _opt_text(row.get("customer_legal_name"))
+                if cle:
+                    ids = list(legal_sets.get(cle.lower(), set()))
+                    if len(ids) == 1:
+                        return ids[0], "customer_legal_name"
+                    if len(ids) > 1:
+                        raise ValueError(
+                            f"customer_legal_name '{cle}' is ambiguous; use customer_ref or customer_id."
+                        )
+                    raise ValueError(f"customer_legal_name '{cle}' not found.")
+
+                cin = _opt_text(row.get("customer_individual_name"))
+                if cin:
+                    ids = list(indiv_sets.get(cin.lower(), set()))
+                    if len(ids) == 1:
+                        return ids[0], "customer_individual_name"
+                    if len(ids) > 1:
+                        raise ValueError(
+                            f"customer_individual_name '{cin}' is ambiguous; use customer_ref or customer_id."
+                        )
+                    raise ValueError(f"customer_individual_name '{cin}' not found.")
+
+                if cid0 is not None:
+                    raise ValueError(f"customer_id {cid0} does not exist.")
+                raise ValueError(
+                    "Provide customer_ref (recommended), customer_display_name, customer_legal_name, "
+                    "customer_individual_name, or a valid customer_id."
+                )
+
+            for idx, row in loans_df.iterrows():
+                row_no = int(idx) + 2  # include CSV header row
+                try:
+                    import_key = str(row.get("import_key") or "").strip()
+                    if not import_key:
+                        raise ValueError("import_key is required.")
+                    sched_rows = grouped_sched.get(import_key)
+                    if sched_rows is None or sched_rows.empty:
+                        raise ValueError(f"No schedule rows found for import_key '{import_key}'.")
+
+                    customer_id, link_how = _resolve_customer_id_for_row(row)
+
+                    loan_type = _opt_text(row.get("loan_type"))
+                    if not loan_type:
+                        raise ValueError("loan_type is required.")
+
+                    principal = _opt_float(row.get("principal"))
+                    term = _opt_int(row.get("term"))
+                    disb_date = _opt_text(row.get("disbursement_date"))
+                    if principal is None:
+                        raise ValueError("principal is required.")
+                    if term is None or term <= 0:
+                        raise ValueError("term must be a positive integer.")
+                    if not disb_date:
+                        raise ValueError("disbursement_date is required.")
+
+                    disbursed = _opt_float(row.get("disbursed_amount"))
+                    meta = {"migration_import_key": import_key, "batch_customer_link": link_how}
+                    cref_meta = _opt_text(row.get("customer_ref")) or _opt_text(row.get("migration_ref"))
+                    if cref_meta:
+                        meta["batch_customer_ref"] = cref_meta
+
+                    row_cash_gl = _opt_text(row.get("cash_gl_account_id"))
+                    cash_gl_for_save = row_cash_gl or batch_default_source_cash_gl_id
+
+                    details = {
+                        "principal": principal,
+                        "disbursed_amount": disbursed if disbursed is not None else principal,
+                        "term": term,
+                        "annual_rate": _opt_float(row.get("annual_rate")),
+                        "monthly_rate": _opt_float(row.get("monthly_rate")),
+                        "drawdown_fee_amount": _opt_float(row.get("drawdown_fee_amount")),
+                        "arrangement_fee_amount": _opt_float(row.get("arrangement_fee_amount")),
+                        "admin_fee_amount": _opt_float(row.get("admin_fee_amount")),
+                        "drawdown_fee": _opt_float(row.get("drawdown_fee")),
+                        "arrangement_fee": _opt_float(row.get("arrangement_fee")),
+                        "admin_fee": _opt_float(row.get("admin_fee")),
+                        "disbursement_date": disb_date,
+                        "first_repayment_date": _opt_text(row.get("first_repayment_date")),
+                        "end_date": _opt_text(row.get("end_date")),
+                        "installment": _opt_float(row.get("installment")),
+                        "total_payment": _opt_float(row.get("total_payment")),
+                        "payment_timing": _opt_text(row.get("payment_timing")),
+                        "cash_gl_account_id": cash_gl_for_save,
+                        "loan_purpose_id": _opt_int(row.get("loan_purpose_id")),
+                        "agent_id": _opt_int(row.get("agent_id")),
+                        "relationship_manager_id": _opt_int(row.get("relationship_manager_id")),
+                        "metadata": meta,
+                    }
+                    details = {k: v for k, v in details.items() if v is not None}
+
+                    schedule_use = sched_rows.copy()
+                    for col in (
+                        "Period",
+                        "Payment",
+                        "Principal",
+                        "Interest",
+                        "Principal Balance",
+                        "Total Outstanding",
+                    ):
+                        if col in schedule_use.columns:
+                            schedule_use[col] = pd.to_numeric(schedule_use[col], errors="coerce")
+                    schedule_use = schedule_use.sort_values(by=["Period"]).reset_index(drop=True)
+                    schedule_use = schedule_use.drop(columns=[c for c in ["import_key"] if c in schedule_use.columns])
+
+                    loan_id = save_loan(
+                        int(customer_id),
+                        str(loan_type),
+                        details,
+                        schedule_use,
+                        product_code=_opt_text(row.get("product_code")),
+                    )
+                    created_rows.append(
+                        {
+                            "row": row_no,
+                            "import_key": import_key,
+                            "customer_id": customer_id,
+                            "linked_via": link_how,
+                            "customer_name": get_display_name(customer_id),
+                            "loan_id": int(loan_id),
+                        }
+                    )
+                except Exception as e:
+                    error_rows.append({"row": row_no, "import_key": row.get("import_key"), "error": str(e)})
+            return created_rows, error_rows
+
+        try:
+            created_rows, error_rows = run_with_spinner("Saving loans to database…", _run_batch_commit)
+        except Exception as ex:
+            st.error(f"Batch commit failed: {ex}")
+            return
+
+        st.success(f"Committed {len(created_rows)} loan(s) to the database.")
+        if created_rows:
+            st.dataframe(pd.DataFrame(created_rows), hide_index=True, width="stretch")
+        if error_rows:
+            st.warning(f"{len(error_rows)} row(s) failed.")
+            st.dataframe(pd.DataFrame(error_rows), hide_index=True, width="stretch")
 
 
 def render_approve_loans_ui(
@@ -279,6 +670,139 @@ def render_approve_loans_ui(
         if not drafts:
             st.info("No loan drafts are awaiting approval.")
             return
+
+        with st.expander("Dismiss batch (clear this approval queue)", expanded=False):
+            st.warning(
+                f"This will **dismiss all {len(drafts)} draft(s)** currently listed (same search and "
+                "**PENDING** / **REWORK**). Use this after a bad migration upload or to reset the queue."
+            )
+            st.caption(
+                "Note: the inbox list is capped for performance. The batch dismiss will re-fetch up to 5,000 "
+                "matching drafts at click-time."
+            )
+            _bd_note = st.text_input(
+                "Optional note stored on each draft",
+                key="approve_batch_dismiss_note",
+                placeholder="e.g. Clearing test import batch",
+            )
+            _bd_conf = st.text_input(
+                'Type **DISMISS BATCH** to confirm',
+                key="approve_batch_dismiss_confirm",
+            )
+            if st.button("Dismiss entire batch", type="primary", key="approve_batch_dismiss_go"):
+                if (_bd_conf or "").strip() != "DISMISS BATCH":
+                    st.error('Confirmation must be exactly: DISMISS BATCH')
+                else:
+                    # Re-fetch drafts at click time so the batch matches the latest queue (and not just
+                    # the first page already loaded above).
+                    drafts_now = list_loan_approval_drafts(
+                        statuses=["PENDING", "REWORK"],
+                        search=search_txt.strip() or None,
+                        limit=5000,
+                    )
+                    errs: list[str] = []
+                    n_ok = 0
+
+                    def _run_batch_dismiss():
+                        nonlocal n_ok, errs
+                        for r in drafts_now:
+                            try:
+                                dismiss_loan_approval_draft(
+                                    int(r["id"]),
+                                    note=(_bd_note or "").strip() or "Batch dismiss (Approve loans)",
+                                    actor="approver_ui",
+                                )
+                                n_ok += 1
+                            except Exception as ex:
+                                errs.append(f"Draft #{r.get('id')}: {ex}")
+
+                    run_with_spinner("Dismissing drafts…", _run_batch_dismiss)
+                    st.session_state.pop("approve_selected_draft_id", None)
+                    for _k in list(st.session_state.keys()):
+                        if str(_k).startswith("approve_doc_preview_"):
+                            st.session_state.pop(_k, None)
+                    if errs:
+                        st.session_state["approve_loans_flash_message"] = (
+                            f"Dismissed {n_ok} draft(s); {len(errs)} error(s). "
+                            f"(Showing up to 50 errors in console log.)"
+                        )
+                        # Keep a short copy for UI after rerun.
+                        st.session_state["approve_batch_dismiss_errors"] = errs[:50]
+                    else:
+                        st.session_state["approve_loans_flash_message"] = f"Dismissed {n_ok} draft(s)."
+                        st.session_state.pop("approve_batch_dismiss_errors", None)
+                    st.rerun()
+
+        with st.expander("Approve / Commit batch (create loans)", expanded=False):
+            st.warning(
+                f"This will **approve and commit** drafts currently listed (same search and "
+                "**PENDING** / **REWORK**). This creates loans and posts GL where applicable."
+            )
+            st.caption(
+                "The inbox list is capped for performance. Batch approve will re-fetch up to 2,000 matching drafts at click-time."
+            )
+            _ba_note = st.text_input(
+                "Optional note (stored in your logs only; approval function does not persist this note)",
+                key="approve_batch_approve_note",
+                placeholder="e.g. Approving migration batch",
+            )
+            _ba_conf = st.text_input(
+                "Type **APPROVE BATCH** to confirm",
+                key="approve_batch_approve_confirm",
+            )
+            if st.button("Approve / Commit entire batch", type="primary", key="approve_batch_approve_go"):
+                if (_ba_conf or "").strip() != "APPROVE BATCH":
+                    st.error("Confirmation must be exactly: APPROVE BATCH")
+                else:
+                    drafts_now = list_loan_approval_drafts(
+                        statuses=["PENDING", "REWORK"],
+                        search=search_txt.strip() or None,
+                        limit=2000,
+                    )
+                    errs_a: list[str] = []
+                    ok_rows: list[str] = []
+
+                    def _run_batch_approve():
+                        nonlocal errs_a, ok_rows
+                        for r in drafts_now:
+                            did = int(r["id"])
+                            try:
+                                lid = approve_loan_approval_draft(did, approved_by="approver_ui")
+                                ok_rows.append(f"Draft #{did} -> Loan #{int(lid)}")
+                            except Exception as ex:
+                                errs_a.append(f"Draft #{did}: {ex}")
+
+                    run_with_spinner("Approving drafts…", _run_batch_approve)
+                    st.session_state.pop("approve_selected_draft_id", None)
+                    for _k in list(st.session_state.keys()):
+                        if str(_k).startswith("approve_doc_preview_"):
+                            st.session_state.pop(_k, None)
+                    if errs_a:
+                        st.session_state["approve_loans_flash_message"] = (
+                            f"Approved {len(ok_rows)} draft(s); {len(errs_a)} error(s)."
+                        )
+                        st.session_state["approve_batch_approve_errors"] = errs_a[:50]
+                        st.session_state["approve_batch_approve_ok"] = ok_rows[:50]
+                    else:
+                        st.session_state["approve_loans_flash_message"] = f"Approved {len(ok_rows)} draft(s)."
+                        st.session_state["approve_batch_approve_ok"] = ok_rows[:50]
+                        st.session_state.pop("approve_batch_approve_errors", None)
+                    st.rerun()
+
+        _ba_ok = st.session_state.pop("approve_batch_approve_ok", None)
+        if _ba_ok:
+            with st.expander("Batch approve results (first 50)", expanded=False):
+                st.code("\n".join(_ba_ok))
+        _ba_errs = st.session_state.pop("approve_batch_approve_errors", None)
+        if _ba_errs:
+            with st.expander("Batch approve errors (first 50)", expanded=False):
+                st.code("\n".join(_ba_errs))
+
+        # Show persisted batch-dismiss errors (if any) after rerun.
+        _bd_errs = st.session_state.pop("approve_batch_dismiss_errors", None)
+        if _bd_errs:
+            with st.expander("Batch dismiss errors (first 50)", expanded=False):
+                st.code("\n".join(_bd_errs))
     
         draft_options = [int(r["id"]) for r in drafts]
         selected_id = st.session_state.get("approve_selected_draft_id")
@@ -360,27 +884,27 @@ def render_approve_loans_ui(
                         st.caption("Status")
                         st.write(f"**{draft.get('status')}**")
                 else:
-                with p2:
-                    st.caption("Amounts")
-                    st.write(f"Principal: **{float(details.get('principal') or 0):,.2f}**")
-                    st.write(f"Disbursed: **{float(details.get('disbursed_amount') or 0):,.2f}**")
-                    st.write(f"Installment: **{float(details.get('installment') or 0):,.2f}**")
-                    st.write(f"Total payment: **{float(details.get('total_payment') or 0):,.2f}**")
-                with p3:
-                    st.caption("Pricing")
-                    st.write(f"Annual rate: **{float(details.get('annual_rate') or 0) * 100:.2f}%**")
-                    st.write(f"Monthly rate: **{float(details.get('monthly_rate') or 0) * 100:.2f}%**")
-                    st.write(f"Penalty: **{float(details.get('penalty_rate_pct') or 0):.2f}%**")
+                    with p2:
+                        st.caption("Amounts")
+                        st.write(f"Principal: **{float(details.get('principal') or 0):,.2f}**")
+                        st.write(f"Disbursed: **{float(details.get('disbursed_amount') or 0):,.2f}**")
+                        st.write(f"Installment: **{float(details.get('installment') or 0):,.2f}**")
+                        st.write(f"Total payment: **{float(details.get('total_payment') or 0):,.2f}**")
+                    with p3:
+                        st.caption("Pricing")
+                        st.write(f"Annual rate: **{float(details.get('annual_rate') or 0) * 100:.2f}%**")
+                        st.write(f"Monthly rate: **{float(details.get('monthly_rate') or 0) * 100:.2f}%**")
+                        st.write(f"Penalty: **{float(details.get('penalty_rate_pct') or 0):.2f}%**")
                         st.write(
                             f"Fees: **{float(details.get('drawdown_fee') or 0) * 100:.2f}% / "
                             f"{float(details.get('arrangement_fee') or 0) * 100:.2f}%**"
                         )
-                with p4:
-                    st.caption("Dates & status")
-                    st.write(f"Tenor: **{int(details.get('term') or 0)} months**")
-                    st.write(f"First repay: **{details.get('first_repayment_date') or '—'}**")
-                    st.write(f"Disbursed on: **{details.get('disbursement_date') or '—'}**")
-                    st.write(f"Status: **{draft.get('status')}**")
+                    with p4:
+                        st.caption("Dates & status")
+                        st.write(f"Tenor: **{int(details.get('term') or 0)} months**")
+                        st.write(f"First repay: **{details.get('first_repayment_date') or '—'}**")
+                        st.write(f"Disbursed on: **{details.get('disbursement_date') or '—'}**")
+                        st.write(f"Status: **{draft.get('status')}**")
     
                 with st.expander("View documents", expanded=False):
                     if documents_available:
@@ -712,7 +1236,7 @@ def render_approve_loans_ui(
                                 new_loan_id = approve_loan_approval_draft(
                                     int(selected_id), approved_by="approver_ui"
                                 )
-                            doc_count = 0
+                                doc_count = 0
                                 refreshed = get_loan_approval_draft(int(selected_id))
                                 dj = (refreshed or {}).get("details_json") or {}
                                 _sids = dj.get("split_created_loan_ids")
@@ -733,27 +1257,27 @@ def render_approve_loans_ui(
                                             targets.append(int(id_b))
                                         except (TypeError, ValueError):
                                             pass
-                            if documents_available:
+                                if documents_available:
                                     docs = list_documents(
                                         entity_type="loan_approval_draft", entity_id=int(selected_id)
                                     )
                                     for lid in targets:
-                                for row in docs:
-                                    full = get_document(int(row["id"]))
-                                    if not full:
-                                        continue
-                                    upload_document(
-                                        "loan",
+                                        for row in docs:
+                                            full = get_document(int(row["id"]))
+                                            if not full:
+                                                continue
+                                            upload_document(
+                                                "loan",
                                                 int(lid),
-                                        int(full["category_id"]),
-                                        str(full["file_name"]),
-                                        str(full["file_type"]),
-                                        int(full["file_size"]),
-                                        full["file_content"],
-                                        uploaded_by="System User",
-                                        notes=str(full.get("notes") or ""),
-                                    )
-                                    doc_count += 1
+                                                int(full["category_id"]),
+                                                str(full["file_name"]),
+                                                str(full["file_type"]),
+                                                int(full["file_size"]),
+                                                full["file_content"],
+                                                uploaded_by="System User",
+                                                notes=str(full.get("notes") or ""),
+                                            )
+                                            doc_count += 1
                                 ap_done = str(dj.get("approval_action") or ap_action or "").strip().upper()
                                 if ap_done == "LOAN_MODIFICATION":
                                     msg = (
@@ -774,7 +1298,7 @@ def render_approve_loans_ui(
                                 else:
                                     msg = (
                                         f"Loan approved successfully. Loan #{new_loan_id} created. "
-                                f"{doc_count} document(s) copied."
+                                        f"{doc_count} document(s) copied."
                                     )
                                 return int(new_loan_id), doc_count, msg
 
@@ -975,21 +1499,21 @@ def render_view_schedule_ui(
         if search_by == "Loan ID":
             _half_l, _half_r = st.columns([1, 1])
             with _half_l:
-            id_col, btn_col = st.columns([2, 1])
-            with id_col:
-                lid_input = st.number_input("Loan ID", min_value=1, value=1, step=1, key="view_sched_loan_id")
-            with btn_col:
-                st.write("")
-                st.write("")
-                load_by_id = st.button("Load schedule", key="view_sched_load_by_id", use_container_width=True)
-            if load_by_id:
-                loan = get_loan(int(lid_input)) if loan_management_available else None
-                if not loan:
-                    st.warning(f"Loan #{lid_input} not found.")
-                else:
-                    loan_id = int(lid_input)
-                    st.session_state["view_schedule_loan_id"] = loan_id
-            loan_id = st.session_state.get("view_schedule_loan_id")
+                id_col, btn_col = st.columns([2, 1])
+                with id_col:
+                    lid_input = st.number_input("Loan ID", min_value=1, value=1, step=1, key="view_sched_loan_id")
+                with btn_col:
+                    st.write("")
+                    st.write("")
+                    load_by_id = st.button("Load schedule", key="view_sched_load_by_id", use_container_width=True)
+                if load_by_id:
+                    loan = get_loan(int(lid_input)) if loan_management_available else None
+                    if not loan:
+                        st.warning(f"Loan #{lid_input} not found.")
+                    else:
+                        loan_id = int(lid_input)
+                        st.session_state["view_schedule_loan_id"] = loan_id
+                loan_id = st.session_state.get("view_schedule_loan_id")
             with _half_r:
                 st.empty()
         else:
@@ -1004,16 +1528,16 @@ def render_view_schedule_ui(
                     cust_labels = [t[1] for t in cust_options]
                     cust_col, loan_col = st.columns([1, 1])
                     with cust_col:
-                    cust_sel = st.selectbox("Customer", cust_labels, key="view_sched_cust")
+                        cust_sel = st.selectbox("Customer", cust_labels, key="view_sched_cust")
                     cid = cust_options[cust_labels.index(cust_sel)][0] if cust_sel else None
                     with loan_col:
                         if not cid:
                             st.caption("Select a customer to choose a loan.")
                         else:
-                        loans_list = get_loans_by_customer(cid)
-                        if not loans_list:
-                            st.info("No loans for this customer.")
-                        else:
+                            loans_list = get_loans_by_customer(cid)
+                            if not loans_list:
+                                st.info("No loans for this customer.")
+                            else:
                                 loan_options = [
                                     (
                                         l["id"],
@@ -1021,10 +1545,10 @@ def render_view_schedule_ui(
                                     )
                                     for l in loans_list
                                 ]
-                            loan_labels = [t[1] for t in loan_options]
-                            loan_sel = st.selectbox("Loan", loan_labels, key="view_sched_loan_sel")
-                            if loan_sel:
-                                loan_id = loan_options[loan_labels.index(loan_sel)][0]
+                                loan_labels = [t[1] for t in loan_options]
+                                loan_sel = st.selectbox("Loan", loan_labels, key="view_sched_loan_sel")
+                                if loan_sel:
+                                    loan_id = loan_options[loan_labels.index(loan_sel)][0]
     
         if loan_id:
             try:

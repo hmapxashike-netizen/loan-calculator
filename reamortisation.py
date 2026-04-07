@@ -837,6 +837,7 @@ def apply_loan_modification_from_approval_schedule(
     new_loan_type: str,
     *,
     outstanding_interest_treatment: str = "capitalise",
+    restructure_fee_amount: float = 0.0,
     notes: str | None = None,
 ) -> int:
     """
@@ -917,9 +918,9 @@ def apply_loan_modification_from_approval_schedule(
                 INSERT INTO loan_modifications (
                     loan_id, modification_date, previous_schedule_version, new_schedule_version,
                     outstanding_interest_treatment, new_loan_type, new_term, new_annual_rate,
-                    new_principal, notes
+                    new_principal, restructure_fee_amount, notes
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     loan_id,
@@ -931,6 +932,7 @@ def apply_loan_modification_from_approval_schedule(
                     term,
                     ar_note,
                     round(principal, 2),
+                    float(as_10dp(restructure_fee_amount or 0.0)),
                     notes,
                 ),
             )

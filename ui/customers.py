@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from html import escape
 
 import pandas as pd
@@ -106,45 +107,49 @@ def render_add_individual_tab(
     upload_document,
 ) -> None:
     render_sub_sub_header("New Individual Customer")
-            with st.form("individual_form", clear_on_submit=True):
+    if "ind_docs_staged" not in st.session_state:
+        st.session_state["ind_docs_staged"] = []
+
+    with st.form("individual_form", clear_on_submit=True):
         ir1a, ir1b, ir1c, ir1d = st.columns(4)
         with ir1a:
             name = st.text_input("Full Name *", placeholder="e.g. John Doe", key="ind_full_name")
         with ir1b:
-                    national_id = st.text_input("National ID", placeholder="Optional", key="ind_national_id")
+            national_id = st.text_input("National ID", placeholder="Optional", key="ind_national_id")
         with ir1c:
             phone1 = st.text_input("Phone 1", placeholder="Optional", key="ind_phone1")
         with ir1d:
             phone2 = st.text_input("Phone 2", placeholder="Optional", key="ind_phone2")
 
-                sector_id, subsector_id = None, None
+        sector_id, subsector_id = None, None
+        employer_details = ""
         ir2a, ir2b, ir2c, ir2d = st.columns(4)
         with ir2a:
             email1 = st.text_input("Email 1", placeholder="Optional", key="ind_email1")
         with ir2b:
             email2 = st.text_input("Email 2", placeholder="Optional", key="ind_email2")
-                if customers_available:
-                    sectors_list = list_sectors()
-                    subsectors_list = list_subsectors()
-                    if sectors_list:
+        if customers_available:
+            sectors_list = list_sectors() or []
+            subsectors_list = list_subsectors() or []
+            if sectors_list:
                 with ir2c:
-                        sector_names = ["(None)"] + [s["name"] for s in sectors_list]
-                        sel_sector_name = st.selectbox("Sector", sector_names, key="ind_sector")
+                    sector_names = ["(None)"] + [s["name"] for s in sectors_list]
+                    sel_sector_name = st.selectbox("Sector", sector_names, key="ind_sector")
                 sector_id = (
                     next((s["id"] for s in sectors_list if s["name"] == sel_sector_name), None)
                     if sel_sector_name != "(None)"
                     else None
                 )
-                        subs_by_sector = [ss for ss in subsectors_list if sector_id and ss["sector_id"] == sector_id]
-                        sub_names = ["(None)"] + [s["name"] for s in subs_by_sector]
+                subs_by_sector = [ss for ss in subsectors_list if sector_id and ss["sector_id"] == sector_id]
+                sub_names = ["(None)"] + [s["name"] for s in subs_by_sector]
                 with ir2d:
-                        sel_subsector_name = st.selectbox("Subsector", sub_names, key="ind_subsector")
+                    sel_subsector_name = st.selectbox("Subsector", sub_names, key="ind_subsector")
                 subsector_id = (
                     next((s["id"] for s in subs_by_sector if s["name"] == sel_subsector_name), None)
                     if sel_subsector_name != "(None)"
                     else None
                 )
-                ir3a, ir3b, ir3c, ir3d = st.columns(4)
+                ir3a, _, _, _ = st.columns(4)
                 with ir3a:
                     employer_details = st.text_input(
                         "Employer Details", placeholder="Optional", key="ind_employer_details"
@@ -169,120 +174,122 @@ def render_add_individual_tab(
             with iadr1c:
                 line2 = st.text_input("Address Line 2", key="ind_addr_line2")
             with iadr1d:
-                    city = st.text_input("City", key="ind_addr_city")
+                city = st.text_input("City", key="ind_addr_city")
             iadr2a, iadr2b, iadr2c, iadr2d = st.columns(4)
             with iadr2a:
-                    region = st.text_input("Region", key="ind_addr_region")
+                region = st.text_input("Region", key="ind_addr_region")
             with iadr2b:
                 postal_code = st.text_input("Postal Code", key="ind_addr_postal_code")
             with iadr2c:
-                    country = st.text_input("Country", key="ind_addr_country")
+                country = st.text_input("Country", key="ind_addr_country")
             with iadr2d:
                 use_addr = st.checkbox("Include This Address", value=False, key="ind_use_addr")
-    
-                # Individual customer documents: single dropdown + uploader + staged list
-                if "ind_docs_staged" not in st.session_state:
-                    st.session_state["ind_docs_staged"] = []
+
         with st.expander("Documents (Optional)"):
-                    staged_ind_docs = st.session_state["ind_docs_staged"]
-                    if documents_available:
+            staged_ind_docs = st.session_state.get("ind_docs_staged") or []
+            if documents_available:
                 st.write("Upload Individual KYC Documents Here. Max Size 200MB Per File.")
-                        doc_cats = list_document_categories(active_only=True)
-                        name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
-                        if not name_to_cat:
+                doc_cats = list_document_categories(active_only=True) or []
+                name_to_cat = {c["name"]: c for c in doc_cats if c.get("name") in INDIVIDUAL_DOC_TYPES}
+                if not name_to_cat:
                     st.info("No Matching Document Categories (Individual KYC) Configured.")
-                        else:
+                    doc_add = False
+                else:
                     d1a, d1b, d1c, d1d = st.columns(4)
                     with d1a:
-                            doc_type = st.selectbox(
-                            "Document Type",
-                                sorted(name_to_cat.keys()),
-                                key="ind_doc_type",
-                            )
-                            other_label = ""
-                            if doc_type == "Other":
-                        with d1b:
-                                other_label = st.text_input(
-                                "If Other, Describe The Document",
-                                    key="ind_doc_other_label",
-                                )
+                        doc_type = st.selectbox("Document Type", sorted(name_to_cat.keys()), key="ind_doc_type")
+                    with d1b:
+                        other_label = st.text_input(
+                            "If Other, Describe The Document",
+                            key="ind_doc_other_label",
+                            disabled=doc_type != "Other",
+                        )
                     with d1c:
-                            f = st.file_uploader(
+                        f = st.file_uploader(
                             "Choose File",
-                                type=["pdf", "png", "jpg", "jpeg"],
-                                key="ind_doc_file",
-                            )
+                            type=["pdf", "png", "jpg", "jpeg"],
+                            key="ind_doc_file",
+                        )
                     with d1d:
                         notes = st.text_input("Notes (Optional)", key="ind_doc_notes")
                     doc_add = st.form_submit_button("Save Document To List", key="ind_doc_add")
-                            if doc_add and f is not None:
-                                cat = name_to_cat[doc_type]
-                                label = other_label.strip() if doc_type == "Other" else notes.strip()
-                                staged_ind_docs.append(
-                                    {
-                                        "category_id": cat["id"],
-                                        "file": f,
-                                        "notes": label or "",
-                                    }
-                                )
-                                st.session_state["ind_docs_staged"] = staged_ind_docs
-                                st.success(f"Staged {f.name} as {doc_type}.")
-                        if staged_ind_docs:
-                    st.markdown("**Staged Documents:**")
-                            for idx, row in enumerate(staged_ind_docs, start=1):
-                        st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'No Notes'})")
-                    else:
-                st.info("Document Module Is Unavailable.")
-    
-        submitted = st.form_submit_button("Create individual", type="primary")
-                if submitted and name.strip():
-                    addresses = None
-                    if use_addr and line1.strip():
-                        addresses = [{"address_type": addr_type or None, "line1": line1 or None, "line2": line2 or None, "city": city or None, "region": region or None, "postal_code": postal_code or None, "country": country or None}]
-                    try:
-                        cid = create_individual(
-                            name=name.strip(),
-                            national_id=national_id.strip() or None,
-                            employer_details=employer_details.strip() or None,
-                            phone1=phone1.strip() or None,
-                            phone2=phone2.strip() or None,
-                            email1=email1.strip() or None,
-                            email2=email2.strip() or None,
-                            addresses=addresses,
-                            sector_id=sector_id,
-                            subsector_id=subsector_id,
+                    if doc_add and f is not None:
+                        cat = name_to_cat[doc_type]
+                        label = other_label.strip() if doc_type == "Other" else notes.strip()
+                        staged_ind_docs.append(
+                            {
+                                "category_id": cat["id"],
+                                "file": f,
+                                "notes": label or "",
+                            }
                         )
+                        st.session_state["ind_docs_staged"] = staged_ind_docs
+                        st.success(f"Staged {f.name} as {doc_type}.")
+                if staged_ind_docs:
+                    st.markdown("**Staged Documents:**")
+                    for idx, row in enumerate(staged_ind_docs, start=1):
+                        st.write(f"{idx}. {row['file'].name} ({row.get('notes') or 'No Notes'})")
+            else:
+                st.info("Document Module Is Unavailable.")
+
+        submitted = st.form_submit_button("Create individual", type="primary")
+        if submitted and name.strip():
+            addresses = None
+            if use_addr and line1.strip():
+                addresses = [
+                    {
+                        "address_type": addr_type or None,
+                        "line1": line1 or None,
+                        "line2": line2 or None,
+                        "city": city or None,
+                        "region": region or None,
+                        "postal_code": postal_code or None,
+                        "country": country or None,
+                    }
+                ]
+            try:
+                cid = create_individual(
+                    name=name.strip(),
+                    national_id=national_id.strip() or None,
+                    employer_details=employer_details.strip() or None,
+                    phone1=phone1.strip() or None,
+                    phone2=phone2.strip() or None,
+                    email1=email1.strip() or None,
+                    email2=email2.strip() or None,
+                    addresses=addresses,
+                    sector_id=sector_id,
+                    subsector_id=subsector_id,
+                )
                 st.success(f"Individual Customer Created. Customer ID: **{cid}**.")
-    
-                        staged_ind_docs = st.session_state.get("ind_docs_staged") or []
-                        if documents_available and staged_ind_docs:
-                            doc_count = 0
-                            for row in staged_ind_docs:
-                                cat_id = row["category_id"]
-                                f = row["file"]
-                                notes = row.get("notes") or ""
-                                try:
-                                    upload_document(
-                                        "customer",
-                                        cid,
-                                        cat_id,
-                                        f.name,
-                                        f.type,
-                                        f.size,
-                                        f.getvalue(),
-                                        uploaded_by="System User",
-                                        notes=notes,
-                                    )
-                                    doc_count += 1
-                                except Exception as e:
-                                    st.error(f"Failed to upload {f.name}: {e}")
-                            if doc_count > 0:
+
+                staged_ind_docs = st.session_state.get("ind_docs_staged") or []
+                if documents_available and staged_ind_docs:
+                    doc_count = 0
+                    for row in staged_ind_docs:
+                        cat_id = row["category_id"]
+                        f = row["file"]
+                        notes = row.get("notes") or ""
+                        try:
+                            upload_document(
+                                "customer",
+                                cid,
+                                cat_id,
+                                f.name,
+                                f.type,
+                                f.size,
+                                f.getvalue(),
+                                uploaded_by="System User",
+                                notes=notes,
+                            )
+                            doc_count += 1
+                        except Exception as e:
+                            st.error(f"Failed to upload {f.name}: {e}")
+                    if doc_count > 0:
                         st.success(f"Successfully Uploaded {doc_count} Documents.")
-                        st.session_state["ind_docs_staged"] = []
-    
-                    except Exception as e:
+                st.session_state["ind_docs_staged"] = []
+            except Exception as e:
                 st.error(f"Could Not Create Customer: {e}")
-                elif submitted and not name.strip():
+        elif submitted and not name.strip():
             st.warning("Please Enter A Name.")
 
 
@@ -1606,8 +1613,8 @@ def render_customers_ui(
 
     inject_tertiary_hyperlink_css_once()
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["Add Individual", "Add Corporate", "View & Manage", "Agents", "Approvals"]
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["Add Individual", "Add Corporate", "View & Manage", "Agents", "Approvals", "Batch Capture"]
     )
 
     with tab1:
@@ -1666,6 +1673,276 @@ def render_customers_ui(
 
     with tab5:
         customer_approvals_ui(is_tab=True)
+
+    with tab6:
+        render_sub_sub_header("Batch Customer Capture (Migration)")
+        st.caption(
+            "Upload a CSV to create customers in bulk for migration. "
+            "Optional column **migration_ref** is your stable key (e.g. CUST-0001); use the same value in loan CSV as **customer_ref** so loans attach correctly even when database IDs differ."
+        )
+        strict_refs = st.checkbox(
+            "Strict sector/subsector validation",
+            value=False,
+            key="cust_batch_strict_refs",
+            help="If off, invalid sector/subsector IDs are ignored and imported as blank.",
+        )
+        sectors_ref = list_sectors() if customers_available else []
+        subsectors_ref = list_subsectors() if customers_available else []
+        sector_ids = {int(s.get("id")) for s in sectors_ref if s.get("id") is not None}
+        sector_name_to_id = {
+            str(s.get("name") or "").strip().lower(): int(s.get("id"))
+            for s in sectors_ref
+            if s.get("id") is not None and str(s.get("name") or "").strip()
+        }
+        subsector_by_id = {
+            int(ss.get("id")): {
+                "id": int(ss.get("id")),
+                "name": str(ss.get("name") or "").strip(),
+                "sector_id": int(ss.get("sector_id")) if ss.get("sector_id") is not None else None,
+            }
+            for ss in subsectors_ref
+            if ss.get("id") is not None
+        }
+        subsectors_by_name: dict[str, list[dict]] = {}
+        for _sid, _rec in subsector_by_id.items():
+            _nm = str(_rec.get("name") or "").strip().lower()
+            if not _nm:
+                continue
+            subsectors_by_name.setdefault(_nm, []).append(_rec)
+
+        tmpl = pd.DataFrame(
+            [
+                {
+                    "migration_ref": "CUST-0001",
+                    "customer_type": "individual",
+                    "full_name": "Jane Doe",
+                    "legal_name": "",
+                    "trading_name": "",
+                    "reg_number": "",
+                    "tin": "",
+                    "national_id": "63-123456A63",
+                    "employer_details": "ABC Ltd",
+                    "phone1": "+263771000001",
+                    "phone2": "",
+                    "email1": "jane@example.com",
+                    "email2": "",
+                    "sector_id": "",
+                    "sector_name": "",
+                    "subsector_id": "",
+                    "subsector_name": "",
+                    "address_type": "physical",
+                    "line1": "12 Main St",
+                    "line2": "",
+                    "city": "Harare",
+                    "region": "",
+                    "postal_code": "",
+                    "country": "Zimbabwe",
+                },
+                {
+                    "migration_ref": "CUST-0002",
+                    "customer_type": "corporate",
+                    "full_name": "",
+                    "legal_name": "Acme Trading (Pvt) Ltd",
+                    "trading_name": "Acme",
+                    "reg_number": "1234/2020",
+                    "tin": "2000123456",
+                    "national_id": "",
+                    "employer_details": "",
+                    "phone1": "+263771000002",
+                    "phone2": "",
+                    "email1": "finance@acme.co.zw",
+                    "email2": "",
+                    "sector_id": "",
+                    "sector_name": "",
+                    "subsector_id": "",
+                    "subsector_name": "",
+                    "address_type": "registered",
+                    "line1": "1 Industrial Rd",
+                    "line2": "",
+                    "city": "Bulawayo",
+                    "region": "",
+                    "postal_code": "",
+                    "country": "Zimbabwe",
+                },
+            ]
+        )
+        st.download_button(
+            "Download Customer CSV Template",
+            data=tmpl.to_csv(index=False).encode("utf-8"),
+            file_name="customer_batch_template.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+        up = st.file_uploader(
+            "Upload completed customer CSV",
+            type=["csv"],
+            key="cust_batch_upload_csv",
+        )
+        if up is not None:
+            try:
+                df = pd.read_csv(up)
+            except Exception as e:
+                st.error(f"Could not read CSV: {e}")
+                df = pd.DataFrame()
+            if not df.empty:
+                st.dataframe(df.head(50), hide_index=True, width="stretch")
+                if st.button("Import Customers", type="primary", key="cust_batch_import_btn"):
+                    created_rows: list[dict] = []
+                    error_rows: list[dict] = []
+                    warning_rows: list[dict] = []
+                    required = {"customer_type"}
+                    missing = sorted(c for c in required if c not in df.columns)
+                    if missing:
+                        st.error(f"Missing required column(s): {', '.join(missing)}")
+                    else:
+                        for idx, row in df.iterrows():
+                            row_no = idx + 2  # + header row
+                            try:
+                                ctype = str(row.get("customer_type") or "").strip().lower()
+                                sector_raw = row.get("sector_id")
+                                subsector_raw = row.get("subsector_id")
+                                sector_id_raw = (
+                                    int(sector_raw)
+                                    if pd.notna(sector_raw) and str(sector_raw).strip() != ""
+                                    else None
+                                )
+                                subsector_id_raw = (
+                                    int(subsector_raw)
+                                    if pd.notna(subsector_raw) and str(subsector_raw).strip() != ""
+                                    else None
+                                )
+                                row_warnings: list[str] = []
+
+                                sector_name = str(row.get("sector_name") or "").strip().lower()
+                                subsector_name = str(row.get("subsector_name") or "").strip().lower()
+
+                                sector_id = sector_id_raw
+                                if sector_id is not None and sector_id not in sector_ids:
+                                    if strict_refs:
+                                        raise ValueError(f"sector_id {sector_id} not found in sectors.")
+                                    row_warnings.append(f"sector_id {sector_id} not found; ignored.")
+                                    sector_id = None
+                                if sector_id is None and sector_name:
+                                    sector_id = sector_name_to_id.get(sector_name)
+                                    if sector_id is None and strict_refs:
+                                        raise ValueError(f"sector_name '{sector_name}' not found.")
+                                    if sector_id is None and not strict_refs:
+                                        row_warnings.append(f"sector_name '{sector_name}' not found; ignored.")
+
+                                subsector_id = subsector_id_raw
+                                if subsector_id is not None and subsector_id not in subsector_by_id:
+                                    if strict_refs:
+                                        raise ValueError(f"subsector_id {subsector_id} not found in subsectors.")
+                                    row_warnings.append(f"subsector_id {subsector_id} not found; ignored.")
+                                    subsector_id = None
+
+                                if subsector_id is None and subsector_name:
+                                    candidates = subsectors_by_name.get(subsector_name) or []
+                                    if sector_id is not None:
+                                        candidates = [c for c in candidates if c.get("sector_id") == sector_id]
+                                    if len(candidates) == 1:
+                                        subsector_id = int(candidates[0]["id"])
+                                    elif len(candidates) > 1:
+                                        raise ValueError(
+                                            f"subsector_name '{subsector_name}' is ambiguous; provide subsector_id."
+                                        )
+                                    elif strict_refs:
+                                        raise ValueError(f"subsector_name '{subsector_name}' not found.")
+                                    else:
+                                        row_warnings.append(
+                                            f"subsector_name '{subsector_name}' not found; ignored."
+                                        )
+
+                                if subsector_id is not None:
+                                    ss_sector = subsector_by_id.get(subsector_id, {}).get("sector_id")
+                                    if ss_sector is not None and sector_id is None:
+                                        sector_id = ss_sector
+                                    elif ss_sector is not None and sector_id != ss_sector:
+                                        raise ValueError(
+                                            f"sector/subsector mismatch: sector_id {sector_id}, "
+                                            f"subsector_id {subsector_id} (belongs to sector {ss_sector})."
+                                        )
+
+                                line1 = str(row.get("line1") or "").strip()
+                                addresses = None
+                                if line1:
+                                    addresses = [
+                                        {
+                                            "address_type": str(row.get("address_type") or "").strip() or None,
+                                            "line1": line1,
+                                            "line2": str(row.get("line2") or "").strip() or None,
+                                            "city": str(row.get("city") or "").strip() or None,
+                                            "region": str(row.get("region") or "").strip() or None,
+                                            "postal_code": str(row.get("postal_code") or "").strip() or None,
+                                            "country": str(row.get("country") or "").strip() or None,
+                                        }
+                                    ]
+
+                                mr_csv = str(row.get("migration_ref") or "").strip() or None
+
+                                if ctype == "individual":
+                                    full_name = str(row.get("full_name") or "").strip()
+                                    if not full_name:
+                                        raise ValueError("full_name is required for individual rows.")
+                                    cid = create_individual(
+                                        name=full_name,
+                                        national_id=str(row.get("national_id") or "").strip() or None,
+                                        employer_details=str(row.get("employer_details") or "").strip() or None,
+                                        phone1=str(row.get("phone1") or "").strip() or None,
+                                        phone2=str(row.get("phone2") or "").strip() or None,
+                                        email1=str(row.get("email1") or "").strip() or None,
+                                        email2=str(row.get("email2") or "").strip() or None,
+                                        addresses=addresses,
+                                        sector_id=sector_id,
+                                        subsector_id=subsector_id,
+                                        migration_ref=mr_csv,
+                                    )
+                                elif ctype == "corporate":
+                                    legal_name = str(row.get("legal_name") or "").strip()
+                                    if not legal_name:
+                                        raise ValueError("legal_name is required for corporate rows.")
+                                    out = create_corporate_with_entities(
+                                        legal_name=legal_name,
+                                        trading_name=str(row.get("trading_name") or "").strip() or None,
+                                        reg_number=str(row.get("reg_number") or "").strip() or None,
+                                        tin=str(row.get("tin") or "").strip() or None,
+                                        addresses=addresses,
+                                        contact_person=None,
+                                        directors=None,
+                                        shareholders=None,
+                                        sector_id=sector_id,
+                                        subsector_id=subsector_id,
+                                        migration_ref=mr_csv,
+                                    )
+                                    cid = int(out.get("customer_id"))
+                                else:
+                                    raise ValueError("customer_type must be 'individual' or 'corporate'.")
+
+                                created_rows.append(
+                                    {
+                                        "row": row_no,
+                                        "customer_id": cid,
+                                        "migration_ref": mr_csv or "",
+                                        "customer_type": ctype,
+                                        "sector_id": sector_id,
+                                        "subsector_id": subsector_id,
+                                    }
+                                )
+                                if row_warnings:
+                                    warning_rows.append({"row": row_no, "warning": " | ".join(row_warnings)})
+                            except Exception as e:
+                                error_rows.append({"row": row_no, "error": str(e)})
+
+                        st.success(f"Imported {len(created_rows)} customer(s).")
+                        if created_rows:
+                            st.dataframe(pd.DataFrame(created_rows), hide_index=True, width="stretch")
+                        if warning_rows:
+                            st.info(f"{len(warning_rows)} row(s) imported with reference warnings.")
+                            st.dataframe(pd.DataFrame(warning_rows), hide_index=True, width="stretch")
+                        if error_rows:
+                            st.warning(f"{len(error_rows)} row(s) failed.")
+                            st.dataframe(pd.DataFrame(error_rows), hide_index=True, width="stretch")
 
 
 def customer_approvals_ui(is_tab=False):

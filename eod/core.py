@@ -37,7 +37,12 @@ from psycopg2.extras import RealDictCursor
 from config import get_database_url
 from decimal_utils import as_10dp
 from eod.loan_daily_engine import LoanConfig, ScheduleEntry, Loan
-from accounting.periods import normalize_accounting_period_config, is_eom, is_eoy
+from accounting.periods import (
+    get_month_period_bounds,
+    normalize_accounting_period_config,
+    is_eom,
+    is_eoy,
+)
 from eod.audit import (
     ConcurrentEODError,
     clear_stale_eod_audit_runs,
@@ -640,6 +645,103 @@ def _build_schedule_entries(
     return entries
 
 
+def _diagnose_empty_schedule_entries(
+    loan_row: Dict[str, Any],
+    schedule_rows: List[Dict[str, Any]],
+    version: int,
+) -> str:
+    """
+    Explain why ``_build_schedule_entries`` returned no ``ScheduleEntry`` rows (same walk, no build).
+    Typical data issues: truncated ``Date``, only Period 0 lines, or due <= period_start.
+    """
+    schedule_rows = sorted(
+        schedule_rows,
+        key=lambda r: (_parse_schedule_row_due(r) or date.max,),
+    )
+    unparsed_samples: list[str] = []
+    period0_parsed = 0
+    instalment_parsed = 0
+    unparsed_rows = 0
+    zero_length_instalments = 0
+    built = 0
+
+    disb_date = loan_row.get("disbursement_date") or loan_row.get("start_date")
+    if hasattr(disb_date, "isoformat"):
+        period_start: date = disb_date
+    else:
+        from eod.system_business_date import get_effective_date
+
+        period_start = get_effective_date()
+
+    prev_due: date | None = None
+
+    for row in schedule_rows:
+        due_date = _parse_schedule_row_due(row)
+        raw_d = row.get("Date") if row.get("Date") is not None else row.get("date")
+        if due_date is None:
+            unparsed_rows += 1
+            if raw_d is not None and str(raw_d).strip():
+                s = str(raw_d).strip()[:80]
+                if s not in unparsed_samples and len(unparsed_samples) < 6:
+                    unparsed_samples.append(s)
+            continue
+        try:
+            pnum = int(row.get("Period") or row.get("period") or 0)
+        except (TypeError, ValueError):
+            pnum = 0
+        if pnum == 0:
+            period0_parsed += 1
+            period_start = due_date
+            continue
+        instalment_parsed += 1
+        if prev_due is not None:
+            period_start = prev_due
+        if due_date <= period_start:
+            zero_length_instalments += 1
+            continue
+        built += 1
+        prev_due = due_date
+
+    hdr = (
+        f"Version {version} at disbursement builds **no** accrual periods "
+        f"({len(schedule_rows)} schedule line(s)). "
+    )
+    bits: list[str] = [hdr]
+    if unparsed_rows:
+        samp = ", ".join(repr(s) for s in unparsed_samples)
+        extra = ""
+        if unparsed_rows > len(unparsed_samples):
+            extra = f" … ({unparsed_rows} row(s) with bad/missing Date in total). "
+        bits.append(
+            f"{unparsed_rows} row(s) have dates the engine cannot parse "
+            f"(use **dd-Mon-yyyy** or **YYYY-MM-DD** with a **four-digit** year, e.g. 01-Jan-2024). "
+            f"Samples: {samp}.{extra}"
+        )
+    if instalment_parsed == 0:
+        if period0_parsed:
+            bits.append(
+                "Only **Period 0** rows have valid dates — add **Period >= 1** instalment lines "
+                "with due dates after the opening/booking date. "
+            )
+        elif unparsed_rows == 0:
+            bits.append("There are no instalment rows (**Period** >= 1) with valid dates. ")
+    elif built == 0 and zero_length_instalments == instalment_parsed:
+        bits.append(
+            "Every instalment row is skipped as **zero-length** (due date is on or before the "
+            "period start). Check Period 0 opening date vs first due, and disbursement date. "
+        )
+    elif built == 0:
+        bits.append(
+            f"{instalment_parsed} instalment row(s) parsed, but none form a positive-length "
+            f"accrual window ({zero_length_instalments} zero-length). "
+        )
+    bits.append(
+        "If values look like `01-Jan-202`, the year was truncated — run migration **76** and "
+        "repair `schedule_lines`.\"Date\"."
+    )
+    return "".join(bits).strip()
+
+
 def _eod_sync_engine_schedule_for_date(
     engine_loan: Loan,
     loan_row: Dict[str, Any],
@@ -696,6 +798,54 @@ class StageExecutionError(RuntimeError):
 def _format_stage_exception(e: BaseException) -> str:
     """Human-readable message; str(e) alone is often useless (e.g. KeyError(0) -> '0')."""
     return f"{type(e).__name__}: {e}"
+
+
+def explain_single_loan_eod_skip_reason(loan_id: int, as_of_date: date) -> str | None:
+    """
+    If the loan EOD engine would skip ``loan_id`` on ``as_of_date`` (early exits only),
+    return a short human-readable reason; otherwise ``None``.
+
+    Does not run the full day engine; use when ``run_single_loan_eod`` processes 0 loans.
+    """
+    with _get_conn() as conn:
+        loans = _fetch_active_loans(conn, loan_ids_filter=[loan_id])
+        if not loans:
+            return "Loan not found or not active."
+        loan_row = dict(loans[0])
+        loan_id_int = int(loan_row["id"])
+        schedules_versions_map = _batch_fetch_schedule_versions_by_loan(conn, [loan_id_int])
+        schedules_map = _batch_fetch_schedules(conn, [loan_id_int])
+        ver_rows = schedules_versions_map.get(loan_id_int, {})
+        if not ver_rows or not any(ver_rows.values()):
+            if not schedules_map.get(loan_id_int):
+                return "No schedule data linked to this loan in the EOD batch view."
+            return (
+                "Schedule version map is empty while a latest schedule header exists — "
+                "check loan_schedules versions vs schedule_lines."
+            )
+        disb_date = loan_row.get("disbursement_date") or loan_row.get("start_date")
+        if not isinstance(disb_date, date):
+            disb_date = as_of_date
+        if disb_date > as_of_date:
+            return (
+                f"Disbursement/start ({disb_date}) is after as-of ({as_of_date}); "
+                "engine does not write daily state before the loan exists."
+            )
+        bumps = list_schedule_bumping_events(loan_id_int)
+        v0 = apply_schedule_version_bumps(disb_date, bumps)
+        rows0 = _schedule_rows_for_version(ver_rows, v0)
+        if not rows0:
+            return (
+                f"No schedule lines for version {v0} in force at disbursement ({disb_date}). "
+                "Add lines for that version or fix recast/modification bump dates."
+            )
+        try:
+            schedule_entries0 = _build_schedule_entries(loan_row, rows0)
+        except ValueError as e:
+            return f"Invalid schedule at disbursement (version {v0}): {e}"
+        if not schedule_entries0:
+            return _diagnose_empty_schedule_entries(loan_row, rows0, v0)
+        return None
 
 
 def get_engine_state_for_loan_date(loan_id: int, as_of_date: date) -> Dict[str, Any] | None:
@@ -851,9 +1001,9 @@ def _run_loan_engine_for_date(
             continue
         if not schedule_entries0:
             _logger.warning(
-                "EOD skipped loan_id=%s: version %s produces no accrual periods.",
+                "EOD skipped loan_id=%s: %s",
                 loan_id_int,
-                v0,
+                _diagnose_empty_schedule_entries(dict(loan_row), rows0, v0),
             )
             continue
 
@@ -1200,10 +1350,67 @@ def _reallocate_receipts_after_reversals(as_of_date: date, sys_cfg: Dict[str, An
     return reallocated
 
 
+def _run_eom_regular_interest_income_recognition(
+    as_of_date: date,
+    period_cfg: Any,
+    events_to_run: set[str],
+    svc: Any,
+) -> None:
+    """
+    Accounting month-end: Dr regular_interest_income_holding / Cr regular_interest_income
+    for SUM(regular_interest_daily) over the period (loans not in interest_in_suspense).
+    """
+    if "EOM_REGULAR_INTEREST_INCOME_RECOGNITION" not in events_to_run:
+        return
+    bounds = get_month_period_bounds(as_of_date, period_cfg)
+    period_key = bounds.end_date.strftime("%Y-%m")
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT lds.loan_id,
+                       SUM(COALESCE(lds.regular_interest_daily, 0)) AS reg_mtd
+                FROM loan_daily_state lds
+                INNER JOIN loans l ON l.id = lds.loan_id
+                WHERE lds.as_of_date >= %s
+                  AND lds.as_of_date <= %s
+                  AND COALESCE(l.interest_in_suspense, FALSE) = FALSE
+                GROUP BY lds.loan_id
+                HAVING SUM(COALESCE(lds.regular_interest_daily, 0)) > 0
+                """,
+                (bounds.start_date, bounds.end_date),
+            )
+            m_rows = cur.fetchall()
+
+    for r in m_rows:
+        loan_id = r["loan_id"]
+        amt = Decimal(str(r["reg_mtd"] or 0))
+        if amt <= 0:
+            continue
+        event_id = f"EOM-REGINT-{period_key}-LOAN-{loan_id}"
+        svc.post_event(
+            event_type="EOM_REGULAR_INTEREST_INCOME_RECOGNITION",
+            reference=f"EOM-{as_of_date}-LOAN-{loan_id}-REGINT",
+            description=(
+                f"EOM regular interest income recognition for Loan {loan_id} ({period_key})"
+            ),
+            event_id=event_id,
+            created_by="system",
+            entry_date=as_of_date,
+            amount=amt,
+            loan_id=int(loan_id),
+        )
+
+
 def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     """
     Posts accounting journals for end of day activities based on transaction_templates.
-    Dynamically executes templates marked with 'EOD', and 'EOM' if it is the last day of the month.
+    Dynamically executes templates marked with 'EOD', and 'EOM' if it is the last day of the
+    accounting month.
+
+    Regular interest: daily Dr/Cr accrued vs holding (ACCRUAL_REGULAR_INTEREST); on billing
+    movement Dr arrears / Cr accrued (REGULAR_INTEREST_BILLING_RECEIVABLE); at month-end
+    Dr holding / Cr income (EOM_REGULAR_INTEREST_INCOME_RECOGNITION) for MTD reg_daily sum.
     """
     is_month_end = False
     events_to_run: set[str] = set()
@@ -1299,8 +1506,7 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                 "ACCRUAL_PENALTY_INTEREST": pen_daily,
                 "ACCRUAL_DEFAULT_INTEREST": def_daily,
                 "BILLING_PRINCIPAL_ARREARS": billed_prin,
-                "BILLING_REGULAR_INTEREST": billed_int,
-                "CLEAR_DAILY_ACCRUAL": billed_int,
+                "REGULAR_INTEREST_BILLING_RECEIVABLE": billed_int,
             }
             
             # Branch accrual logic based on suspense flag
@@ -1368,7 +1574,12 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                         amount=amt,
                         loan_id=int(loan_id),
                     )
-                
+
+        if is_month_end and svc is not None and events_to_run:
+            _run_eom_regular_interest_income_recognition(
+                as_of_date, period_cfg, events_to_run, svc
+            )
+
     except Exception as e:
         import traceback
         # #region agent log
@@ -1393,6 +1604,7 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     # Month-end fee amortisation (loan origination fees).
     if is_month_end and svc is not None and events_to_run:
         _run_fee_amortisation_month_end(as_of_date, events_to_run, svc)
+        _run_restructure_fee_amortisation_month_end(as_of_date, events_to_run, svc)
 
 
 def _run_fee_amortisation_month_end(
@@ -1474,6 +1686,62 @@ def _run_fee_amortisation_month_end(
         _post_if_positive("FEE_AMORTISATION_DRAWDOWN", draw_fee, "drawdown fee")
         _post_if_positive("FEE_AMORTISATION_ARRANGEMENT", arr_fee, "arrangement fee")
         _post_if_positive("FEE_AMORTISATION_ADMIN", adm_fee, "administration fee")
+
+
+def _run_restructure_fee_amortisation_month_end(
+    as_of_date: date,
+    events_to_run: set[str],
+    svc,
+) -> None:
+    """Straight-line month-end amortisation for restructure fee charges."""
+    if "RESTRUCTURE_FEE_AMORTISATION" not in events_to_run:
+        return
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (lm.loan_id)
+                    lm.id,
+                    lm.loan_id,
+                    lm.modification_date,
+                    COALESCE(lm.restructure_fee_amount, 0) AS restructure_fee_amount,
+                    COALESCE(lm.new_term, 0) AS new_term
+                FROM loan_modifications lm
+                JOIN loans l ON l.id = lm.loan_id
+                WHERE l.status = 'active'
+                  AND COALESCE(lm.restructure_fee_amount, 0) > 0
+                ORDER BY lm.loan_id, lm.modification_date DESC, lm.id DESC
+                """
+            )
+            rows = cur.fetchall()
+
+    for row in rows:
+        loan_id = int(row["loan_id"])
+        fee_amt = float(as_10dp(row.get("restructure_fee_amount") or 0))
+        term = int(row.get("new_term") or 0)
+        mod_date = row.get("modification_date")
+        if hasattr(mod_date, "date"):
+            mod_date = mod_date.date()
+        if fee_amt <= 0 or term <= 0 or mod_date is None:
+            continue
+        if (as_of_date.year, as_of_date.month) < (mod_date.year, mod_date.month):
+            continue
+        months_elapsed = (as_of_date.year - mod_date.year) * 12 + (as_of_date.month - mod_date.month) + 1
+        if months_elapsed < 1 or months_elapsed > term:
+            continue
+        monthly_amt = float(as_10dp(fee_amt / term))
+        if monthly_amt <= 0:
+            continue
+        svc.post_event(
+            event_type="RESTRUCTURE_FEE_AMORTISATION",
+            reference=f"LOAN-{loan_id}",
+            description=f"Monthly restructure fee amortisation for Loan {loan_id}",
+            event_id=f"EOM-{as_of_date}-LOAN-{loan_id}-RESTRUCTURE_FEE_AMORTISATION-{int(row['id'])}",
+            created_by="system",
+            entry_date=as_of_date,
+            amount=monthly_amt,
+            loan_id=int(loan_id),
+        )
 
 
 def _run_statement_batch(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
@@ -1743,12 +2011,26 @@ def run_single_loan_eod(
     """
     if sys_cfg is None:
         sys_cfg = load_system_config_from_db() or {}
-    _run_loan_engine_for_date(
+    processed = _run_loan_engine_for_date(
         as_of_date,
         sys_cfg,
         loan_ids_filter=[loan_id],
         allow_system_date_eod=allow_system_date_eod,
     )
+    if processed == 0:
+        hint = explain_single_loan_eod_skip_reason(loan_id, as_of_date)
+        msg = (
+            f"EOD engine wrote no loan_daily_state for loan_id={loan_id} "
+            f"on {as_of_date.isoformat()}."
+        )
+        if hint:
+            msg = f"{msg} {hint}"
+        else:
+            msg = (
+                f"{msg} Check server logs for 'EOD skipped loan_id={loan_id}' "
+                f"or 'EOD loan_id={loan_id}'."
+            )
+        raise RuntimeError(msg)
 
     # Guard: ensure we don't leave arrears unpaid if there are unapplied funds
     eod_settings = sys_cfg.get("eod_settings", {}) if isinstance(sys_cfg.get("eod_settings"), dict) else {}
@@ -1782,12 +2064,21 @@ def run_single_loan_eod_date_range(
     current = start_date
     while current <= end_date:
         try:
-            _run_loan_engine_for_date(
+            processed = _run_loan_engine_for_date(
                 current,
                 sys_cfg,
                 loan_ids_filter=[loan_id],
                 allow_system_date_eod=allow_system_date_eod,
             )
+            if processed == 0:
+                hint = explain_single_loan_eod_skip_reason(loan_id, current)
+                msg = (
+                    f"EOD engine wrote no loan_daily_state for loan_id={loan_id} "
+                    f"on {current.isoformat()}."
+                )
+                if hint:
+                    msg = f"{msg} {hint}"
+                return False, msg
 
             # Guard: ensure we don't leave arrears unpaid if there are unapplied funds
             # (especially after a backdated reversal brings arrears back)
@@ -1806,6 +2097,7 @@ __all__ = [
     "run_eod_for_date",
     "run_single_loan_eod",
     "run_single_loan_eod_date_range",
+    "explain_single_loan_eod_skip_reason",
     "EODResult",
     "ConcurrentEODError",
 ]

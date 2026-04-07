@@ -154,15 +154,14 @@ _STMT_PRINT_WINDOW_CSS = (
 
 
 def _statement_print_button_html(*, print_inner_html: str | None) -> str:
-    """Single brand-themed Print PDF button (full width)."""
+    """Single print action rendered as a link."""
     uid = uuid.uuid4().hex[:12]
     css_js = json.dumps(_STMT_PRINT_WINDOW_CSS)
-    btn_bg = BRAND_GREEN
     is_enabled = bool(print_inner_html)
-    btn_html = (
-        f'<button type="button" class="stmt-act" id="stmt-print-{uid}">Print PDF</button>'
+    link_html = (
+        f'<a href="#" class="stmt-link" id="stmt-print-{uid}">Print</a>'
         if is_enabled
-        else '<span class="stmt-act stmt-act--disabled">Print PDF</span>'
+        else '<span class="stmt-link stmt-link--disabled">Print</span>'
     )
     ta_html = (
         f'<textarea id="stmt-b64-{uid}" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none" '
@@ -177,7 +176,8 @@ def _statement_print_button_html(*, print_inner_html: str | None) -> str:
   var ta = document.getElementById('stmt-b64-{uid}');
   if (!btn || !ta) return;
   var printCss = {css_js};
-  btn.addEventListener('click', function() {{
+  btn.addEventListener('click', function(e) {{
+    if (e && e.preventDefault) e.preventDefault();
     var b64 = ta.value.trim();
     var binary = atob(b64);
     var bytes = new Uint8Array(binary.length);
@@ -200,76 +200,53 @@ def _statement_print_button_html(*, print_inner_html: str | None) -> str:
     )
     return f"""<div style="width:100%;box-sizing:border-box;">
 <style>
-.stmt-act {{
-  width: 100%;
-  text-align: center;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 1.6rem;
-  height: 1.6rem;
-  padding: 0.05rem 0.3rem;
-  box-sizing: border-box;
-  background: {btn_bg};
-  color: #fff !important;
-  border: none;
-  border-radius: 6px;
-  font-size: 0.7rem;
+.stmt-link {{
+  color: {BRAND_GREEN} !important;
+  text-decoration: underline !important;
+  font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
-  text-decoration: none !important;
   font-family: system-ui, Segoe UI, sans-serif;
 }}
-.stmt-act:hover {{ filter: brightness(0.93) !important; color: #fff !important; }}
-.stmt-act--disabled {{
-  background: #94a3b8 !important;
+.stmt-link:hover {{ filter: brightness(0.93) !important; }}
+.stmt-link--disabled {{
+  color: #94a3b8 !important;
+  text-decoration: none !important;
   cursor: not-allowed;
   pointer-events: none;
 }}
 </style>
-{btn_html}
+{link_html}
 {ta_html}
 {script_html}
 </div>"""
 
 
 def _statement_download_pdf_button_html(*, pdf_bytes: bytes | None, pdf_file_name: str) -> str:
-    """Single brand-themed Download PDF button (full width)."""
-    btn_bg = BRAND_GREEN
+    """Single download action rendered as a link."""
     if pdf_bytes:
         pdf_fn = html_module.escape(pdf_file_name, quote=True)
         pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("ascii")
         link = (
-            f'<a class="stmt-act" href="data:application/pdf;base64,{pdf_b64}" '
+            f'<a class="stmt-link" href="data:application/pdf;base64,{pdf_b64}" '
             f'download="{pdf_fn}">Download PDF</a>'
         )
     else:
-        link = '<span class="stmt-act stmt-act--disabled">Download PDF</span>'
+        link = '<span class="stmt-link stmt-link--disabled">Download PDF</span>'
     return f"""<div style="width:100%;box-sizing:border-box;">
 <style>
-.stmt-act {{
-  width: 100%;
-  text-align: center;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 1.6rem;
-  height: 1.6rem;
-  padding: 0.05rem 0.3rem;
-  box-sizing: border-box;
-  background: {btn_bg};
-  color: #fff !important;
-  border: none;
-  border-radius: 6px;
-  font-size: 0.7rem;
+.stmt-link {{
+  color: {BRAND_GREEN} !important;
+  text-decoration: underline !important;
+  font-size: 0.8rem;
   font-weight: 600;
   cursor: pointer;
-  text-decoration: none !important;
   font-family: system-ui, Segoe UI, sans-serif;
 }}
-.stmt-act:hover {{ filter: brightness(0.93) !important; color: #fff !important; }}
-.stmt-act--disabled {{
-  background: #94a3b8 !important;
+.stmt-link:hover {{ filter: brightness(0.93) !important; }}
+.stmt-link--disabled {{
+  color: #94a3b8 !important;
+  text-decoration: none !important;
   cursor: not-allowed;
   pointer-events: none;
 }}

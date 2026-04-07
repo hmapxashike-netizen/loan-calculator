@@ -7,10 +7,20 @@ from typing import Any
 
 import pandas as pd
 
+from decimal_utils import as_10dp
+
 from .db import Json, RealDictCursor, _connection
+from .daily_state import get_loan_daily_state_balances_for_recast_preview
 from .modification_gl import (
+    execute_restructure_capitalisation_for_loan,
+    post_restructure_fee_charge_for_loan,
     post_modification_topup_disbursement,
     post_principal_writeoff_for_loan,
+)
+from .recast_orchestration import (
+    execute_recast_from_unapplied,
+    execute_unapplied_liquidation_for_restructure,
+    get_unapplied_balance_for_restructure,
 )
 from .save_loan import save_loan
 from .schema_ddl import _ensure_loan_approval_drafts_table
@@ -255,7 +265,7 @@ def terminate_loan(loan_id: int, terminated_by: str | None = None) -> None:
             cur.execute("SELECT id FROM loan_repayments WHERE loan_id = %s", (loan_id,))
             rep_ids = [r[0] for r in cur.fetchall()]
             cur.execute(
-                "UPDATE journal_entries SET is_active = FALSE WHERE event_id = %s AND event_type = 'LOAN_APPROVAL'",
+                "UPDATE journal_entries SET is_active = FALSE WHERE event_id = %s AND event_tag = 'LOAN_APPROVAL'",
                 (str(loan_id),),
             )
             cur.execute(
@@ -306,6 +316,32 @@ def approve_loan_approval_draft(
             return date.fromisoformat(raw.strip()[:10])
         raise ValueError("Modification draft missing valid restructure_date.")
 
+    def _f10(raw: Any) -> float:
+        return float(as_10dp(float(raw or 0.0)))
+
+    def _current_net_for_date(loan_id: int, rd: date) -> tuple[float, float, float]:
+        bal, _as_of = get_loan_daily_state_balances_for_recast_preview(loan_id, rd)
+        if bal is None:
+            raise ValueError(
+                f"No loan_daily_state row on or before {rd.isoformat()}. Run EOD through restructure date first."
+            )
+        outstanding = _f10(bal.get("total_exposure") or 0.0)
+        unapplied = _f10(get_unapplied_balance_for_restructure(loan_id, rd).get("eligible_total") or 0.0)
+        net = _f10(max(0.0, outstanding - unapplied))
+        return outstanding, unapplied, net
+
+    def _compute_restructure_fee_amount(d: dict[str, Any]) -> float:
+        fp = dict(d.get("fee_and_proceeds") or {})
+        pct = _f10(fp.get("restructure_fee_pct") or 0.0)
+        if pct <= 0:
+            return 0.0
+        rate = pct / 100.0
+        split_carry = d.get("split_carry_by_leg")
+        if isinstance(split_carry, list) and split_carry:
+            return _f10(sum(_f10(x) for x in split_carry) * rate)
+        carry_v = _f10(d.get("carry_amount") or 0.0)
+        return _f10(carry_v * rate)
+
     if action == "TERMINATE":
         existing_loan_id = draft.get("loan_id")
         if not existing_loan_id:
@@ -320,19 +356,57 @@ def approve_loan_approval_draft(
         if not source_loan_id:
             raise ValueError("Modification draft missing loan_id.")
         rd = _parse_rd(details.get("restructure_date"))
-        wo = float(details.get("writeoff_amount") or 0)
+        carry = _f10(details.get("carry_amount") or 0.0)
         tu = float(details.get("topup_amount") or 0)
+        mod_det = dict(details.get("modification_loan_details") or {})
+        topup_cash_gl = str(mod_det.get("cash_gl_account_id") or "").strip() or None
+        outstanding_now, unapplied_now, net_now = _current_net_for_date(source_loan_id, rd)
+        if carry > net_now + 1e-6:
+            raise ValueError(
+                f"Amount to restructure ({carry:,.2f}) exceeds current Net ({net_now:,.2f}). "
+                f"Refresh and resubmit. Current outstanding={outstanding_now:,.2f}, unapplied={unapplied_now:,.2f}."
+            )
+        if unapplied_now > 1e-6:
+            execute_unapplied_liquidation_for_restructure(
+                source_loan_id,
+                rd,
+                system_config=None,
+                enforce_principal_reduction_gate=False,
+            )
+            outstanding_now, unapplied_now, net_now = _current_net_for_date(source_loan_id, rd)
         suf = str(int(draft_id))
+        if carry > 1e-6:
+            execute_restructure_capitalisation_for_loan(
+                source_loan_id,
+                restructure_date=rd,
+                restructure_amount=carry,
+                created_by=actor,
+                unique_suffix=suf,
+            )
+        restructure_fee_amount = _compute_restructure_fee_amount(details)
+        if restructure_fee_amount > 1e-6:
+            post_restructure_fee_charge_for_loan(
+                source_loan_id,
+                restructure_fee_amount,
+                entry_date=rd,
+                created_by=actor,
+                unique_suffix=suf,
+            )
+        wo = _f10(max(0.0, net_now - _f10(carry + tu)))
         if wo > 0:
             post_principal_writeoff_for_loan(
                 source_loan_id, wo, entry_date=rd, created_by=actor, unique_suffix=suf
             )
         if tu > 0:
             post_modification_topup_disbursement(
-                source_loan_id, tu, entry_date=rd, created_by=actor, unique_suffix=suf
+                source_loan_id,
+                tu,
+                entry_date=rd,
+                cash_gl_account_id=topup_cash_gl,
+                created_by=actor,
+                unique_suffix=suf,
             )
         schedule_df = pd.DataFrame(draft.get("schedule_json") or [])
-        mod_det = dict(details.get("modification_loan_details") or {})
         src = get_loan(source_loan_id)
         if src and mod_det.get("cash_gl_account_id") in (None, "") and src.get("cash_gl_account_id"):
             mod_det["cash_gl_account_id"] = str(src.get("cash_gl_account_id"))
@@ -343,6 +417,7 @@ def approve_loan_approval_draft(
             mod_det,
             str(draft["loan_type"]),
             outstanding_interest_treatment=str(details.get("outstanding_interest_treatment") or "capitalise"),
+            restructure_fee_amount=float(as_10dp(restructure_fee_amount)),
             notes=str(details.get("modification_notes") or "") or None,
         )
         if tu > 0:
@@ -360,16 +435,54 @@ def approve_loan_approval_draft(
         if not source_loan_id:
             raise ValueError("Split modification draft missing loan_id.")
         rd = _parse_rd(details.get("restructure_date"))
-        wo = float(details.get("writeoff_amount") or 0)
         tu = float(details.get("topup_amount") or 0)
+        split_net = details.get("split_net_by_leg")
+        if isinstance(split_net, list) and split_net:
+            sum_net = _f10(sum(_f10(x) for x in split_net))
+        else:
+            sum_net = _f10(details.get("total_facility") or 0.0)
+        outstanding_now, unapplied_now, net_now = _current_net_for_date(source_loan_id, rd)
+        if sum_net > net_now + 1e-6:
+            raise ValueError(
+                f"Split net proceeds ({sum_net:,.2f}) exceed current Net ({net_now:,.2f}). "
+                f"Refresh and resubmit. Current outstanding={outstanding_now:,.2f}, unapplied={unapplied_now:,.2f}."
+            )
+        if unapplied_now > 1e-6:
+            execute_unapplied_liquidation_for_restructure(
+                source_loan_id,
+                rd,
+                system_config=None,
+                enforce_principal_reduction_gate=False,
+            )
+            outstanding_now, unapplied_now, net_now = _current_net_for_date(source_loan_id, rd)
         suf = str(int(draft_id))
+        if sum_net > 1e-6:
+            execute_restructure_capitalisation_for_loan(
+                source_loan_id,
+                restructure_date=rd,
+                restructure_amount=sum_net,
+                created_by=actor,
+                unique_suffix=suf,
+            )
+        wo = _f10(max(0.0, net_now - sum_net))
         if wo > 0:
             post_principal_writeoff_for_loan(
                 source_loan_id, wo, entry_date=rd, created_by=actor, unique_suffix=suf
             )
         if tu > 0:
+            split_details = details.get("split_loan_details_list")
+            topup_cash_gl = None
+            if isinstance(split_details, list) and split_details:
+                topup_cash_gl = str((split_details[0] or {}).get("cash_gl_account_id") or "").strip() or None
+            if not topup_cash_gl:
+                topup_cash_gl = str((details.get("split_loan_details_a") or {}).get("cash_gl_account_id") or "").strip() or None
             post_modification_topup_disbursement(
-                source_loan_id, tu, entry_date=rd, created_by=actor, unique_suffix=suf
+                source_loan_id,
+                tu,
+                entry_date=rd,
+                cash_gl_account_id=topup_cash_gl,
+                created_by=actor,
+                unique_suffix=suf,
             )
         src = get_loan(source_loan_id)
         cash_gl = str(src.get("cash_gl_account_id") or "").strip() if src else ""
@@ -442,6 +555,41 @@ def approve_loan_approval_draft(
         if len(created_ids) >= 2:
             details["split_created_loan_id_b"] = int(created_ids[1])
         loan_id = int(created_ids[0])
+        with _connection() as conn:
+            _ensure_loan_approval_drafts_table(conn)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE loan_approval_drafts SET details_json = %s, updated_at = NOW() WHERE id = %s",
+                    (Json(_json_safe(details)), int(draft_id)),
+                )
+    elif action == "LOAN_RECAST":
+        source_loan_id = int(draft.get("loan_id") or details.get("source_loan_id") or 0)
+        if not source_loan_id:
+            raise ValueError("Recast draft missing loan_id.")
+        rd = _parse_rd(details.get("recast_date") or details.get("restructure_date"))
+        uf_id = int(details.get("unapplied_funds_id") or 0)
+        if uf_id <= 0:
+            raise ValueError("Recast draft missing unapplied_funds_id.")
+        mode = str(details.get("recast_mode") or "maintain_term")
+        balancing_position = str(details.get("balancing_position") or "final_installment")
+        out = execute_recast_from_unapplied(
+            source_loan_id,
+            rd,
+            uf_id,
+            mode,
+            balancing_position=balancing_position,
+            system_config=None,
+            notes=str(details.get("recast_notes") or "") or None,
+        )
+        details["recast_approved_result"] = {
+            "new_installment": float(out.get("new_installment") or 0.0),
+            "new_principal_balance": float(out.get("new_principal_balance") or 0.0),
+            "new_schedule_version": int(out.get("new_schedule_version") or 0),
+            "liquidation_repayment_id": out.get("liquidation_repayment_id"),
+            "unapplied_applied": float(out.get("unapplied_applied") or 0.0),
+            "unapplied_unused_remainder": float(out.get("unapplied_unused_remainder") or 0.0),
+        }
+        loan_id = int(source_loan_id)
         with _connection() as conn:
             _ensure_loan_approval_drafts_table(conn)
             with conn.cursor() as cur:

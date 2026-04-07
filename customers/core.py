@@ -50,6 +50,23 @@ def _rows(dict_cursor) -> list[dict]:
     return [dict(r) for r in dict_cursor.fetchall()]
 
 
+def _migration_ref_column_exists(cur) -> bool:
+    cur.execute(
+        """
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'customers' AND column_name = 'migration_ref'
+        """
+    )
+    return cur.fetchone() is not None
+
+
+def _norm_migration_ref(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return s if s else None
+
+
 # ---------- Individuals ----------
 
 def create_individual(
@@ -63,15 +80,24 @@ def create_individual(
     addresses: list[dict] | None = None,
     sector_id: int | None = None,
     subsector_id: int | None = None,
+    migration_ref: str | None = None,
 ) -> int:
     """Create an individual customer. Returns customer_id."""
+    mr = _norm_migration_ref(migration_ref)
     with _connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO customers (type, status, sector_id, subsector_id)
-                   VALUES ('individual', 'active', %s, %s) RETURNING id""",
-                (sector_id, subsector_id),
-            )
+            if _migration_ref_column_exists(cur):
+                cur.execute(
+                    """INSERT INTO customers (type, status, sector_id, subsector_id, migration_ref)
+                       VALUES ('individual', 'active', %s, %s, %s) RETURNING id""",
+                    (sector_id, subsector_id, mr),
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO customers (type, status, sector_id, subsector_id)
+                       VALUES ('individual', 'active', %s, %s) RETURNING id""",
+                    (sector_id, subsector_id),
+                )
             customer_id = cur.fetchone()[0]
             cur.execute(
                 """INSERT INTO individuals (customer_id, name, national_id, employer_details, phone1, phone2, email1, email2)
@@ -156,15 +182,24 @@ def create_corporate(
     shareholders: list[dict] | None = None,
     sector_id: int | None = None,
     subsector_id: int | None = None,
+    migration_ref: str | None = None,
 ) -> int:
     """Create a corporate customer. Returns customer_id."""
+    mr = _norm_migration_ref(migration_ref)
     with _connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO customers (type, status, sector_id, subsector_id)
-                   VALUES ('corporate', 'active', %s, %s) RETURNING id""",
-                (sector_id, subsector_id),
-            )
+            if _migration_ref_column_exists(cur):
+                cur.execute(
+                    """INSERT INTO customers (type, status, sector_id, subsector_id, migration_ref)
+                       VALUES ('corporate', 'active', %s, %s, %s) RETURNING id""",
+                    (sector_id, subsector_id, mr),
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO customers (type, status, sector_id, subsector_id)
+                       VALUES ('corporate', 'active', %s, %s) RETURNING id""",
+                    (sector_id, subsector_id),
+                )
             customer_id = cur.fetchone()[0]
             cur.execute(
                 """INSERT INTO corporates (customer_id, legal_name, trading_name, reg_number, tin)
@@ -224,6 +259,7 @@ def create_corporate_with_entities(
     shareholders: list[dict] | None = None,
     sector_id: int | None = None,
     subsector_id: int | None = None,
+    migration_ref: str | None = None,
 ) -> dict:
     """
     Create a corporate customer and return created entity IDs.
@@ -241,13 +277,21 @@ def create_corporate_with_entities(
         "director_ids": [],
         "shareholder_ids": [],
     }
+    mr = _norm_migration_ref(migration_ref)
     with _connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO customers (type, status, sector_id, subsector_id)
-                   VALUES ('corporate', 'active', %s, %s) RETURNING id""",
-                (sector_id, subsector_id),
-            )
+            if _migration_ref_column_exists(cur):
+                cur.execute(
+                    """INSERT INTO customers (type, status, sector_id, subsector_id, migration_ref)
+                       VALUES ('corporate', 'active', %s, %s, %s) RETURNING id""",
+                    (sector_id, subsector_id, mr),
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO customers (type, status, sector_id, subsector_id)
+                       VALUES ('corporate', 'active', %s, %s) RETURNING id""",
+                    (sector_id, subsector_id),
+                )
             customer_id = cur.fetchone()[0]
             out["customer_id"] = customer_id
             cur.execute(
@@ -707,3 +751,39 @@ def get_display_name(customer_id: int) -> str:
             cur.execute("SELECT COALESCE(trading_name, legal_name) FROM corporates WHERE customer_id = %s", (customer_id,))
             row = cur.fetchone()
             return row[0] if row else ""
+
+
+def list_customers_for_loan_batch_link() -> list[dict[str, Any]]:
+    """
+    Active customers with fields needed to resolve batch loan CSV rows:
+    migration_ref (if column exists), display-style name, and typed names for matching.
+    """
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if not _migration_ref_column_exists(cur):
+                cur.execute(
+                    """
+                    SELECT c.id, NULL::text AS migration_ref, c.type,
+                           i.name AS individual_name,
+                           co.legal_name, co.trading_name
+                    FROM customers c
+                    LEFT JOIN individuals i ON i.customer_id = c.id AND c.type = 'individual'
+                    LEFT JOIN corporates co ON co.customer_id = c.id AND c.type = 'corporate'
+                    WHERE c.status = 'active'
+                    ORDER BY c.id
+                    """
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT c.id, c.migration_ref, c.type,
+                           i.name AS individual_name,
+                           co.legal_name, co.trading_name
+                    FROM customers c
+                    LEFT JOIN individuals i ON i.customer_id = c.id AND c.type = 'individual'
+                    LEFT JOIN corporates co ON co.customer_id = c.id AND c.type = 'corporate'
+                    WHERE c.status = 'active'
+                    ORDER BY c.id
+                    """
+                )
+            return _rows(cur)

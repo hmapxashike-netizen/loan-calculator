@@ -17,6 +17,7 @@ from .cash_gl import (
 )
 from .db import Json, _connection
 from .schema_ddl import _ensure_loans_schema_for_save_loan
+from .schedules import format_schedule_date_for_storage
 from .serialization import _date_conv
 
 
@@ -214,9 +215,16 @@ def save_loan(
         with conn.cursor() as cur:
             for _, row in schedule_df.iterrows():
                 period = int(row.get("Period", row.get("period", 0)))
-                period_date = (
-                    str(row.get("Date", row.get("Date", "")))[:32] if pd.notna(row.get("Date")) else None
-                )
+                _raw_dt = row.get("Date", row.get("date"))
+                try:
+                    if _raw_dt is not None and not pd.isna(_raw_dt):
+                        period_date = format_schedule_date_for_storage(_raw_dt)
+                    else:
+                        period_date = None
+                except ValueError as e:
+                    raise ValueError(
+                        f"schedule line Period {period}: {e}"
+                    ) from e
                 payment = (
                     float(as_10dp(row.get("Payment", row.get("Monthly Installment", row.get("payment", 0)))))
                     if pd.notna(row.get("Payment", row.get("Monthly Installment", 0)))

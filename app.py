@@ -140,6 +140,7 @@ try:
         get_product_config_from_db,
         save_product_config_to_db,
         save_loan_approval_draft,
+        save_loan,
         update_loan_approval_draft_staged,
         resubmit_loan_approval_draft,
         list_loan_approval_drafts,
@@ -586,6 +587,7 @@ def eod_ui():
         loan_management_available=_loan_management_available,
         loan_management_error=_loan_management_error or "",
         load_system_config_from_db=globals().get("load_system_config_from_db"),
+        is_admin=_user_is_admin(),
     )
 
 
@@ -784,7 +786,8 @@ def compute_bullet_schedule(
     annual_rate = (rate_pct / 100.0) * 12.0 if rate_basis == "Per month" else (rate_pct / 100.0)
     end_date = add_months(disbursement_date, loan_term)
     schedule_dates = None
-    if first_repayment_date is not None and "with interest" in bullet_type.lower():
+    if first_repayment_date is not None:
+        # Respect selected first repayment date and timing for both straight and with-interest bullet.
         schedule_dates = repayment_dates(disbursement_date, first_repayment_date, int(loan_term), use_anniversary)
         end_date = schedule_dates[-1] if schedule_dates else end_date
     df_schedule = get_bullet_schedule(
@@ -890,6 +893,22 @@ def approve_loans_ui():
     )
 
 
+def batch_loans_ui():
+    from customers.core import list_customers_for_loan_batch_link
+    from ui.loan_management import render_batch_loan_capture_ui
+
+    render_batch_loan_capture_ui(
+        loan_management_available=_loan_management_available,
+        loan_management_error=_loan_management_error,
+        customers_available=_customers_available,
+        list_customers=list_customers,
+        get_display_name=get_display_name,
+        save_loan=save_loan,
+        list_customers_for_loan_batch_link=list_customers_for_loan_batch_link,
+        source_cash_gl_cached_labels_and_ids=_source_cash_gl_cached_labels_and_ids,
+    )
+
+
 def customers_ui():
     """Web UI to add and manage customers (individuals and corporates)."""
     from ui.customers import render_customers_ui
@@ -965,8 +984,8 @@ def teller_ui():
     )
 
 
-def _user_can_reamort_direct_principal_tab() -> bool:
-    """Direct principal recast (no unapplied): admin-only extra tab."""
+def _user_is_admin() -> bool:
+    """True when the signed-in user is ADMIN or SUPERADMIN."""
     try:
         from middleware import get_current_user
 
@@ -977,6 +996,11 @@ def _user_can_reamort_direct_principal_tab() -> bool:
         return role in ("ADMIN", "SUPERADMIN")
     except Exception:
         return False
+
+
+def _user_can_reamort_direct_principal_tab() -> bool:
+    """Direct principal recast (no unapplied): admin-only extra tab."""
+    return _user_is_admin()
 
 
 def _reamod_created_by() -> str:
@@ -1036,6 +1060,21 @@ def reamortisation_ui():
         resubmit_loan_approval_draft=resubmit_loan_approval_draft
         if _loan_management_available
         else (lambda *a, **k: 0),
+        list_loan_approval_drafts=list_loan_approval_drafts
+        if _loan_management_available
+        else (lambda *a, **k: []),
+        get_loan_approval_draft=get_loan_approval_draft
+        if _loan_management_available
+        else (lambda *a, **k: None),
+        approve_loan_approval_draft=approve_loan_approval_draft
+        if _loan_management_available
+        else (lambda *a, **k: 0),
+        send_back_loan_approval_draft=send_back_loan_approval_draft
+        if _loan_management_available
+        else (lambda *a, **k: None),
+        dismiss_loan_approval_draft=dismiss_loan_approval_draft
+        if _loan_management_available
+        else (lambda *a, **k: None),
         documents_available=_documents_available,
         list_document_categories=globals().get("list_document_categories")
         or (lambda active_only=True: []),
@@ -1189,6 +1228,7 @@ def render_loan_app_section(nav: str) -> None:
         # the same underline rules as the rest of the app (see ``style.FARNDA_GLOBAL_CSS``).
         _lm_sections = [
             "Loan Capture",
+            "Batch Capture",
             "View Schedule",
             "Loan Calculators",
             "Update Loans",
@@ -1197,6 +1237,7 @@ def render_loan_app_section(nav: str) -> None:
         ]
         _lm_legacy = {
             "Loan capture": "Loan Capture",
+            "Batch capture": "Batch Capture",
             "View schedule": "View Schedule",
             "Loan calculators": "Loan Calculators",
             "Update loans": "Update Loans",
@@ -1212,6 +1253,7 @@ def render_loan_app_section(nav: str) -> None:
         _lm_default = st.session_state["loan_mgmt_subnav"]
         (
             t_capture,
+            t_batch,
             t_schedule,
             t_calc,
             t_update,
@@ -1266,6 +1308,9 @@ def render_loan_app_section(nav: str) -> None:
 
         with t_schedule:
             view_schedule_ui()
+
+        with t_batch:
+            batch_loans_ui()
 
         with t_calc:
             _calc_types = [

@@ -142,19 +142,33 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
     4. Logs completion with both current_system_date and datetime.now().
 
     Safety: current_system_date does NOT tick if any part of EOD fails.
-    Returns dict with keys: success, as_of_date, new_system_date, real_world_time, error.
+
+    Returns dict with keys including: success, as_of_date, new_system_date, real_world_time (run started, UTC),
+    completed_at_utc, duration_seconds, loans_processed (from loan engine stage when EOD ran), error.
     """
+    wall_start = datetime.now(timezone.utc)
+    result = _run_eod_process_core(skip_tick=skip_tick, wall_start=wall_start)
+    wall_end = datetime.now(timezone.utc)
+    result["duration_seconds"] = (wall_end - wall_start).total_seconds()
+    result["completed_at_utc"] = wall_end.isoformat()
+    return result
+
+
+def _run_eod_process_core(*, skip_tick: bool, wall_start: datetime) -> dict[str, Any]:
+    """Orchestrates EOD and system date tick; wall-clock timing is applied by :func:`run_eod_process`."""
     from eod.core import ConcurrentEODError, run_eod_for_date
 
     cfg = get_system_business_config()
     as_of = cfg["current_system_date"]
-    real_before = datetime.now(timezone.utc)
 
     result = {
         "success": False,
         "as_of_date": as_of,
         "new_system_date": None,
-        "real_world_time": real_before.isoformat(),
+        "real_world_time": wall_start.isoformat(),
+        "completed_at_utc": None,
+        "duration_seconds": None,
+        "loans_processed": 0,
         "error": None,
         "run_id": None,
         "run_status": None,
@@ -245,6 +259,7 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
         return result
 
     if eod_result is not None:
+        result["loans_processed"] = int(getattr(eod_result, "loans_processed", 0) or 0)
         result["run_id"] = getattr(eod_result, "run_id", None)
         result["run_status"] = getattr(eod_result, "run_status", None)
         result["failed_stage"] = getattr(eod_result, "failed_stage", None)
@@ -252,8 +267,11 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
             result["error"] = getattr(eod_result, "error_message", None) or "EOD failed."
             return result
         # Hard guardrail: never advance business date if today's EOD date is
-        # left blank for any eligible active loan (active + has at least one schedule row).
+        # left blank for any eligible active loan. Eligibility matches the EOD engine:
+        # active, disbursed on or before as_of, and at least one persisted schedule line
+        # (a loan_schedules row alone is not enough — empty versions are skipped).
         try:
+            missing_ids: list[int] = []
             with _get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
@@ -265,6 +283,7 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
                           AND EXISTS (
                               SELECT 1
                               FROM loan_schedules ls
+                              INNER JOIN schedule_lines sl ON sl.loan_schedule_id = ls.id
                               WHERE ls.loan_id = l.id
                           )
                         """,
@@ -282,18 +301,75 @@ def run_eod_process(*, skip_tick: bool = False) -> dict[str, Any]:
                           AND EXISTS (
                               SELECT 1
                               FROM loan_schedules ls
+                              INNER JOIN schedule_lines sl ON sl.loan_schedule_id = ls.id
                               WHERE ls.loan_id = l.id
                           )
                         """,
                         (as_of,),
                     )
                     with_state = int((cur.fetchone() or {}).get("n") or 0)
+
+                    if eligible_active > with_state:
+                        cur.execute(
+                            """
+                            WITH eligible AS (
+                                SELECT l.id
+                                FROM loans l
+                                WHERE l.status = 'active'
+                                  AND COALESCE(l.disbursement_date, l.start_date, %s) <= %s
+                                  AND EXISTS (
+                                      SELECT 1
+                                      FROM loan_schedules ls
+                                      INNER JOIN schedule_lines sl ON sl.loan_schedule_id = ls.id
+                                      WHERE ls.loan_id = l.id
+                                  )
+                            )
+                            SELECT e.id::int AS loan_id
+                            FROM eligible e
+                            WHERE NOT EXISTS (
+                                SELECT 1
+                                FROM loan_daily_state lds
+                                WHERE lds.loan_id = e.id AND lds.as_of_date = %s
+                            )
+                            ORDER BY e.id
+                            """,
+                            (as_of, as_of, as_of),
+                        )
+                        missing_ids = [int(r["loan_id"]) for r in cur.fetchall()]
             if eligible_active > with_state:
+                lp = int(getattr(eod_result, "loans_processed", 0) or 0)
+                tasks_run = getattr(eod_result, "tasks_run", ()) or ()
+                hint_loan_engine = ""
+                if lp == 0 and "loan_engine" not in tasks_run:
+                    hint_loan_engine = (
+                        " The **loan_engine** stage did not run — enable **Run loan engine (accruals & daily state)** "
+                        "under **System configurations → EOD configurations**, then run EOD again."
+                    )
+                elif lp == 0:
+                    hint_loan_engine = (
+                        f" The engine processed **{lp}** loans — check server logs for skips (e.g. missing "
+                        "**schedule_lines**, disbursement after the system date, or invalid schedule data). "
+                        "Use **EOD → Fix EOD issues → Run EOD for date only** to backfill after fixing data."
+                    )
+                missing_note = ""
+                if missing_ids:
+                    shown = missing_ids[:25]
+                    more = f" (+{len(missing_ids) - len(shown)} more)" if len(missing_ids) > len(shown) else ""
+                    missing_note = (
+                        " Missing `loan_daily_state` for loan_id(s): "
+                        f"{', '.join(str(i) for i in shown)}{more}. "
+                        "Often the EOD engine **skipped** that loan: check server logs for `EOD skipped loan_id`, "
+                        "or fix **schedule line dates** (4-digit year) / version at disbursement, then use "
+                        "**EOD → Fix EOD issues → Run EOD for date only** for "
+                        f"**{as_of.isoformat()}**, or **Recompute loan daily state** for that loan."
+                    )
                 result["error"] = (
                     "EOD completed but date advance is blocked: "
                     f"blank `loan_daily_state` detected for {as_of.isoformat()} "
-                    f"({with_state}/{eligible_active} eligible active loan(s) populated). "
-                    "Backfill/fix daily state first, then retry."
+                    f"({with_state}/{eligible_active} eligible active loan(s) with schedule lines populated). "
+                    "Backfill or fix daily state for that date first, then retry."
+                    + missing_note
+                    + hint_loan_engine
                 )
                 return result
         except Exception:

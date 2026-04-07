@@ -11,6 +11,8 @@ from decimal_utils import as_10dp
 
 from .db import RealDictCursor, _connection
 
+_SCHEDULE_DATE_STORAGE_FMT = "%d-%b-%Y"
+
 
 def get_latest_schedule_version(loan_id: int) -> int:
     """Return the latest schedule version number for a loan (1 = original)."""
@@ -77,6 +79,96 @@ def parse_schedule_line_date(raw: object) -> date | None:
     return _parse_line_date(raw)
 
 
+def format_schedule_date_for_storage(raw: object) -> str | None:
+    """
+    Normalize a schedule line date for ``schedule_lines.\"Date\"`` (VARCHAR, canonical dd-Mon-yyyy).
+
+    Rejects values that cannot be parsed. Callers should run migration **76_schedule_lines_date_varchar32.sql**
+    if the column was ever VARCHAR(10), or inserts will truncate 4-digit years.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, float) and pd.isna(raw):
+        return None
+    if isinstance(raw, datetime):
+        return raw.date().strftime(_SCHEDULE_DATE_STORAGE_FMT)
+    if isinstance(raw, date):
+        return raw.strftime(_SCHEDULE_DATE_STORAGE_FMT)
+    s = str(raw).strip()
+    if not s:
+        return None
+    if len(s) > 32:
+        s = s[:32].strip()
+    parsed = _parse_line_date(s)
+    if parsed is not None:
+        return parsed.strftime(_SCHEDULE_DATE_STORAGE_FMT)
+    try:
+        ts = pd.to_datetime(s, dayfirst=True, errors="coerce")
+        if pd.notna(ts):
+            return ts.date().strftime(_SCHEDULE_DATE_STORAGE_FMT)
+    except Exception:
+        pass
+    raise ValueError(
+        f"Unparseable schedule Date {raw!r}. Use YYYY-MM-DD or dd-Mon-yyyy with a **four-digit** year "
+        "(e.g. 01-Jan-2024). If the DB column is VARCHAR(10), run schema migration 76 to widen it."
+    )
+
+
+def schedule_date_to_iso_for_exchange(raw: object) -> str:
+    """
+    Normalize a schedule ``Date`` cell to ``YYYY-MM-DD`` for CSV/Excel generators and stable interchange.
+
+    Do **not** use ``str(value)[:10]`` when values may be ``dd-Mon-yyyy`` (11 characters): that truncates
+    the year (e.g. ``26-Apr-2024`` → ``26-Apr-202``), which is unparseable and matched legacy VARCHAR(10) damage.
+
+    Persistence still uses :func:`format_schedule_date_for_storage` (canonical dd-Mon-yyyy in the DB).
+    """
+    if raw is None:
+        raise ValueError("schedule date is missing")
+    if isinstance(raw, float) and pd.isna(raw):
+        raise ValueError("schedule date is missing")
+    if isinstance(raw, datetime):
+        return raw.date().isoformat()
+    if isinstance(raw, date):
+        return raw.isoformat()
+    # pandas.Timestamp and similar
+    if hasattr(raw, "to_pydatetime") and callable(getattr(raw, "to_pydatetime", None)):
+        try:
+            return raw.to_pydatetime().date().isoformat()
+        except Exception:
+            pass
+    s = str(raw).strip()
+    if not s:
+        raise ValueError("schedule date is missing")
+    if len(s) > 32:
+        s = s[:32].strip()
+    parsed = _parse_line_date(s)
+    if parsed is not None:
+        return parsed.isoformat()
+    try:
+        ts = pd.to_datetime(s, dayfirst=True, errors="coerce")
+        if pd.notna(ts):
+            return ts.date().isoformat()
+    except Exception:
+        pass
+    raise ValueError(
+        f"Unparseable schedule Date {raw!r}. Use YYYY-MM-DD or dd-Mon-yyyy with a **four-digit** year "
+        "(e.g. 01-Jan-2024). If the DB column is VARCHAR(10), run schema migration 76 to widen it."
+    )
+
+
+def _period_date_cell(raw: object) -> str | None:
+    """INSERT helper: normalized date string or None."""
+    if raw is None:
+        return None
+    try:
+        if pd.isna(raw):
+            return None
+    except (ValueError, TypeError):
+        return None
+    return format_schedule_date_for_storage(raw)
+
+
 def get_max_schedule_due_date_on_or_before(loan_id: int, on_or_before: date) -> date | None:
     """
     Latest instalment date stored on any saved schedule version for the loan that is
@@ -117,7 +209,7 @@ def replace_schedule_lines(loan_schedule_id: int, schedule_df: pd.DataFrame) -> 
         with conn.cursor() as cur:
             for _, row in schedule_df.iterrows():
                 period = int(row.get("Period", row.get("period", 0)))
-                period_date = str(row.get("Date", row.get("Date", "")))[:32] if pd.notna(row.get("Date")) else None
+                period_date = _period_date_cell(row.get("Date"))
                 payment = float(as_10dp(row.get("Payment", row.get("Monthly Installment", row.get("payment", 0))))) if pd.notna(row.get("Payment", row.get("Monthly Installment", 0))) else 0.0
                 principal = float(as_10dp(row.get("Principal", row.get("principal", 0)))) if pd.notna(row.get("Principal")) else 0.0
                 interest = float(as_10dp(row.get("Interest", row.get("interest", 0)))) if pd.notna(row.get("Interest")) else 0.0
@@ -142,7 +234,7 @@ def save_new_schedule_version(loan_id: int, schedule_df: pd.DataFrame, version: 
         with conn.cursor() as cur:
             for _, row in schedule_df.iterrows():
                 period = int(row.get("Period", row.get("period", 0)))
-                period_date = str(row.get("Date", row.get("Date", "")))[:32] if pd.notna(row.get("Date")) else None
+                period_date = _period_date_cell(row.get("Date"))
                 payment = float(as_10dp(row.get("Payment", row.get("Monthly Installment", row.get("payment", 0))))) if pd.notna(row.get("Payment", row.get("Monthly Installment", 0))) else 0.0
                 principal = float(as_10dp(row.get("Principal", row.get("principal", 0)))) if pd.notna(row.get("Principal")) else 0.0
                 interest = float(as_10dp(row.get("Interest", row.get("interest", 0)))) if pd.notna(row.get("Interest")) else 0.0

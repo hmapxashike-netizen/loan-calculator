@@ -80,12 +80,15 @@ from .save_loan import save_loan
 from .schedules import (
     apply_schedule_version_bumps,
     collect_due_dates_in_range_all_schedule_versions,
+    format_schedule_date_for_storage,
+    schedule_date_to_iso_for_exchange,
     get_latest_schedule_version,
     get_max_schedule_due_date_on_or_before,
     get_original_facility_for_statements,
     get_schedule_line_on_version_for_date,
     get_schedule_lines,
     list_schedule_bumping_events,
+    parse_schedule_line_date,
     save_new_schedule_version,
     schedule_version_effective_on,
 )
@@ -97,7 +100,9 @@ from .unapplied_queries import (
 )
 from .unapplied_recast import apply_unapplied_funds_recast
 from .recast_orchestration import (
+    execute_unapplied_liquidation_for_restructure,
     execute_recast_from_unapplied,
+    get_unapplied_balance_for_restructure,
     list_unapplied_credit_rows_for_recast,
     preview_recast_from_unapplied,
 )
