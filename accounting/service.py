@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 from datetime import date
 from decimal import Decimal
@@ -19,9 +20,13 @@ from .defaults_loader import (
     get_default_receipt_gl_mapping_tuples,
     get_default_transaction_template_tuples,
 )
+from .equity_close import build_month_end_pnl_close_lines
+from .equity_config import net_profit_loss_from_balance_rows, resolve_accounting_equity_config
 from .periods import (
     get_month_period_bounds,
     get_year_period_bounds,
+    is_eom,
+    is_eoy,
     normalize_accounting_period_config,
 )
 
@@ -548,6 +553,220 @@ class AccountingService:
             # Balance sheet is Asset, Liability, Equity
             balances = repo.get_balances_by_category(['ASSET', 'LIABILITY', 'EQUITY'], end_date=as_of_date)
             return balances
+        finally:
+            conn.close()
+
+    def get_net_profit_loss(self, start_date: date, end_date: date) -> Decimal:
+        """Net P&L for [start_date, end_date] (same convention as P&L report)."""
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            rows = repo.get_balances_by_category(
+                ["INCOME", "EXPENSE"], start_date=start_date, end_date=end_date
+            )
+            return net_profit_loss_from_balance_rows(rows)
+        finally:
+            conn.close()
+
+    def get_balance_sheet_with_pnl_adjustment(
+        self,
+        as_of_date: date,
+        pl_period_start: date,
+        *,
+        system_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Balance sheet accounts as of ``as_of_date`` plus supplemental net P&L for
+        ``[pl_period_start, as_of_date]`` (aligns with P&L for the same range).
+        """
+        _ = system_config  # reserved for future display prefs
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            rows = repo.get_balances_by_category(
+                ["ASSET", "LIABILITY", "EQUITY"], end_date=as_of_date
+            )
+            pl_rows = repo.get_balances_by_category(
+                ["INCOME", "EXPENSE"], start_date=pl_period_start, end_date=as_of_date
+            )
+            net = net_profit_loss_from_balance_rows(pl_rows)
+            return {
+                "rows": rows,
+                "supplemental": {
+                    "label": "Net profit/(loss) for period (P&L basis)",
+                    "net_amount": net,
+                    "period_start": pl_period_start,
+                    "period_end": as_of_date,
+                },
+            }
+        finally:
+            conn.close()
+
+    def post_month_end_pnl_close_to_cye(
+        self,
+        as_of_date: date,
+        *,
+        created_by: str = "system",
+        system_config: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """
+        On accounting month-end, zero cumulative INCOME/EXPENSE balances through that
+        month-end into **current year earnings** (idempotent per period).
+        """
+        cfg = system_config if system_config is not None else (load_system_config_from_db() or {})
+        period_cfg = normalize_accounting_period_config(cfg)
+        if not force and not is_eom(as_of_date, period_cfg):
+            return {"status": "skipped", "reason": "not_month_end"}
+
+        month_bounds = get_month_period_bounds(as_of_date, period_cfg)
+        period_end = month_bounds.end_date
+        period_key = period_end.strftime("%Y-%m")
+        event_id = f"PNL_CLOSE:{period_key}"
+        event_tag = "MONTH_END_PNL"
+
+        eq = resolve_accounting_equity_config(cfg)
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            if repo.get_active_journal_header(event_id, event_tag):
+                return {"status": "skipped", "reason": "already_posted", "event_id": event_id}
+
+            cye = repo.get_account_id_by_code(eq.current_year_earnings_account_code)
+            if not cye:
+                raise ValueError(
+                    f"Current year earnings account {eq.current_year_earnings_account_code!r} "
+                    "not found or inactive — create it or set accounting_equity.current_year_earnings_account_code."
+                )
+
+            ie = repo.get_balances_by_category(["INCOME", "EXPENSE"], end_date=period_end)
+            lines = build_month_end_pnl_close_lines(
+                ie_balances=ie,
+                cye_account_id=str(cye["id"]),
+            )
+            if not lines:
+                return {"status": "skipped", "reason": "no_balances"}
+
+            assert_journal_lines_balanced(
+                lines,
+                context=f"post_month_end_pnl_close_to_cye({period_key!r})",
+            )
+            self._validate_not_posting_to_parent_after_transition(conn, period_end, lines)
+
+            repo.save_journal_entry(
+                period_end,
+                f"PNL-CLOSE-{period_key}",
+                f"Month-end P&L close to current year earnings ({period_key})",
+                event_id,
+                event_tag,
+                created_by,
+                lines,
+            )
+            return {"status": "posted", "event_id": event_id, "period_key": period_key}
+        finally:
+            conn.close()
+
+    def post_year_end_cye_to_re(
+        self,
+        as_of_date: date,
+        *,
+        created_by: str = "system",
+        system_config: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """
+        On fiscal year-end, transfer **current year earnings** balance to **retained earnings**
+        (idempotent per fiscal year-end date).
+        """
+        cfg = system_config if system_config is not None else (load_system_config_from_db() or {})
+        period_cfg = normalize_accounting_period_config(cfg)
+        if not force and not is_eoy(as_of_date, period_cfg):
+            return {"status": "skipped", "reason": "not_year_end"}
+
+        year_bounds = get_year_period_bounds(as_of_date, period_cfg)
+        fy_end = year_bounds.end_date
+        event_id = f"CYE_TO_RE:{fy_end.isoformat()}"
+        event_tag = "YEAR_END_EQUITY"
+
+        eq = resolve_accounting_equity_config(cfg)
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            if repo.get_active_journal_header(event_id, event_tag):
+                return {"status": "skipped", "reason": "already_posted", "event_id": event_id}
+
+            cye_acc = repo.get_account_id_by_code(eq.current_year_earnings_account_code)
+            re_acc = repo.get_account_id_by_code(eq.retained_earnings_account_code)
+            if not cye_acc or not re_acc:
+                raise ValueError(
+                    "Missing equity accounts for year-end close — check "
+                    "accounting_equity.current_year_earnings_account_code and "
+                    "retained_earnings_account_code exist and are active."
+                )
+
+            eq_rows = repo.get_balances_by_category(["EQUITY"], end_date=fy_end)
+            cye_code = eq.current_year_earnings_account_code.upper()
+            cye_row = next(
+                (r for r in (eq_rows or []) if str(r.get("code") or "").strip().upper() == cye_code),
+                None,
+            )
+            if not cye_row:
+                raise ValueError(f"Could not load balance for account {cye_code!r}.")
+
+            d = as_10dp(Decimal(str(cye_row.get("debit") or 0)))
+            c = as_10dp(Decimal(str(cye_row.get("credit") or 0)))
+            net = as_10dp(c - d)
+            if net == 0:
+                return {"status": "skipped", "reason": "cye_zero", "event_id": event_id}
+
+            if net > 0:
+                lines = [
+                    {
+                        "account_id": str(cye_acc["id"]),
+                        "debit": net,
+                        "credit": Decimal("0"),
+                        "memo": "Year-end: transfer current year earnings to retained earnings",
+                    },
+                    {
+                        "account_id": str(re_acc["id"]),
+                        "debit": Decimal("0"),
+                        "credit": net,
+                        "memo": "Year-end: transfer from current year earnings",
+                    },
+                ]
+            else:
+                amt = as_10dp(-net)
+                lines = [
+                    {
+                        "account_id": str(cye_acc["id"]),
+                        "debit": Decimal("0"),
+                        "credit": amt,
+                        "memo": "Year-end: transfer current year earnings deficit to retained earnings",
+                    },
+                    {
+                        "account_id": str(re_acc["id"]),
+                        "debit": amt,
+                        "credit": Decimal("0"),
+                        "memo": "Year-end: transfer from current year earnings",
+                    },
+                ]
+
+            assert_journal_lines_balanced(
+                lines,
+                context=f"post_year_end_cye_to_re({fy_end.isoformat()!r})",
+            )
+            self._validate_not_posting_to_parent_after_transition(conn, fy_end, lines)
+
+            repo.save_journal_entry(
+                fy_end,
+                f"CYE-TO-RE-{fy_end.isoformat()}",
+                f"Fiscal year-end: current year earnings to retained earnings ({fy_end.isoformat()})",
+                event_id,
+                event_tag,
+                created_by,
+                lines,
+            )
+            return {"status": "posted", "event_id": event_id, "fiscal_year_end": str(fy_end)}
         finally:
             conn.close()
 

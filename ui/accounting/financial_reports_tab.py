@@ -98,15 +98,64 @@ def render_financial_reports_tab(
     with rep_bs:
         st.markdown("### Balance Sheet")
         sys_date = get_system_date()
-        bs_as_of = st.date_input("As of Date", value=sys_date, key="bs_as_of")
+        col_bs1, col_bs2 = st.columns(2)
+        with col_bs1:
+            bs_as_of = st.date_input("As of Date", value=sys_date, key="bs_as_of")
+        with col_bs2:
+            bs_pl_scope = st.radio(
+                "P&L alignment (supplemental line)",
+                options=("Month to date", "Fiscal year to date"),
+                horizontal=True,
+                key="bs_pl_scope",
+            )
         if st.button("Generate Balance Sheet"):
-            bs = reports.get_balance_sheet(bs_as_of)
+            try:
+                from accounting.periods import (
+                    get_month_period_bounds as _mb,
+                    get_year_period_bounds as _yb,
+                    normalize_accounting_period_config as _npc,
+                )
+
+                _pcfg = _npc(get_system_config())
+                if bs_pl_scope == "Month to date":
+                    pl_start = _mb(bs_as_of, _pcfg).start_date
+                else:
+                    pl_start = _yb(bs_as_of, _pcfg).start_date
+            except Exception:
+                pl_start = bs_as_of.replace(day=1)
+
+            payload = reports.get_balance_sheet_with_pnl_adjustment(
+                bs_as_of, pl_start, system_config=get_system_config()
+            )
+            bs = payload.get("rows") or []
+            sup = payload.get("supplemental") or {}
             if bs:
                 df_bs = pd.DataFrame([{
                     "Code": r["code"], "Name": r["name"], "Category": r["category"],
-                    "Balance": float(r["debit"] - r["credit"]) if r["category"] == "ASSET" else float(r["credit"] - r["debit"])
+                    "Debit": float(r["debit"]), "Credit": float(r["credit"]),
                 } for r in bs])
-                st.dataframe(df_bs, use_container_width=True)
+                st.dataframe(
+                    df_bs,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config=money_df_column_config(df_bs),
+                )
+                st.write(
+                    f"**Total Debits:** {format_display_amount(df_bs['Debit'].sum(), system_config=get_system_config())} | "
+                    f"**Total Credits:** {format_display_amount(df_bs['Credit'].sum(), system_config=get_system_config())}"
+                )
+                net_amt = sup.get("net_amount")
+                if net_amt is not None:
+                    ps = sup.get("period_start")
+                    pe = sup.get("period_end")
+                    st.caption(
+                        f"P&L period for supplemental line: {ps} → {pe} "
+                        "(same range as Profit & Loss when using these dates)."
+                    )
+                    st.write(
+                        f"**{sup.get('label', 'Net profit/(loss) for period (P&L basis)')}:** "
+                        f"{format_display_amount(float(net_amt), system_config=get_system_config())}"
+                    )
             else:
                 st.info("No data.")
 

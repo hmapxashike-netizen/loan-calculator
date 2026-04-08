@@ -161,6 +161,7 @@ CHART_ACCOUNT_TUPLES: list[tuple[str, str, str, str | None, str | None]] = [
     ("C300002", "SHARE PREMIUM", "EQUITY", "share_premium", "C300000"),
     ("C300003", "RETAINED EARNINGS", "EQUITY", "retained_earnings", "C300000"),
     ("C300004", "DIVIDENDS PAID", "EQUITY", "dividends_paid", "C300000"),
+    ("C300005", "CURRENT YEAR EARNINGS", "EQUITY", "current_year_earnings", "C300000"),
     ("R400000", "LENDING INCOME (REVENUE)", "INCOME", None, None),
     ("R400001", "REGULAR INTEREST INCOME", "INCOME", "regular_interest_income", "R400000"),
     ("R400002", "DEFERRED FEE INCOME", "INCOME", "deferred_fee_income", "R400000"),

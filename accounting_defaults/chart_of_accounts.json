@@ -276,6 +276,13 @@
       "parent_code": "C300000"
     },
     {
+      "code": "C300005",
+      "name": "CURRENT YEAR EARNINGS",
+      "category": "EQUITY",
+      "system_tag": "current_year_earnings",
+      "parent_code": "C300000"
+    },
+    {
       "code": "R400000",
       "name": "LENDING INCOME (REVENUE)",
       "category": "INCOME",

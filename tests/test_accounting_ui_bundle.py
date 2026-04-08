@@ -68,3 +68,16 @@ def test_reports_ui_delegates(mock_svc: MagicMock) -> None:
     mock_svc.list_statement_snapshots.assert_called_once_with(
         statement_type="BALANCE_SHEET", limit=5
     )
+
+    mock_svc.get_balance_sheet_with_pnl_adjustment.return_value = {"rows": [], "supplemental": {}}
+    assert b.reports.get_balance_sheet_with_pnl_adjustment(d, d, system_config={}) == {
+        "rows": [],
+        "supplemental": {},
+    }
+    mock_svc.get_balance_sheet_with_pnl_adjustment.assert_called_once_with(
+        d, d, system_config={}
+    )
+
+    mock_svc.get_net_profit_loss.return_value = 0
+    assert b.reports.get_net_profit_loss(d, d) == 0
+    mock_svc.get_net_profit_loss.assert_called_once_with(d, d)

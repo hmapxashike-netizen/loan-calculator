@@ -1401,6 +1401,33 @@ class AccountingRepository:
             cur.execute("DELETE FROM receipt_gl_mapping WHERE id = %s", (mapping_id,))
         self.conn.commit()
 
+    def get_active_journal_header(self, event_id: str, event_tag: str):
+        """Return the active posted journal header for (event_id, event_tag), or None."""
+        if not event_id or not event_tag:
+            return None
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, entry_date, reference, description
+                FROM journal_entries
+                WHERE event_id = %s
+                  AND event_tag = %s
+                  AND COALESCE(is_active, TRUE) = TRUE
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (event_id, event_tag),
+            )
+            return cur.fetchone()
+
+    def get_account_id_by_code(self, code: str):
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM accounts WHERE code = %s AND COALESCE(is_active, TRUE) = TRUE",
+                (str(code).strip().upper(),),
+            )
+            return cur.fetchone()
+
     def save_journal_entry(self, entry_date, reference, description, event_id, event_tag, created_by, lines):
         if lines:
             assert_journal_lines_balanced(
@@ -1898,8 +1925,8 @@ class AccountingRepository:
             params = date_params + tuple(categories)
             
             cur.execute(f"""
-                SELECT a.code, a.name, a.category, 
-                       COALESCE(SUM(ji.debit), 0) as debit, 
+                SELECT a.id AS account_id, a.code, a.name, a.category,
+                       COALESCE(SUM(ji.debit), 0) as debit,
                        COALESCE(SUM(ji.credit), 0) as credit
                 FROM accounts a
                 LEFT JOIN (
@@ -1911,7 +1938,7 @@ class AccountingRepository:
                       {date_filter}
                 ) ji ON a.id = ji.account_id
                 WHERE a.category IN ({placeholders})
-                GROUP BY a.code, a.name, a.category
+                GROUP BY a.id, a.code, a.name, a.category
                 ORDER BY a.code
             """, params)
             return cur.fetchall()

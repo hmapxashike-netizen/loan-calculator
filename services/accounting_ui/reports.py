@@ -20,6 +20,14 @@ class FinancialReportsUi:
     def get_balance_sheet(self, as_of):
         return self._svc.get_balance_sheet(as_of)
 
+    def get_balance_sheet_with_pnl_adjustment(self, as_of, pl_period_start, *, system_config=None):
+        return self._svc.get_balance_sheet_with_pnl_adjustment(
+            as_of, pl_period_start, system_config=system_config
+        )
+
+    def get_net_profit_loss(self, start, end):
+        return self._svc.get_net_profit_loss(start, end)
+
     def get_statement_of_changes_in_equity(self, start, end):
         return self._svc.get_statement_of_changes_in_equity(start, end)
 

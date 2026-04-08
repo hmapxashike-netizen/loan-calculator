@@ -1744,6 +1744,30 @@ def _run_restructure_fee_amortisation_month_end(
         )
 
 
+def _run_equity_period_close(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
+    """
+    After operational EOM journals, close P&L into current year earnings (month-end)
+    and sweep CYE to retained earnings (fiscal year-end). Runs **before** statement
+    snapshots so TB/BS reflect closed nominal accounts where applicable.
+
+    Order on a day that is both month-end and year-end: month P&L close first, then CYE→RE.
+    """
+    from accounting.service import AccountingService
+
+    period_cfg = normalize_accounting_period_config(sys_cfg)
+    if not (is_eom(as_of_date, period_cfg) or is_eoy(as_of_date, period_cfg)):
+        return
+    svc = AccountingService()
+    if is_eom(as_of_date, period_cfg):
+        svc.post_month_end_pnl_close_to_cye(
+            as_of_date, created_by="system", system_config=sys_cfg
+        )
+    if is_eoy(as_of_date, period_cfg):
+        svc.post_year_end_cye_to_re(
+            as_of_date, created_by="system", system_config=sys_cfg
+        )
+
+
 def _run_statement_batch(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     """
     Capture immutable statement snapshots on accounting month/year close.
@@ -1938,6 +1962,11 @@ def run_eod_for_date(
                 lambda: _apply_unapplied_funds_to_arrears(as_of_date, sys_cfg),
             )
             _stage("accounting_events", post_accounting, lambda: _run_accounting_events(as_of_date, sys_cfg))
+            _stage(
+                "equity_period_close",
+                post_accounting,
+                lambda: _run_equity_period_close(as_of_date, sys_cfg),
+            )
             _stage(
                 "statements",
                 generate_statements or snapshot_financial_statements,
