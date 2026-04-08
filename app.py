@@ -1200,6 +1200,11 @@ def get_loan_app_sections() -> list[str]:
 
 def render_loan_app_section(nav: str) -> None:
     _get_global_loan_settings()  # ensure defaults exist
+    from middleware import get_current_user
+
+    from rbac.guards import enforce_nav_section_or_stop
+
+    enforce_nav_section_or_stop(get_current_user(), nav)
     from subscription.access import check_access, get_subscription_snapshot
 
     check_access(nav_section=nav, snapshot=get_subscription_snapshot())

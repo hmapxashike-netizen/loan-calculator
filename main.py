@@ -26,7 +26,8 @@ from ui.components import inject_tertiary_hyperlink_css_once
 
 
 def _privileged_roles_touch(old_role: str, new_role: str) -> bool:
-    pr = frozenset({"VENDOR", "SUPERADMIN"})
+    """True if either side is a platform / tenant-admin role only SUPERADMIN may assign or change."""
+    pr = frozenset({"VENDOR", "SUPERADMIN", "ADMIN"})
     return old_role in pr or new_role in pr
 
 
@@ -35,7 +36,44 @@ def _user_role_edit_allowed(actor_role: str | None, old_role: str, new_role: str
         return True, ""
     if actor_role == "SUPERADMIN":
         return True, ""
-    return False, "Only a super administrator can assign or remove vendor or super-admin roles."
+    return (
+        False,
+        "Only a super administrator can assign, remove, or change administrator, vendor, or super-admin roles.",
+    )
+
+
+def _assignable_roles_for_ui(
+    actor_role: str | None = None,
+    *,
+    current_user_role: str | None = None,
+) -> list[str]:
+    """
+    Roles shown in admin user pickers. Non-superadmin users never get ADMIN / VENDOR / SUPERADMIN
+    in the list, except when managing an existing user who already has one of those (so the
+    selectbox can display their current role).
+    """
+    ar = (actor_role or "").strip().upper()
+    try:
+        from rbac.service import list_assignable_role_keys, rbac_tables_ready
+
+        if rbac_tables_ready():
+            keys = list_assignable_role_keys()
+            if not keys:
+                keys = []
+        else:
+            keys = []
+    except Exception:
+        keys = []
+    if not keys:
+        keys = ["ADMIN", "LOAN_OFFICER", "BORROWER", "SUPERADMIN", "VENDOR"]
+    if ar == "SUPERADMIN":
+        return sorted(keys, key=str)
+    blocked = frozenset({"SUPERADMIN", "VENDOR", "ADMIN"})
+    allowed = [k for k in keys if k not in blocked]
+    cur = (current_user_role or "").strip().upper()
+    if cur and cur in blocked and cur not in allowed:
+        allowed.append(cur)
+    return sorted(set(allowed), key=str)
 
 
 def _load_loan_ui_module():
@@ -460,7 +498,11 @@ def admin_home():
                 selected_email = st.selectbox("Select User", email_choices, key="adm_pick_user")
             selected_user = next(u for u in users if u.email == selected_email)
             with role_col:
-                _manage_roles = ["ADMIN", "LOAN_OFFICER", "BORROWER", "SUPERADMIN", "VENDOR"]
+                cu = get_current_user()
+                _manage_roles = _assignable_roles_for_ui(
+                    (cu or {}).get("role"),
+                    current_user_role=str(selected_user.role),
+                )
                 _mr_idx = (
                     _manage_roles.index(selected_user.role)
                     if selected_user.role in _manage_roles
@@ -557,10 +599,13 @@ def admin_home():
                 new_full_name = st.text_input("Full Name", key="adm_new_full_name")
             r2c1, r2c2 = st.columns(2, gap="small", vertical_alignment="bottom")
             with r2c1:
+                cu = get_current_user()
+                _ar_new = _assignable_roles_for_ui((cu or {}).get("role"))
+                _ar_idx = _ar_new.index("BORROWER") if "BORROWER" in _ar_new else 0
                 new_role = st.selectbox(
                     "Role",
-                    ["BORROWER", "LOAN_OFFICER", "ADMIN", "VENDOR", "SUPERADMIN"],
-                    index=0,
+                    _ar_new,
+                    index=_ar_idx,
                     key="adm_new_role",
                 )
             with r2c2:
@@ -753,14 +798,14 @@ def loan_management_app():
     loan_app.main()
 
 
-def build_menu_for_role(role: str) -> dict[str, callable]:
+def _build_menu_for_role_legacy(role: str) -> dict[str, callable]:
+    """Fallback when RBAC tables are missing or return no permissions."""
     if role == "BORROWER":
         return {"Home": borrower_home}
 
     loan_sections = loan_app.get_loan_app_sections()
 
     if role == "VENDOR":
-        # Least privilege: vendor staff only reach subscription (vendor) operations for the active tenant.
         return {
             "Subscription": lambda: loan_app.render_loan_app_section("Subscription"),
         }
@@ -773,7 +818,7 @@ def build_menu_for_role(role: str) -> dict[str, callable]:
         return menu
 
     if role == "ADMIN":
-        menu: dict[str, callable] = {"Admin Dashboard": admin_home}
+        menu = {"Admin Dashboard": admin_home}
         for section in loan_sections:
             menu[section] = lambda section_name=section: loan_app.render_loan_app_section(section_name)
         return menu
@@ -785,6 +830,51 @@ def build_menu_for_role(role: str) -> dict[str, callable]:
         return menu
 
     return {}
+
+
+def _build_menu_from_permission_keys(role: str, keys: frozenset[str]) -> dict[str, callable]:
+    from auth.permission_catalog import (
+        PERMISSION_DASHBOARD_ADMIN,
+        PERMISSION_DASHBOARD_OFFICER,
+        nav_permission_key_for_section,
+    )
+
+    loan_sections = loan_app.get_loan_app_sections()
+    menu: dict[str, callable] = {}
+
+    if PERMISSION_DASHBOARD_OFFICER in keys:
+        menu["Officer Dashboard"] = officer_home
+    elif PERMISSION_DASHBOARD_ADMIN in keys:
+        menu["Admin Dashboard"] = admin_home
+
+    for section in loan_sections:
+        pk = nav_permission_key_for_section(section)
+        if pk and pk in keys:
+            menu[section] = lambda section_name=section: loan_app.render_loan_app_section(section_name)
+
+    if not menu and role == "VENDOR":
+        sub_k = nav_permission_key_for_section("Subscription")
+        if sub_k and sub_k in keys:
+            menu["Subscription"] = lambda: loan_app.render_loan_app_section("Subscription")
+
+    return menu
+
+
+def build_menu_for_role(role: str) -> dict[str, callable]:
+    if role == "BORROWER":
+        return {"Home": borrower_home}
+
+    try:
+        from rbac.service import get_permission_keys_for_role_key, rbac_tables_ready
+
+        if not rbac_tables_ready():
+            return _build_menu_for_role_legacy(role)
+        k = get_permission_keys_for_role_key(role)
+        if not k:
+            return _build_menu_for_role_legacy(role)
+        return _build_menu_from_permission_keys(role, k)
+    except Exception:
+        return _build_menu_for_role_legacy(role)
 
 
 def main():

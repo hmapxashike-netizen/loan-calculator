@@ -13,6 +13,7 @@ from ui.system_configurations.ifrs_provision_tab import render_ifrs_provision_ta
 from ui.system_configurations.loan_purposes_tab import render_loan_purposes_tab
 from ui.system_configurations.products_tab import render_products_tab
 from ui.system_configurations.sectors_tab import render_sectors_tab
+from ui.system_configurations.roles_access_tab import render_roles_access_tab
 from ui.system_configurations.subscription_vendor_tab import render_subscription_vendor_tab
 
 
@@ -97,6 +98,7 @@ def render_system_configurations_ui(
         tab_ifrs_prov,
         tab_display,
         tab_sub_vendor,
+        tab_roles,
     ) = st.tabs(
         [
             "Sectors & subsectors",
@@ -109,6 +111,7 @@ def render_system_configurations_ui(
             "IFRS provision config",
             "Display & numbers",
             "Subscription (vendor)",
+            "Roles & access",
         ],
     )
 
@@ -187,6 +190,11 @@ def render_system_configurations_ui(
 
     with tab_sub_vendor:
         render_subscription_vendor_tab()
+
+    with tab_roles:
+        from middleware import get_current_user
+
+        render_roles_access_tab(get_current_user=get_current_user)
 
     with tab_display:
         _disp = render_display_tab(cfg=cfg)

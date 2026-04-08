@@ -4,6 +4,42 @@ from __future__ import annotations
 
 import streamlit as st
 
+from accounting.defaults_loader import defaults_directory
+
+
+def _render_bundled_accounting_defaults_downloads() -> None:
+    """Expose accounting_defaults/*.json as downloads (same source as Initialize / Reset actions)."""
+    d = defaults_directory()
+    with st.expander("Download bundled default templates", expanded=False):
+        st.caption(
+            "Same JSON files used when you initialize the chart, reset transaction templates, "
+            "or reload receipt → GL defaults (`accounting_defaults/`). "
+            "To capture your **live database** into these files for commit, run: "
+            "`python scripts/export_accounting_defaults.py`. "
+            "To regenerate from **Python** built-ins only: "
+            "`python scripts/bootstrap_accounting_defaults_from_builtin.py`."
+        )
+        c1, c2, c3 = st.columns(3)
+        files = (
+            ("chart_of_accounts.json", "Chart of accounts"),
+            ("transaction_templates.json", "Transaction templates"),
+            ("receipt_gl_mapping.json", "Receipt → GL mapping"),
+        )
+        for col, (fname, label) in zip((c1, c2, c3), files):
+            p = d / fname
+            with col:
+                if p.is_file():
+                    st.download_button(
+                        label=label,
+                        data=p.read_bytes(),
+                        file_name=fname,
+                        mime="application/json",
+                        key=f"acco_bundled_dl_{fname}",
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption(f"{fname}: not on disk (app uses built-in fallbacks).")
+
 
 def render_accounting_ui(
     *,
@@ -17,6 +53,8 @@ def render_accounting_ui(
     from services.accounting_ui import build_accounting_ui_bundle
 
     bundle = build_accounting_ui_bundle()
+
+    _render_bundled_accounting_defaults_downloads()
 
     tab_labels = [
         "Chart of Accounts",

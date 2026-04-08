@@ -8,6 +8,10 @@ JSON files in this folder are the **source of truth** for:
 
 If a file is **missing**, the app falls back to `accounting.builtin_defaults`.
 
+The **Accounting** page includes an expander **Download bundled default templates** so you can save `chart_of_accounts.json`, `transaction_templates.json`, and `receipt_gl_mapping.json` without using the shell.
+
+Keep **`accounting/builtin_defaults.py`** in sync with these JSON files: the loader prefers JSON when present, but seeds and bootstrap use the same tuple definitions in Python.
+
 ## Refresh from your perfected database
 
 ```bash

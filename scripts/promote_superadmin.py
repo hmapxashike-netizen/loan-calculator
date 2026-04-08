@@ -57,7 +57,7 @@ def main() -> int:
         cur.execute(
             """
             UPDATE users
-            SET role = 'SUPERADMIN'::user_role
+            SET role = 'SUPERADMIN'
             WHERE lower(email::text) = lower(%s)
             """,
             (email,),
