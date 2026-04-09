@@ -95,11 +95,13 @@ def render_eod_ui(
         )
 
     if is_admin:
-        _tab_ops, _tab_admin = st.tabs(["EOD operations", "Admin — system date"])
+        _tab_advance, _tab_fix, _tab_admin = st.tabs(
+            ["EOD Date advance", "Fix EOD issues", "Admin — system date"]
+        )
     else:
-        (_tab_ops,) = st.tabs(["EOD operations"])
+        _tab_advance, _tab_fix = st.tabs(["EOD Date advance", "Fix EOD issues"])
 
-    def _eod_operations_body() -> None:
+    def _eod_date_advance_body() -> None:
         cfg = get_system_config()
         eod_cfg = cfg.get("eod_settings", {}) or {}
         mode = eod_cfg.get("mode", "manual")
@@ -112,12 +114,6 @@ def render_eod_ui(
         )
 
         st.divider()
-        fix_eod_issues = st.checkbox(
-            "Fix EOD issues (no date advance)",
-            value=False,
-            key="eod_fix_issues",
-            help="Shows maintenance tools: reallocate receipts, run EOD for a specific date (backfill only), and recompute loan daily state.",
-        )
         if mode == "manual":
             eod_busy = eod_service.is_another_eod_session_active_safe()
             if eod_busy:
@@ -240,29 +236,6 @@ def render_eod_ui(
                     st.session_state["eod_last_result"] = result
                     st.rerun()
 
-            if fix_eod_issues:
-                render_sub_sub_header("Backfill EOD (specific date, no system date advance)")
-                st.caption("Backfill only. Does not advance system date.")
-                backfill_date = st.date_input("EOD as-of date", current_system_date, key="eod_backfill_date")
-                if st.button(
-                    "Run EOD for date only",
-                    key="eod_backfill_btn",
-                ):
-                    st.info(
-                        f"**EOD backfill in progress** for **{backfill_date.isoformat()}**. Please wait…"
-                    )
-                    try:
-                        with st.spinner("Running EOD for selected date…"):
-                            result = eod_service.run_backfill_eod_for_date(backfill_date)
-                        duration = result.finished_at - result.started_at
-                        st.success(
-                            f"EOD completed for {result.as_of_date.isoformat()} – "
-                            f"processed {result.loans_processed} loans. "
-                            f"Status: {result.run_status}. System date unchanged."
-                        )
-                        st.caption(f"Run ID: {result.run_id} | Duration: {duration}")
-                    except Exception as e:
-                        st.error(f"EOD run failed: {e}")
         else:
             render_sub_sub_header("Manual EOD run")
             st.info(
@@ -270,154 +243,190 @@ def render_eod_ui(
                 "Use your scheduling/ops tooling to trigger EOD."
             )
 
-        if fix_eod_issues:
-            # Available in both manual and automatic EOD modes — does not advance system date.
-            render_sub_sub_header("Reallocate receipts")
-            st.caption(
-                "Re-runs waterfall allocation for selected **posted** receipts and **writes results to the database**: "
-                "`loan_repayment_allocation` (updated in place) and `loan_daily_state` for each receipt’s **value date**, "
-                "plus unapplied-funds adjustments where applicable. "
-                "**Does not advance the system business date.**"
-            )
-            st.markdown(
-                "**When to use what**\n"
-                "- **Typical:** receipts with **value date = current system date** — fix same-day allocation without running full EOD.\n"
-                "- **Other dates / whole book for a day:** use **Run EOD for specific date (backfill, no advance)** above — "
-                "recomputes `loan_daily_state` for **all loans** for that as-of date (and runs other EOD stages per config).\n"
-                "- **Per-receipt** tool here still works for **any** value date if you enter repayment IDs or pick loan + date; "
-                "it only touches those receipts’ allocation rows and the related daily-state date(s)."
-            )
-            if not loan_management_available:
-                st.warning(f"Loan management unavailable: {loan_management_error}")
-            elif load_system_config_from_db is None:
-                st.warning("Loan management config loader is not available; cannot reallocate.")
-            else:
-                rcol1, rcol2 = st.columns(2)
-                with rcol1:
-                    realloc_loan = st.number_input(
-                        "Loan ID",
-                        min_value=1,
-                        step=1,
-                        value=1,
-                        key="eod_realloc_loan_id",
-                        help="Posted receipts for this loan on the value date will be reallocated.",
-                    )
-                    realloc_vd = st.date_input(
-                        "Value date",
-                        value=current_system_date,
-                        key="eod_realloc_value_date",
-                    )
-                with rcol2:
-                    realloc_ids_text = st.text_area(
-                        "Or repayment IDs (one per line or comma-separated)",
-                        height=100,
-                        placeholder="12\n15\n18",
-                        key="eod_realloc_ids_text",
-                        help="If provided with the button below, these IDs are used instead of loan+date.",
-                    )
+    def _eod_fix_issues_body() -> None:
+        eod_cfg = get_system_config().get("eod_settings", {}) or {}
+        mode = eod_cfg.get("mode", "manual")
 
-                b1, b2 = st.columns(2)
-                with b1:
-                    run_by_loan_date = st.button(
-                        "Reallocate all on loan + value date",
-                        key="eod_realloc_by_loan_date",
-                        type="secondary",
-                        disabled=not fix_eod_issues,
-                    )
-                with b2:
-                    run_by_ids = st.button(
-                        "Reallocate listed repayment IDs",
-                        key="eod_realloc_by_ids",
-                        type="secondary",
-                        disabled=not fix_eod_issues,
-                    )
+        st.caption(
+            "Maintenance and backfill: **does not advance** the system business date. "
+            "Use **EOD Date advance** to run canonical EOD and move the system date."
+        )
+        st.divider()
 
-                if run_by_loan_date:
-                    cfg = load_system_config_from_db() or {}
-                    try:
-                        ids = eod_service.list_repayment_ids_for_loan_value_date(
-                            int(realloc_loan), realloc_vd
+        render_sub_sub_header("Backfill EOD (specific date, no system date advance)")
+        st.caption(
+            "Backfill only. Does not advance system date. "
+            f"EOD mode is **{mode.upper()}** (canonical date advance lives on **EOD Date advance**)."
+        )
+        backfill_date = st.date_input(
+            "EOD as-of date", current_system_date, key="eod_backfill_date"
+        )
+        if st.button(
+            "Run EOD for date only",
+            key="eod_backfill_btn",
+        ):
+            st.info(
+                f"**EOD backfill in progress** for **{backfill_date.isoformat()}**. Please wait…"
+            )
+            try:
+                with st.spinner("Running EOD for selected date…"):
+                    result = eod_service.run_backfill_eod_for_date(backfill_date)
+                duration = result.finished_at - result.started_at
+                st.success(
+                    f"EOD completed for {result.as_of_date.isoformat()} – "
+                    f"processed {result.loans_processed} loans. "
+                    f"Status: {result.run_status}. System date unchanged."
+                )
+                st.caption(f"Run ID: {result.run_id} | Duration: {duration}")
+            except Exception as e:
+                st.error(f"EOD run failed: {e}")
+        st.divider()
+
+        # Available in both manual and automatic EOD modes — does not advance system date.
+        render_sub_sub_header("Reallocate receipts")
+        st.caption(
+            "Re-runs waterfall allocation for selected **posted** receipts and **writes results to the database**: "
+            "`loan_repayment_allocation` (updated in place) and `loan_daily_state` for each receipt’s **value date**, "
+            "plus unapplied-funds adjustments where applicable. "
+            "**Does not advance the system business date.**"
+        )
+        st.markdown(
+            "**When to use what**\n"
+            "- **Typical:** receipts with **value date = current system date** — fix same-day allocation without running full EOD.\n"
+            "- **Other dates / whole book for a day:** use **Backfill EOD (Run EOD for date only)** in this tab — "
+            "recomputes `loan_daily_state` for **all loans** for that as-of date (and runs other EOD stages per config).\n"
+            "- **Per-receipt** tool here still works for **any** value date if you enter repayment IDs or pick loan + date; "
+            "it only touches those receipts’ allocation rows and the related daily-state date(s)."
+        )
+        if not loan_management_available:
+            st.warning(f"Loan management unavailable: {loan_management_error}")
+        elif load_system_config_from_db is None:
+            st.warning("Loan management config loader is not available; cannot reallocate.")
+        else:
+            rcol1, rcol2 = st.columns(2)
+            with rcol1:
+                realloc_loan = st.number_input(
+                    "Loan ID",
+                    min_value=1,
+                    step=1,
+                    value=1,
+                    key="eod_realloc_loan_id",
+                    help="Posted receipts for this loan on the value date will be reallocated.",
+                )
+                realloc_vd = st.date_input(
+                    "Value date",
+                    value=current_system_date,
+                    key="eod_realloc_value_date",
+                )
+            with rcol2:
+                realloc_ids_text = st.text_area(
+                    "Or repayment IDs (one per line or comma-separated)",
+                    height=100,
+                    placeholder="12\n15\n18",
+                    key="eod_realloc_ids_text",
+                    help="If provided with the button below, these IDs are used instead of loan+date.",
+                )
+
+            b1, b2 = st.columns(2)
+            with b1:
+                run_by_loan_date = st.button(
+                    "Reallocate all on loan + value date",
+                    key="eod_realloc_by_loan_date",
+                    type="secondary",
+                )
+            with b2:
+                run_by_ids = st.button(
+                    "Reallocate listed repayment IDs",
+                    key="eod_realloc_by_ids",
+                    type="secondary",
+                )
+
+            if run_by_loan_date:
+                cfg = load_system_config_from_db() or {}
+                try:
+                    ids = eod_service.list_repayment_ids_for_loan_value_date(
+                        int(realloc_loan), realloc_vd
+                    )
+                    if not ids:
+                        st.warning(
+                            f"No posted receipts for loan_id={int(realloc_loan)} on {realloc_vd.isoformat()}."
                         )
-                        if not ids:
-                            st.warning(
-                                f"No posted receipts for loan_id={int(realloc_loan)} on {realloc_vd.isoformat()}."
-                            )
-                        else:
-                            with st.spinner(f"Reallocating {len(ids)} receipt(s)…"):
-                                ok, err = eod_service.reallocate_repayments_for_ids(
-                                    ids, system_config=cfg
-                                )
-                            if ok:
-                                st.success(f"Reallocated repayment_id(s): {ok}")
-                            if err:
-                                for rid, msg in err:
-                                    st.error(f"repayment_id={rid}: {msg}")
-                    except Exception as e:
-                        st.error(str(e))
-
-                if run_by_ids:
-                    parsed, bad_token = eod_service.parse_repayment_id_lines(
-                        realloc_ids_text or ""
-                    )
-                    if bad_token is not None:
-                        st.error(f"Not an integer: {bad_token!r}")
-                    elif not parsed:
-                        st.warning("Enter at least one repayment ID.")
                     else:
-                        cfg = load_system_config_from_db() or {}
-                        with st.spinner(f"Reallocating {len(parsed)} receipt(s)…"):
+                        with st.spinner(f"Reallocating {len(ids)} receipt(s)…"):
                             ok, err = eod_service.reallocate_repayments_for_ids(
-                                parsed, system_config=cfg
+                                ids, system_config=cfg
                             )
                         if ok:
                             st.success(f"Reallocated repayment_id(s): {ok}")
                         if err:
                             for rid, msg in err:
                                 st.error(f"repayment_id={rid}: {msg}")
+                except Exception as e:
+                    st.error(str(e))
 
-        if fix_eod_issues:
-            st.caption(
-                "**Reallocate** only works when there is at least one receipt for that date. "
-                "If all receipts were deleted or you need to refresh `loan_daily_state` from the "
-                "engine and prior day, use this instead (single-loan EOD recompute)."
-            )
-            col_a, col_b = st.columns(2)
-            with col_a:
-                rl_loan = st.number_input(
-                    "Loan ID",
-                    min_value=1,
-                    value=1,
-                    step=1,
-                    key="eod_recompute_loan_id",
+            if run_by_ids:
+                parsed, bad_token = eod_service.parse_repayment_id_lines(
+                    realloc_ids_text or ""
                 )
-            with col_b:
-                rl_date = st.date_input(
-                    "As-of date (loan_daily_state row)",
-                    value=current_system_date,
-                    key="eod_recompute_as_of",
-                )
-            if st.button(
-                "Recompute loan daily state for this loan + date",
-                key="eod_run_single_loan_eod",
-                disabled=not fix_eod_issues,
-            ):
-                if load_system_config_from_db is None:
-                    st.error("System config loader is not available.")
+                if bad_token is not None:
+                    st.error(f"Not an integer: {bad_token!r}")
+                elif not parsed:
+                    st.warning("Enter at least one repayment ID.")
                 else:
                     cfg = load_system_config_from_db() or {}
-                    try:
-                        with st.spinner(f"Running engine for loan_id={int(rl_loan)} on {rl_date}…"):
-                            eod_service.recompute_single_loan_daily_state(
-                                int(rl_loan), rl_date, system_config=cfg
-                            )
-                        st.success(
-                            f"Updated `loan_daily_state` for loan_id={int(rl_loan)} as of {rl_date}."
+                    with st.spinner(f"Reallocating {len(parsed)} receipt(s)…"):
+                        ok, err = eod_service.reallocate_repayments_for_ids(
+                            parsed, system_config=cfg
                         )
-                    except Exception as ex:
-                        st.error(str(ex))
+                    if ok:
+                        st.success(f"Reallocated repayment_id(s): {ok}")
+                    if err:
+                        for rid, msg in err:
+                            st.error(f"repayment_id={rid}: {msg}")
 
-    with _tab_ops:
-        _eod_operations_body()
+        st.caption(
+            "**Reallocate** only works when there is at least one receipt for that date. "
+            "If all receipts were deleted or you need to refresh `loan_daily_state` from the "
+            "engine and prior day, use this instead (single-loan EOD recompute)."
+        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            rl_loan = st.number_input(
+                "Loan ID",
+                min_value=1,
+                value=1,
+                step=1,
+                key="eod_recompute_loan_id",
+            )
+        with col_b:
+            rl_date = st.date_input(
+                "As-of date (loan_daily_state row)",
+                value=current_system_date,
+                key="eod_recompute_as_of",
+            )
+        if st.button(
+            "Recompute loan daily state for this loan + date",
+            key="eod_run_single_loan_eod",
+        ):
+            if load_system_config_from_db is None:
+                st.error("System config loader is not available.")
+            else:
+                cfg = load_system_config_from_db() or {}
+                try:
+                    with st.spinner(f"Running engine for loan_id={int(rl_loan)} on {rl_date}…"):
+                        eod_service.recompute_single_loan_daily_state(
+                            int(rl_loan), rl_date, system_config=cfg
+                        )
+                    st.success(
+                        f"Updated `loan_daily_state` for loan_id={int(rl_loan)} as of {rl_date}."
+                    )
+                except Exception as ex:
+                    st.error(str(ex))
+
+    with _tab_advance:
+        _eod_date_advance_body()
+    with _tab_fix:
+        _eod_fix_issues_body()
     if is_admin:
         with _tab_admin:
             _render_eod_admin_system_date_tab()

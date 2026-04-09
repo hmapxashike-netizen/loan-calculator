@@ -57,6 +57,7 @@ def test_flow_arrears_mode_end_snapshot_keeps_single_eod_value(monkeypatch):
         1,
         start_date=date(2025, 1, 1),
         end_date=date(2025, 1, 2),
+        as_of_date=date(2025, 1, 2),
         arrears_mode="end_snapshot",
     )
 
@@ -106,6 +107,7 @@ def test_flow_arrears_mode_by_row_date_tracks_daily_state_by_event_date(monkeypa
         1,
         start_date=date(2025, 1, 1),
         end_date=date(2025, 1, 2),
+        as_of_date=date(2025, 1, 2),
         arrears_mode="by_row_date",
     )
 

@@ -349,7 +349,7 @@ def _run_eod_process_core(*, skip_tick: bool, wall_start: datetime) -> dict[str,
                     hint_loan_engine = (
                         f" The engine processed **{lp}** loans — check server logs for skips (e.g. missing "
                         "**schedule_lines**, disbursement after the system date, or invalid schedule data). "
-                        "Use **EOD → Fix EOD issues → Run EOD for date only** to backfill after fixing data."
+                        "Use **EOD → Fix EOD issues** tab → **Run EOD for date only** to backfill after fixing data."
                     )
                 missing_note = ""
                 if missing_ids:
@@ -360,7 +360,7 @@ def _run_eod_process_core(*, skip_tick: bool, wall_start: datetime) -> dict[str,
                         f"{', '.join(str(i) for i in shown)}{more}. "
                         "Often the EOD engine **skipped** that loan: check server logs for `EOD skipped loan_id`, "
                         "or fix **schedule line dates** (4-digit year) / version at disbursement, then use "
-                        "**EOD → Fix EOD issues → Run EOD for date only** for "
+                        "**EOD → Fix EOD issues** tab → **Run EOD for date only** for "
                         f"**{as_of.isoformat()}**, or **Recompute loan daily state** for that loan."
                     )
                 result["error"] = (

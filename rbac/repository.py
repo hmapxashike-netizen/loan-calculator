@@ -44,7 +44,7 @@ class RbacRepository:
 
     def create_role(self, role_key: str, display_name: str, *, is_system: bool = False) -> int:
         rk = role_key.strip().upper().replace(" ", "_")
-        with self.conn.cursor() as cur:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
                 INSERT INTO rbac_roles (role_key, display_name, is_system)
@@ -54,7 +54,7 @@ class RbacRepository:
                 (rk, display_name.strip(), is_system),
             )
             row = cur.fetchone()
-            rid = int(row[0])
+            rid = int(row["id"])
         self.conn.commit()
         return rid
 
@@ -115,7 +115,7 @@ class RbacRepository:
         self.conn.commit()
 
     def get_permission_keys_for_role_key(self, role_key: str) -> set[str]:
-        with self.conn.cursor() as cur:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
                 SELECT rp.permission_key
@@ -125,7 +125,7 @@ class RbacRepository:
                 """,
                 (role_key,),
             )
-            return {str(r[0]) for r in cur.fetchall()}
+            return {str(r["permission_key"]) for r in cur.fetchall()}
 
     def replace_role_permissions(
         self,

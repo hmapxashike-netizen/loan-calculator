@@ -47,10 +47,11 @@ These keys back widgets and edit panels under **System configurations**.
 - **`eod_dismiss_last`**: dismiss button when the last result was a concurrent / lock failure.
 - **`eod_run_now`**: primary run button.
 
-### Fix EOD issues (maintenance; no system date advance)
+### Fix EOD issues tab (maintenance; no system date advance)
 
-- **`eod_fix_issues`**: master toggle for backfill, reallocate, and single-loan recompute sections.
-- **Backfill (manual mode only):** `eod_backfill_date`, `eod_backfill_btn`.
+UI: separate Streamlit tab on the EOD page (not a checkbox).
+
+- **Backfill:** `eod_backfill_date`, `eod_backfill_btn`.
 - **Reallocate:** `eod_realloc_loan_id`, `eod_realloc_value_date`, `eod_realloc_ids_text`, `eod_realloc_by_loan_date`, `eod_realloc_by_ids`.
 - **Single-loan recompute:** `eod_recompute_loan_id`, `eod_recompute_as_of`, `eod_run_single_loan_eod`.
 
