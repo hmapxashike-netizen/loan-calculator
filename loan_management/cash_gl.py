@@ -126,6 +126,7 @@ def _post_event_for_loan(
     loan_id: int | None,
     *,
     repayment_id: int | None = None,
+    posting_policy: str | None = None,
     **kwargs,
 ) -> None:
     """
@@ -137,4 +138,6 @@ def _post_event_for_loan(
         kw["loan_id"] = int(loan_id)
     if repayment_id is not None:
         kw["repayment_id"] = int(repayment_id)
+    if posting_policy is not None:
+        kw["posting_policy"] = posting_policy
     svc.post_event(**kw)

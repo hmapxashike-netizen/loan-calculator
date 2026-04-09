@@ -1,5 +1,6 @@
 import json
-from datetime import date
+from collections.abc import Sequence
+from datetime import date, datetime
 from decimal import Decimal
 
 import psycopg2
@@ -14,6 +15,8 @@ from .core import (
     coa_grandchild_prefix_matches_immediate_parent,
     split_account_code,
 )
+
+_FISCAL_CLOSE_EVENT_TAGS = {"MONTH_END_PNL", "YEAR_END_EQUITY"}
 
 
 def journal_lines_balance_totals(lines: list[dict]) -> tuple[Decimal, Decimal]:
@@ -1428,7 +1431,19 @@ class AccountingRepository:
             )
             return cur.fetchone()
 
-    def save_journal_entry(self, entry_date, reference, description, event_id, event_tag, created_by, lines):
+    def save_journal_entry(
+        self,
+        entry_date,
+        reference,
+        description,
+        event_id,
+        event_tag,
+        created_by,
+        lines,
+        *,
+        posting_policy: str = "standard",
+        gl_anchor_date: date | datetime | None = None,
+    ):
         if lines:
             assert_journal_lines_balanced(
                 lines,
@@ -1518,6 +1533,22 @@ class AccountingRepository:
                 )
                 return cur.fetchone()
 
+            def _as_date(value):
+                if isinstance(value, datetime):
+                    return value.date()
+                if hasattr(value, "date"):
+                    try:
+                        return value.date()
+                    except Exception:
+                        return value
+                return value
+
+            def _first_day_of_month(d: date) -> date:
+                return date(int(d.year), int(d.month), 1)
+
+            def _is_prior_calendar_month(target: date, anchor: date) -> bool:
+                return (int(target.year), int(target.month)) < (int(anchor.year), int(anchor.month))
+
             def _period_is_closed(period_key: str) -> bool:
                 try:
                     cur.execute(
@@ -1593,10 +1624,85 @@ class AccountingRepository:
                     )
                 return out
 
+            allowed_policy = {"standard", "eod_replay"}
+            if posting_policy not in allowed_policy:
+                raise ValueError(f"Unknown posting_policy {posting_policy!r}; expected one of {sorted(allowed_policy)}")
+
+            requested_entry_date = _as_date(entry_date)
+            if posting_policy == "standard":
+                anchor_date = _as_date(gl_anchor_date)
+                if anchor_date is None:
+                    raise ValueError(
+                        "gl_anchor_date is required when posting_policy='standard' to enforce calendar-month posting rules."
+                    )
+            else:
+                anchor_date = None
+
             existing = _active_entry_for_event(event_id, event_tag)
-            original_entry_date = existing["entry_date"] if existing else entry_date
+            original_entry_date = _as_date(existing["entry_date"]) if existing else requested_entry_date
+
+            calendar_exempt = str(event_tag or "") in _FISCAL_CLOSE_EVENT_TAGS
+            requested_prior_month = bool(
+                posting_policy == "standard"
+                and not calendar_exempt
+                and _is_prior_calendar_month(requested_entry_date, anchor_date)
+            )
+            existing_prior_month = bool(
+                posting_policy == "standard"
+                and not calendar_exempt
+                and existing is not None
+                and _is_prior_calendar_month(original_entry_date, anchor_date)
+            )
+            effective_entry_date = (
+                _first_day_of_month(anchor_date) if requested_prior_month else requested_entry_date
+            )
+
+            if existing_prior_month:
+                old_lines = _load_lines_by_entry(existing["id"])
+                delta_lines = _build_delta_lines(
+                    old_lines,
+                    lines,
+                    memo_prefix=f"Calendar adjustment for {event_id or 'event'}",
+                )
+                if delta_lines:
+                    assert_journal_lines_balanced(
+                        delta_lines,
+                        context=f"calendar adjustment save (event_id={event_id!r}, event_tag={event_tag!r})",
+                    )
+                    posting_date = _first_day_of_month(anchor_date)
+                    adj_event_id = f"CAL_ADJ::{event_tag or 'EVENT'}::{event_id or reference or 'UNKNOWN'}"
+                    adj_event_tag = "CALENDAR_MONTH_ADJUSTMENT"
+                    existing_adj = _active_entry_for_event(adj_event_id, adj_event_tag)
+                    adj_entry_id = _insert_header_and_lines(
+                        hdr_entry_date=posting_date,
+                        hdr_reference=reference,
+                        hdr_description=(
+                            f"Calendar-month adjustment for {event_id} originally dated {original_entry_date.isoformat()}"
+                            if event_id is not None
+                            else f"Calendar-month adjustment originally dated {original_entry_date.isoformat()}"
+                        ),
+                        hdr_event_id=adj_event_id,
+                        hdr_event_tag=adj_event_tag,
+                        hdr_entry_type="PERIOD_ADJUSTMENT",
+                        hdr_created_by=created_by,
+                        journal_lines=delta_lines,
+                    )
+                    if existing_adj is not None:
+                        cur.execute(
+                            """
+                            UPDATE journal_entries
+                            SET is_active = FALSE,
+                                superseded_at = NOW(),
+                                superseded_by_id = %s
+                            WHERE id = %s
+                            """,
+                            (adj_entry_id, existing_adj["id"]),
+                        )
+                self.conn.commit()
+                return
+
             period_key = original_entry_date.strftime("%Y-%m")
-            period_closed = _period_is_closed(period_key)
+            period_closed = False if posting_policy == "eod_replay" else _period_is_closed(period_key)
 
             if not period_closed:
                 # OPEN period: correction by replacement (soft-supersede old active row).
@@ -1619,7 +1725,7 @@ class AccountingRepository:
                 cur.execute("SAVEPOINT je_open_replace_sp")
                 try:
                     entry_id = _insert_header_and_lines(
-                        hdr_entry_date=entry_date,
+                        hdr_entry_date=effective_entry_date,
                         hdr_reference=reference,
                         hdr_description=description,
                         hdr_event_id=event_id,
@@ -1661,7 +1767,7 @@ class AccountingRepository:
                         WHERE id = %s
                         """,
                         (
-                            entry_date,
+                            effective_entry_date,
                             reference,
                             description,
                             "EVENT",
@@ -1684,7 +1790,11 @@ class AccountingRepository:
                         delta_lines,
                         context=f"journal adjustment save (event_id={event_id!r}, event_tag={event_tag!r})",
                     )
-                    posting_date = _earliest_open_period_posting_date()
+                    posting_date = (
+                        _first_day_of_month(anchor_date)
+                        if requested_prior_month
+                        else _earliest_open_period_posting_date()
+                    )
                     adj_event_id = f"ADJ::{event_tag or 'EVENT'}::{event_id or reference or 'UNKNOWN'}"
                     adj_event_tag = "PERIOD_ADJUSTMENT"
                     existing_adj = _active_entry_for_event(adj_event_id, adj_event_tag)
@@ -1908,7 +2018,14 @@ class AccountingRepository:
             """, params)
             return cur.fetchall()
 
-    def get_balances_by_category(self, categories, start_date=None, end_date=None):
+    def get_balances_by_category(
+        self,
+        categories,
+        start_date=None,
+        end_date=None,
+        *,
+        exclude_event_tags: Sequence[str] | None = None,
+    ):
         if not categories:
             return []
         with self.conn.cursor() as cur:
@@ -1920,11 +2037,30 @@ class AccountingRepository:
             elif end_date:
                 date_filter = "AND je.entry_date <= %s"
                 date_params = (end_date,)
-                
-            placeholders = ', '.join(['%s'] * len(categories))
-            params = date_params + tuple(categories)
-            
-            cur.execute(f"""
+
+            tags = tuple(t for t in (exclude_event_tags or ()) if t)
+            tag_filter = ""
+            tag_params: tuple = ()
+            if tags:
+                t_ph = ", ".join(["%s"] * len(tags))
+                tag_filter = f" AND (je.event_tag IS NULL OR je.event_tag NOT IN ({t_ph}))"
+                tag_params = tags
+
+            # Same idempotency prefix as post_month_end_pnl_close_to_cye (event_id = f"PNL_CLOSE:{period}").
+            # Excludes month-end close lines even if event_tag were NULL or altered on legacy rows.
+            pnl_close_id_filter = ""
+            pnl_close_id_params: tuple = ()
+            if tags and "MONTH_END_PNL" in tags:
+                pnl_close_id_filter = (
+                    " AND NOT (je.event_id IS NOT NULL AND strpos(je.event_id::text, %s) = 1)"
+                )
+                pnl_close_id_params = ("PNL_CLOSE:",)
+
+            placeholders = ", ".join(["%s"] * len(categories))
+            params = date_params + tag_params + pnl_close_id_params + tuple(categories)
+
+            cur.execute(
+                f"""
                 SELECT a.id AS account_id, a.code, a.name, a.category,
                        COALESCE(SUM(ji.debit), 0) as debit,
                        COALESCE(SUM(ji.credit), 0) as credit
@@ -1936,11 +2072,15 @@ class AccountingRepository:
                     WHERE je.status = 'POSTED'
                       AND COALESCE(je.is_active, TRUE) = TRUE
                       {date_filter}
+                      {tag_filter}
+                      {pnl_close_id_filter}
                 ) ji ON a.id = ji.account_id
                 WHERE a.category IN ({placeholders})
                 GROUP BY a.id, a.code, a.name, a.category
                 ORDER BY a.code
-            """, params)
+                """,
+                params,
+            )
             return cur.fetchall()
 
     def get_account_hybrid_balance(self, account_code, start_date, end_date):

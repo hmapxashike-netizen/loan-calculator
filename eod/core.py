@@ -26,6 +26,7 @@ Security and scalability notes
 import json
 import logging
 import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -43,6 +44,7 @@ from accounting.periods import (
     is_eom,
     is_eoy,
 )
+from accounting.posting_policy import use_gl_posting_policy
 from eod.audit import (
     ConcurrentEODError,
     clear_stale_eod_audit_runs,
@@ -58,13 +60,16 @@ from loan_management.schedules import (
 )
 
 from loan_management import (
+    allocate_repayment_waterfall,
     get_allocation_totals_for_loan_date,
+    get_liquidation_repayment_ids_for_value_date,
     get_net_allocation_for_loan_date,
     get_unallocated_for_loan_date,
     get_loan_daily_state_balances,
     get_loan_ids_with_reversed_receipts_on_date,
     get_loans_with_unapplied_balance,
     get_repayment_ids_for_loan_and_date,
+    get_repayment_ids_for_value_date,
     reallocate_repayment,
     save_loan_daily_state,
     apply_unapplied_funds_to_arrears_eod,
@@ -1350,6 +1355,42 @@ def _reallocate_receipts_after_reversals(as_of_date: date, sys_cfg: Dict[str, An
     return reallocated
 
 
+def _replay_refresh_allocations_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
+    """
+    Replay/backfill only: refresh allocation rows and GL for every posted receipt on as_of_date.
+
+    Normal receipts use :func:`reallocate_repayment` (engine-aware opening balances).
+    System liquidations (reference ``Unapplied funds allocation``) use
+    :func:`allocate_repayment_waterfall` only — they must not go through reallocate.
+
+    GL idempotency relies on :meth:`accounting.dal.AccountingRepository.save_journal_entry`
+    and stable ``(event_id, event_tag)`` keys from reallocation / waterfall paths.
+    Per-receipt failures are logged and skipped so one bad ID does not abort the batch.
+    """
+    touched = 0
+    for rid in get_repayment_ids_for_value_date(as_of_date):
+        try:
+            reallocate_repayment(rid, system_config=sys_cfg)
+            touched += 1
+        except Exception as ex:
+            _logger.warning(
+                "replay_refresh_allocations: reallocate_repayment failed for repayment_id=%s: %s",
+                rid,
+                ex,
+            )
+    for lid in get_liquidation_repayment_ids_for_value_date(as_of_date):
+        try:
+            allocate_repayment_waterfall(lid, system_config=sys_cfg)
+            touched += 1
+        except Exception as ex:
+            _logger.warning(
+                "replay_refresh_allocations: allocate_repayment_waterfall failed for repayment_id=%s: %s",
+                lid,
+                ex,
+            )
+    return touched
+
+
 def _run_eom_regular_interest_income_recognition(
     as_of_date: date,
     period_cfg: Any,
@@ -1793,6 +1834,7 @@ def run_eod_for_date(
     *,
     skip_reallocate_after_reversals: bool = False,
     allow_system_date_eod: bool = False,
+    replay_refresh_allocations: bool = False,
 ) -> EODResult:
     """
     Orchestrate EOD for a given calendar date.
@@ -1803,6 +1845,11 @@ def run_eod_for_date(
 
     When skip_reallocate_after_reversals=True (e.g. when called from reallocate_repayment),
     the reallocate step is skipped to avoid infinite recursion.
+
+    When replay_refresh_allocations=True (EOD backfill/replay only), before the loan engine
+    runs, all posted receipts on ``as_of_date`` are re-run through reallocation or waterfall
+    so allocation and GL stay consistent after data fixes. The later
+    ``reallocate_after_reversals`` stage is skipped (redundant with the full-day refresh).
 
     Policy guard:
     - Replay/backfill must not accrue on system date (or future dates).
@@ -1837,6 +1884,7 @@ def run_eod_for_date(
         reallocate_after_reversals = (
             bool(tasks_cfg.get("reallocate_after_reversals", True))
             and not skip_reallocate_after_reversals
+            and not replay_refresh_allocations
         )
         post_accounting = bool(tasks_cfg.get("post_accounting_events", False))
         generate_statements = bool(tasks_cfg.get("generate_statements", False))
@@ -1850,6 +1898,7 @@ def run_eod_for_date(
         if policy_mode not in {"strict", "hybrid", "best_effort"}:
             policy_mode = "hybrid"
         blocking_default = [
+            "replay_refresh_allocations",
             "loan_engine",
             "reallocate_after_reversals",
             "apply_unapplied_to_arrears",
@@ -1941,38 +1990,51 @@ def run_eod_for_date(
                     raise StageExecutionError(stage_name, error_message)
                 run_status = "DEGRADED"
     
+        # Replay/backfill exemption: any GL posts triggered during this run use
+        # eod_replay policy (calendar-month and closed-period restrictions bypassed).
+        policy_scope = (
+            use_gl_posting_policy("eod_replay")
+            if replay_refresh_allocations
+            else nullcontext()
+        )
         try:
-            _stage(
-                "loan_engine",
-                run_loan_engine,
-                lambda: _run_loan_engine_for_date(
-                    as_of_date,
-                    sys_cfg,
-                    allow_system_date_eod=allow_system_date_eod,
-                ),
-            )
-            _stage(
-                "reallocate_after_reversals",
-                run_loan_engine and reallocate_after_reversals,
-                lambda: _reallocate_receipts_after_reversals(as_of_date, sys_cfg),
-            )
-            _stage(
-                "apply_unapplied_to_arrears",
-                run_loan_engine and apply_unapplied,
-                lambda: _apply_unapplied_funds_to_arrears(as_of_date, sys_cfg),
-            )
-            _stage("accounting_events", post_accounting, lambda: _run_accounting_events(as_of_date, sys_cfg))
-            _stage(
-                "equity_period_close",
-                post_accounting,
-                lambda: _run_equity_period_close(as_of_date, sys_cfg),
-            )
-            _stage(
-                "statements",
-                generate_statements or snapshot_financial_statements,
-                lambda: _run_statement_batch(as_of_date, sys_cfg),
-            )
-            _stage("notifications", send_notifications, lambda: _run_notification_batch(as_of_date, sys_cfg))
+            with policy_scope:
+                _stage(
+                    "replay_refresh_allocations",
+                    replay_refresh_allocations and run_loan_engine,
+                    lambda: _replay_refresh_allocations_for_date(as_of_date, sys_cfg),
+                )
+                _stage(
+                    "loan_engine",
+                    run_loan_engine,
+                    lambda: _run_loan_engine_for_date(
+                        as_of_date,
+                        sys_cfg,
+                        allow_system_date_eod=allow_system_date_eod,
+                    ),
+                )
+                _stage(
+                    "reallocate_after_reversals",
+                    run_loan_engine and reallocate_after_reversals,
+                    lambda: _reallocate_receipts_after_reversals(as_of_date, sys_cfg),
+                )
+                _stage(
+                    "apply_unapplied_to_arrears",
+                    run_loan_engine and apply_unapplied,
+                    lambda: _apply_unapplied_funds_to_arrears(as_of_date, sys_cfg),
+                )
+                _stage("accounting_events", post_accounting, lambda: _run_accounting_events(as_of_date, sys_cfg))
+                _stage(
+                    "equity_period_close",
+                    post_accounting,
+                    lambda: _run_equity_period_close(as_of_date, sys_cfg),
+                )
+                _stage(
+                    "statements",
+                    generate_statements or snapshot_financial_statements,
+                    lambda: _run_statement_batch(as_of_date, sys_cfg),
+                )
+                _stage("notifications", send_notifications, lambda: _run_notification_batch(as_of_date, sys_cfg))
         except StageExecutionError:
             finished = datetime.now(timezone.utc)
             try:

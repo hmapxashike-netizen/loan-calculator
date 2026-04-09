@@ -68,6 +68,7 @@ from .product_catalog import (
 )
 from .reallocation import reallocate_repayment
 from .repayment_queries import (
+    get_liquidation_repayment_ids_for_value_date,
     get_loan_ids_with_reversed_receipts_on_date,
     get_repayment_ids_for_loan_and_date,
     get_repayment_ids_for_value_date,

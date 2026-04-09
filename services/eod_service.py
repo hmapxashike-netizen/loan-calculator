@@ -41,7 +41,7 @@ def run_full_eod_advance_system_date(*, skip_tick: bool = False) -> dict[str, An
 
 def run_backfill_eod_for_date(as_of_date: date):
     """Backfill EOD for a date; does not advance system date."""
-    return run_eod_for_date(as_of_date)
+    return run_eod_for_date(as_of_date, replay_refresh_allocations=True)
 
 
 def is_another_eod_session_active_safe() -> bool:

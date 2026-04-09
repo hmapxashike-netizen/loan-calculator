@@ -24,6 +24,28 @@ def get_repayment_ids_for_value_date(value_date: date) -> list[int]:
             return [int(r[0]) for r in cur.fetchall()]
 
 
+def get_liquidation_repayment_ids_for_value_date(value_date: date) -> list[int]:
+    """
+    Posted system liquidation repayment IDs (unapplied funds allocation) on value_date.
+
+    Same date rule as :func:`get_repayment_ids_for_value_date` (value_date or payment_date).
+    Ordered by ``id`` for deterministic replay.
+    """
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id FROM loan_repayments
+                WHERE status = 'posted'
+                  AND COALESCE(reference, '') = 'Unapplied funds allocation'
+                  AND (COALESCE(value_date, payment_date))::date = %s::date
+                ORDER BY id
+                """,
+                (value_date,),
+            )
+            return [int(r[0]) for r in cur.fetchall()]
+
+
 def get_loan_ids_with_reversed_receipts_on_date(value_date: date) -> list[int]:
     """
     Loan IDs that have at least one reversed receipt on the given value_date.

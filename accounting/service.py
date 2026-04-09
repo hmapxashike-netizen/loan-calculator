@@ -5,6 +5,8 @@ from datetime import date
 from decimal import Decimal
 import json
 import psycopg2
+from psycopg2.extras import RealDictCursor
+from config import get_database_url
 from decimal_utils import as_10dp, as_2dp
 from loan_management import load_system_config_from_db, _merge_cash_gl_into_payload
 
@@ -29,6 +31,37 @@ from .periods import (
     is_eoy,
     normalize_accounting_period_config,
 )
+from .posting_policy import get_gl_posting_policy
+
+# Journals with these tags zero nominal I&E into equity at month-end; exclude from P&L *reports*
+# so period totals show operating activity. GL close logic must NOT use this filter.
+# DAL also excludes journal_entries.event_id starting with PNL_CLOSE: when this tuple includes
+# MONTH_END_PNL (matches post_month_end_pnl_close_to_cye idempotency keys; covers untagged legacy).
+PNL_REPORT_EXCLUDED_EVENT_TAGS: tuple[str, ...] = ("MONTH_END_PNL",)
+
+
+def _get_system_business_date_strict() -> date:
+    """
+    Read system business date without fallback to wall-clock date.
+
+    GL posting policy must anchor to configured business date only.
+    """
+    conn = psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT current_system_date FROM system_business_config WHERE id = %s",
+                (1,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row or not row.get("current_system_date"):
+        raise RuntimeError(
+            "System business date is not configured. Set system_business_config.current_system_date before posting GL."
+        )
+    d = row["current_system_date"]
+    return d.date() if hasattr(d, "date") else d
 
 
 @dataclass(frozen=True)
@@ -540,8 +573,13 @@ class AccountingService:
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
-            # P&L is Income and Expense
-            balances = repo.get_balances_by_category(['INCOME', 'EXPENSE'], start_date, end_date)
+            # P&L is Income and Expense (exclude month-end close journals; GL clearing unchanged)
+            balances = repo.get_balances_by_category(
+                ["INCOME", "EXPENSE"],
+                start_date,
+                end_date,
+                exclude_event_tags=PNL_REPORT_EXCLUDED_EVENT_TAGS,
+            )
             return balances
         finally:
             conn.close()
@@ -562,7 +600,10 @@ class AccountingService:
         try:
             repo = AccountingRepository(conn)
             rows = repo.get_balances_by_category(
-                ["INCOME", "EXPENSE"], start_date=start_date, end_date=end_date
+                ["INCOME", "EXPENSE"],
+                start_date=start_date,
+                end_date=end_date,
+                exclude_event_tags=PNL_REPORT_EXCLUDED_EVENT_TAGS,
             )
             return net_profit_loss_from_balance_rows(rows)
         finally:
@@ -587,7 +628,10 @@ class AccountingService:
                 ["ASSET", "LIABILITY", "EQUITY"], end_date=as_of_date
             )
             pl_rows = repo.get_balances_by_category(
-                ["INCOME", "EXPENSE"], start_date=pl_period_start, end_date=as_of_date
+                ["INCOME", "EXPENSE"],
+                start_date=pl_period_start,
+                end_date=as_of_date,
+                exclude_event_tags=PNL_REPORT_EXCLUDED_EVENT_TAGS,
             )
             net = net_profit_loss_from_balance_rows(pl_rows)
             return {
@@ -661,6 +705,8 @@ class AccountingService:
                 event_tag,
                 created_by,
                 lines,
+                posting_policy="standard",
+                gl_anchor_date=_get_system_business_date_strict(),
             )
             return {"status": "posted", "event_id": event_id, "period_key": period_key}
         finally:
@@ -765,6 +811,8 @@ class AccountingService:
                 event_tag,
                 created_by,
                 lines,
+                posting_policy="standard",
+                gl_anchor_date=_get_system_business_date_strict(),
             )
             return {"status": "posted", "event_id": event_id, "fiscal_year_end": str(fy_end)}
         finally:
@@ -785,7 +833,12 @@ class AccountingService:
         try:
             repo = AccountingRepository(conn)
             balances = repo.get_balances_by_category(['ASSET', 'LIABILITY'], start_date, end_date)
-            pnl = repo.get_balances_by_category(['INCOME', 'EXPENSE'], start_date, end_date)
+            pnl = repo.get_balances_by_category(
+                ["INCOME", "EXPENSE"],
+                start_date,
+                end_date,
+                exclude_event_tags=PNL_REPORT_EXCLUDED_EVENT_TAGS,
+            )
             return {"balances": balances, "pnl": pnl}
         finally:
             conn.close()
@@ -858,6 +911,8 @@ class AccountingService:
         return lines
 
     def save_period_close_snapshots(self, *, as_of_date: date, generated_by: str = "system"):
+        # v2: P&L and cash-flow P&L legs exclude MONTH_END_PNL (economic activity); TB/BS unchanged.
+        snapshot_calc_pl_cf = "v2"
         system_cfg = load_system_config_from_db() or {}
         period_cfg = normalize_accounting_period_config(system_cfg)
         month_bounds = get_month_period_bounds(as_of_date, period_cfg)
@@ -888,7 +943,12 @@ class AccountingService:
                 )
                 saved.append({"statement_type": "TRIAL_BALANCE", **period_label})
 
-                pl = repo.get_balances_by_category(["INCOME", "EXPENSE"], start_date, end_date)
+                pl = repo.get_balances_by_category(
+                    ["INCOME", "EXPENSE"],
+                    start_date,
+                    end_date,
+                    exclude_event_tags=PNL_REPORT_EXCLUDED_EVENT_TAGS,
+                )
                 repo.create_statement_snapshot(
                     statement_type="PROFIT_AND_LOSS",
                     period_type=period_type,
@@ -896,6 +956,7 @@ class AccountingService:
                     period_end_date=end_date,
                     source_ledger_cutoff_date=end_date,
                     generated_by=generated_by,
+                    calculation_version=snapshot_calc_pl_cf,
                     lines=self._rows_to_snapshot_lines(pl, mode="income_expense"),
                 )
                 saved.append({"statement_type": "PROFIT_AND_LOSS", **period_label})
@@ -925,7 +986,12 @@ class AccountingService:
                 saved.append({"statement_type": "CHANGES_IN_EQUITY", **period_label})
 
                 cf_bal = repo.get_balances_by_category(["ASSET", "LIABILITY"], start_date, end_date)
-                cf_pnl = repo.get_balances_by_category(["INCOME", "EXPENSE"], start_date, end_date)
+                cf_pnl = repo.get_balances_by_category(
+                    ["INCOME", "EXPENSE"],
+                    start_date,
+                    end_date,
+                    exclude_event_tags=PNL_REPORT_EXCLUDED_EVENT_TAGS,
+                )
                 cf_lines = self._rows_to_snapshot_lines(cf_bal, mode="trial_balance")
                 cf_lines.extend(self._rows_to_snapshot_lines(cf_pnl, mode="income_expense"))
                 repo.create_statement_snapshot(
@@ -935,6 +1001,7 @@ class AccountingService:
                     period_end_date=end_date,
                     source_ledger_cutoff_date=end_date,
                     generated_by=generated_by,
+                    calculation_version=snapshot_calc_pl_cf,
                     lines=cf_lines,
                 )
                 saved.append({"statement_type": "CASH_FLOW", **period_label})
@@ -1141,9 +1208,12 @@ class AccountingService:
         is_reversal: bool = False,
         loan_id: int | None = None,
         repayment_id: int | None = None,
+        posting_policy: str | None = None,
     ):
+        policy = posting_policy or get_gl_posting_policy()
+        anchor_date = _get_system_business_date_strict() if policy == "standard" else None
         if entry_date is None:
-            entry_date = date.today()
+            entry_date = anchor_date if anchor_date is not None else _get_system_business_date_strict()
         
         if payload is None:
             payload = {}
@@ -1225,7 +1295,17 @@ class AccountingService:
                 self._validate_not_posting_to_parent_after_transition(conn, entry_date, lines)
 
             if lines:
-                repo.save_journal_entry(entry_date, reference, description, event_id, event_type, created_by, lines)
+                repo.save_journal_entry(
+                    entry_date,
+                    reference,
+                    description,
+                    event_id,
+                    event_type,
+                    created_by,
+                    lines,
+                    posting_policy=policy,
+                    gl_anchor_date=anchor_date,
+                )
         except Exception as e:
             raise e
         finally:
