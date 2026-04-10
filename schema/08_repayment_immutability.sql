@@ -1,5 +1,5 @@
 -- Strengthen immutability and value-date semantics for loan_repayments.
--- Run on lms_db after 04_loan_repayments.sql and 05_teller_repayments.sql.
+-- Run on farndacred_db after 04_loan_repayments.sql and 05_teller_repayments.sql.
 
 -- 1) Add optional link to original repayment (for reversals)
 DO $$

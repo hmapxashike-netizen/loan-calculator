@@ -1,5 +1,5 @@
 -- Stores waterfall-driven allocation of each receipt across loan buckets.
--- Run on lms_db after 04_loan_repayments.sql, 05_teller_repayments.sql, and 07_loan_daily_state.sql.
+-- Run on farndacred_db after 04_loan_repayments.sql, 05_teller_repayments.sql, and 07_loan_daily_state.sql.
 
 CREATE TABLE IF NOT EXISTS loan_repayment_allocation (
     id                          SERIAL PRIMARY KEY,

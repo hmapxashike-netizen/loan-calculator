@@ -587,7 +587,6 @@ def eod_ui():
         loan_management_available=_loan_management_available,
         loan_management_error=_loan_management_error or "",
         load_system_config_from_db=globals().get("load_system_config_from_db"),
-        is_admin=_user_is_admin(),
     )
 
 

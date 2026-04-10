@@ -1,4 +1,4 @@
--- Run this script connected to database: lms_db
+-- Run this script connected to database: farndacred_db
 -- Adds period-to-date columns so statements can read pre-aggregated penalty/default/regular
 -- interest for the current schedule period (no summing over days).
 

@@ -241,8 +241,10 @@ class Loan:
             self.interest_accrued_balance = _q10(
                 self.interest_accrued_balance - amount_from_accrued
             )
+            # Instalment interest becomes due in arrears; only add the portion not already
+            # netted out of accrued (adding full component would double-count accrued overlap).
             self.interest_arrears = _q10(
-                self.interest_arrears + entry.interest_component
+                self.interest_arrears + entry.interest_component - amount_from_accrued
             )
 
     def _accrue_default_and_penalty_interest(self) -> None:

@@ -1881,6 +1881,11 @@ def generate_customer_facing_flow_statement(
     repayment bucket allocations, and unapplied ledger rows. **No mid-statement balance
     snap** — ``Balance`` is a running total; ``Unapplied funds`` runs from signed deltas.
 
+    Interest accruals dated the **statement end date** are omitted when there is no drawdown,
+    receipt, or loan-moving unapplied activity on that day, so the running balance matches
+    end-of-prior-day totals for that boundary (uses **end_date**, not the machine clock—works
+    for historical periods). Align roll-up cap with ``min(system date, end_date)`` in the UI.
+
     Arrears strategy:
     - ``end_snapshot`` (default): total delinquency **as at** ``end_date`` on every movement row.
     - ``by_row_date``: total delinquency snapped by each row date from ``loan_daily_state``.
@@ -1892,6 +1897,7 @@ def generate_customer_facing_flow_statement(
     from reporting.statement_events import (
         apply_dual_running_customer_events,
         build_merged_customer_flow_events,
+        exclude_statement_end_accruals_without_activity,
         reconcile_running_to_loan_daily_state,
         total_outstanding_decimal,
     )
@@ -1919,6 +1925,11 @@ def generate_customer_facing_flow_statement(
     opening_loan = total_outstanding_decimal(prior_ds) if prior_ds else Decimal("0")
 
     merged, opening_unapplied = build_merged_customer_flow_events(loan_id, start, end)
+    merged, flow_excluded_same_day_accrual = exclude_statement_end_accruals_without_activity(
+        list(merged),
+        statement_end=end,
+        window_start=start,
+    )
     dual = apply_dual_running_customer_events(merged, opening_loan, opening_unapplied)
 
     ds_end = get_loan_daily_state_balances(loan_id, end)
@@ -1963,10 +1974,13 @@ def generate_customer_facing_flow_statement(
 
     loan_closing = dual[-1][1] if dual else opening_loan
     unapplied_closing = dual[-1][2] if dual else opening_unapplied
+    closing_as_of = end
+    if flow_excluded_same_day_accrual:
+        closing_as_of = end - timedelta(days=1)
     out.append(
         {
-            "Due Date": end,
-            "Narration": f"Total outstanding (flow) as at {end.isoformat()}",
+            "Due Date": closing_as_of,
+            "Narration": f"Total outstanding (flow) as at {closing_as_of.isoformat()}",
             "Debits": 0.0,
             "Credits": 0.0,
             "Balance": _f3(loan_closing),
@@ -1975,7 +1989,12 @@ def generate_customer_facing_flow_statement(
         }
     )
 
-    recon = reconcile_running_to_loan_daily_state(loan_closing, loan_id, end)
+    recon_asof = end
+    if flow_excluded_same_day_accrual:
+        prev_eod = end - timedelta(days=1)
+        if get_loan_daily_state_balances(loan_id, prev_eod):
+            recon_asof = prev_eod
+    recon = reconcile_running_to_loan_daily_state(loan_closing, loan_id, recon_asof)
     meta = {
         "loan_id": loan_id,
         "customer_id": loan.get("customer_id"),
@@ -1983,6 +2002,9 @@ def generate_customer_facing_flow_statement(
         "end_date": end,
         "statement_type": "customer_facing_flow",
         "arrears_mode": arrears_mode,
+        "flow_excluded_same_day_accrual": flow_excluded_same_day_accrual,
+        "closing_balance_as_of_date": closing_as_of,
+        "reconcile_loan_total_as_of": recon_asof,
         "opening_loan": _f3(opening_loan),
         "opening_unapplied": _f3(opening_unapplied),
         "reconcile_loan_total": recon,

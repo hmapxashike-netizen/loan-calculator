@@ -12,7 +12,6 @@ import streamlit as st
 from style import render_main_header, render_sub_header, render_sub_sub_header
 
 from services import eod_service
-from ui.streamlit_feedback import run_with_spinner
 
 
 def _format_eod_duration_seconds(seconds: Any) -> str:
@@ -33,52 +32,12 @@ def _format_eod_duration_seconds(seconds: Any) -> str:
     return f"{m}m {rem:.1f}s"
 
 
-def _render_eod_admin_system_date_tab() -> None:
-    """Administrative override of system business date (database row id=1)."""
-    from eod.system_business_date import get_effective_date, set_current_system_date
-
-    render_sub_sub_header("Set system business date")
-    st.warning(
-        "This **overwrites** `system_business_config.current_system_date`. "
-        "Accruals, amount due, and EOD all depend on this value. "
-        "Moving the date **backward** without replaying EOD can leave `loan_daily_state` inconsistent "
-        "with history; after migrations, prefer backfill EOD for the affected range. "
-        "Moving **forward** skips calendar days unless you run EOD for them."
-    )
-    cur = get_effective_date()
-    st.caption(f"Current system date (before change): **{cur.isoformat()}**")
-    new_date = st.date_input("New system business date", value=cur, key="eod_admin_new_system_date")
-    confirm = st.text_input(
-        'Type **SET DATE** to enable “Apply”',
-        key="eod_admin_set_date_confirm",
-        placeholder="SET DATE",
-    )
-    if st.button(
-        "Apply new system date",
-        type="primary",
-        key="eod_admin_apply_system_date",
-        disabled=(confirm or "").strip() != "SET DATE",
-    ):
-
-        def _apply() -> tuple[bool, str]:
-            ok = set_current_system_date(new_date)
-            return ok, new_date.isoformat()
-
-        ok, iso = run_with_spinner("Updating system business date…", _apply)
-        if ok:
-            st.success(f"System business date set to **{iso}**.")
-            st.rerun()
-        else:
-            st.error("Update failed. Check server logs and database connectivity.")
-
-
 def render_eod_ui(
     *,
     get_system_config: Callable[[], dict[str, Any]],
     loan_management_available: bool,
     loan_management_error: str,
     load_system_config_from_db: Callable[[], dict | None] | None,
-    is_admin: bool = False,
 ) -> None:
     """EOD page: business context from ``eod_service``; config from injected ``get_system_config``."""
     ctx = eod_service.get_eod_business_context()
@@ -94,12 +53,7 @@ def render_eod_ui(
             unsafe_allow_html=True,
         )
 
-    if is_admin:
-        _tab_advance, _tab_fix, _tab_admin = st.tabs(
-            ["EOD Date advance", "Fix EOD issues", "Admin — system date"]
-        )
-    else:
-        _tab_advance, _tab_fix = st.tabs(["EOD Date advance", "Fix EOD issues"])
+    _tab_advance, _tab_fix = st.tabs(["EOD Date advance", "Fix EOD issues"])
 
     def _eod_date_advance_body() -> None:
         cfg = get_system_config()
@@ -427,6 +381,3 @@ def render_eod_ui(
         _eod_date_advance_body()
     with _tab_fix:
         _eod_fix_issues_body()
-    if is_admin:
-        with _tab_admin:
-            _render_eod_admin_system_date_tab()

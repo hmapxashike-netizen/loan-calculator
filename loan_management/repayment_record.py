@@ -34,8 +34,8 @@ def record_repayment(
     system_date: when captured (default = now)
     Returns repayment id.
     Reversals must use reverse_repayment(); negative amounts are rejected.
-    source_cash_gl_account_id: posting leaf UUID for cash on this receipt; must appear in the
-    configured source-cash cache (under A100000 tree rules).
+    source_cash_gl_account_id: posting leaf UUID **or** GL **code** for cash on this receipt; must
+    appear in the configured source-cash cache (under A100000 tree rules).
     """
     if amount <= 0:
         raise ValueError(
@@ -90,7 +90,7 @@ def record_repayments_batch(rows: list[dict]) -> tuple[int, int, list[str]]:
     """
     Record multiple repayments. Each row: loan_id, amount, payment_date, customer_reference,
     company_reference, value_date (optional), system_date (optional),
-    source_cash_gl_account_id (required UUID — must be in the configured source-cash cache).
+    source_cash_gl_account_id (required: UUID or GL **code** — must be in the configured source-cash cache).
     Returns (success_count, fail_count, list of error messages).
     """
     success = 0

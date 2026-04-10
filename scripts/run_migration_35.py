@@ -8,7 +8,7 @@ def run_migration():
     conn = psycopg2.connect(
         host=_env_with_legacy("FARNDACRED_DB_HOST", "LMS_DB_HOST", "localhost"),
         port=_env_with_legacy("FARNDACRED_DB_PORT", "LMS_DB_PORT", "5432"),
-        dbname=_env_with_legacy("FARNDACRED_DB_NAME", "LMS_DB_NAME", "lms_db"),
+        dbname=_env_with_legacy("FARNDACRED_DB_NAME", "LMS_DB_NAME", "farndacred_db"),
         user=_env_with_legacy("FARNDACRED_DB_USER", "LMS_DB_USER", "postgres"),
         password=_env_with_legacy("FARNDACRED_DB_PASSWORD", "LMS_DB_PASSWORD", "postgres"),
     )

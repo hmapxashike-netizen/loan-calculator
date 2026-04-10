@@ -1,4 +1,4 @@
-"""EOD configurations tab (business date widget + JSON-backed EOD settings)."""
+"""EOD configurations tab (read-only system date display + JSON-backed EOD settings)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,11 @@ def render_eod_config_tab(
     accrual_start_convention_selected,
 ) -> EodConfigSnapshot:
     render_sub_sub_header("System business date")
-    st.caption("Accruals and Amount Due use the system date, not the calendar.")
+    st.caption(
+        "Accruals and Amount Due use the system date, not the calendar. "
+        "It advances when **EOD Date advance** completes successfully (or is restored from a database backup). "
+        "It is **not** editable here—see **docs/DATABASE_BACKUP_RESTORE.md** for backup/restore."
+    )
     try:
         from eod.system_business_date import (
             get_system_business_config,
@@ -42,18 +46,10 @@ def render_eod_config_tab(
         )
 
         sb_cfg = get_system_business_config()
-        new_date = st.date_input(
-            "Current system date",
-            value=sb_cfg["current_system_date"],
-            key="syscfg_system_date",
+        st.info(
+            f"**Current system date:** `{sb_cfg['current_system_date']}` "
+            "(from `system_business_config` in the database)."
         )
-        if new_date != sb_cfg["current_system_date"]:
-            if st.button("Update system date", key="syscfg_update_date"):
-                if set_system_business_config(current_system_date=new_date):
-                    st.success("System date updated.")
-                    st.rerun()
-                else:
-                    st.error("Failed to update.")
         rt = sb_cfg["eod_auto_run_time"]
         h = getattr(rt, "hour", 23)
         m = getattr(rt, "minute", 0)

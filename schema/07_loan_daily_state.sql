@@ -1,4 +1,4 @@
--- Run this script connected to database: lms_db
+-- Run this script connected to database: farndacred_db
 -- Stores daily loan bucket balances for value-dated allocation and reporting.
 
 CREATE TABLE IF NOT EXISTS loan_daily_state (

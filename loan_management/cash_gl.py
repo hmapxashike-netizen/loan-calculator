@@ -8,19 +8,6 @@ from typing import Any
 from .product_catalog import load_system_config_from_db
 
 
-def _parse_optional_uuid_str(val: Any) -> str | None:
-    """Return canonical UUID string or None; raises ValueError if non-empty but invalid."""
-    if val is None:
-        return None
-    s = str(val).strip()
-    if not s:
-        return None
-    try:
-        return str(uuid.UUID(s))
-    except ValueError as e:
-        raise ValueError(f"Invalid UUID for GL account reference: {val!r}") from e
-
-
 SOURCE_CASH_ACCOUNT_CACHE_KEY = "source_cash_account_cache"
 SOURCE_CASH_TREE_ROOT_CODE = "A100000"
 
@@ -41,7 +28,11 @@ def validate_source_cash_gl_account_id_for_new_posting(
     field_label: str = "Cash account",
 ) -> str:
     """
-    Require a populated source-cash cache and an account id that appears in it.
+    Require a populated source-cash cache and a reference that appears in it.
+
+    Accepts either the account **UUID** (as stored in the database) or the account **code**
+    (e.g. from the chart or Excel), matched exactly against the cached entries.
+
     Returns canonical UUID string.
     """
     entries = get_cached_source_cash_account_entries()
@@ -53,16 +44,40 @@ def validate_source_cash_gl_account_id_for_new_posting(
         )
     if account_uuid is None or str(account_uuid).strip() == "":
         raise ValueError(f"{field_label} is required.")
-    canonical = _parse_optional_uuid_str(account_uuid)
-    if canonical is None:
-        raise ValueError(f"Invalid {field_label} UUID.")
-    allowed = {str(e.get("id")) for e in entries if e.get("id")}
-    if canonical not in allowed:
+    raw = str(account_uuid).strip()
+    allowed_ids = {str(e.get("id")) for e in entries if e.get("id")}
+
+    parsed_uuid: str | None = None
+    try:
+        parsed_uuid = str(uuid.UUID(raw))
+    except ValueError:
+        pass
+
+    if parsed_uuid is not None:
+        if parsed_uuid in allowed_ids:
+            return parsed_uuid
         raise ValueError(
             f"{field_label} is not in the allowed list (posting leaves under **{SOURCE_CASH_TREE_ROOT_CODE}** per branch). "
             "Pick an account from the dropdown or rebuild the cache after chart changes."
         )
-    return canonical
+
+    code_matches = [
+        e for e in entries if str(e.get("code") or "").strip() == raw
+    ]
+    if len(code_matches) > 1:
+        raise ValueError(
+            f"{field_label}: ambiguous GL code {raw!r} ({len(code_matches)} cache entries). "
+            "Fix duplicate codes under the source-cash tree or use the account UUID."
+        )
+    if len(code_matches) == 1:
+        mid = code_matches[0].get("id")
+        if mid:
+            return str(uuid.UUID(str(mid)))
+
+    raise ValueError(
+        f"{field_label}: not a valid UUID or a known source-cash account **code** under **{SOURCE_CASH_TREE_ROOT_CODE}**. "
+        "Use the exact code from the chart (or the UUID from the Teller dropdown), and rebuild the cache after chart changes."
+    )
 
 
 def _merge_cash_gl_into_payload(

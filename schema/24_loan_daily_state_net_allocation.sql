@@ -1,4 +1,4 @@
--- Run on lms_db after 23_loan_daily_state_credits.sql
+-- Run on farndacred_db after 23_loan_daily_state_credits.sql
 -- Per-day net allocation (used to reduce a balance) and unallocated (unapplied).
 -- For each day: net_allocation + unallocated = credit (total payment flow that day).
 

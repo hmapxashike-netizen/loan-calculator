@@ -6,7 +6,7 @@ import base64
 import html as html_module
 import json
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from io import BytesIO
 
 import pandas as pd
@@ -590,11 +590,22 @@ button[aria-label="Generate"]{
                                         else:
                                             disb_r = None
                                         sys_biz = get_system_date()
+                                        if hasattr(sys_biz, "date"):
+                                            sys_biz = sys_biz.date()
+                                        stmt_end = meta.get("end_date")
+                                        if hasattr(stmt_end, "date"):
+                                            stmt_end = stmt_end.date()
+                                        rollup_cap = sys_biz
+                                        if (
+                                            isinstance(stmt_end, date)
+                                            and isinstance(sys_biz, date)
+                                        ):
+                                            rollup_cap = min(stmt_end, sys_biz)
                                         rows = rollup_flow_statement_rows_for_display(
                                             rows,
                                             loan_id=loan_id,
                                             disbursement_date=disb_r,
-                                            system_business_date=sys_biz,
+                                            system_business_date=rollup_cap,
                                         )
                                         recalculate_flow_statement_running_balances(
                                             rows,

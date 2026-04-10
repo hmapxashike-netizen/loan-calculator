@@ -1,5 +1,5 @@
 -- Provisioning: security maintenance (haircuts), PD bands by DPD, loan collateral capture fields.
--- Run on lms_db after 52_loan_daily_state_interest_in_suspense_balances.sql
+-- Run on farndacred_db after 52_loan_daily_state_interest_in_suspense_balances.sql
 
 CREATE TABLE IF NOT EXISTS provision_security_subtypes (
     id                          SERIAL PRIMARY KEY,

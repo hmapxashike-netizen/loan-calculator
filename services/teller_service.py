@@ -92,7 +92,7 @@ def parse_batch_repayment_rows_from_dataframe(
                 src_gl = str(raw_gl).strip() or None
             if not src_gl:
                 parse_errors.append(
-                    f"Row {i + 2}: source_cash_gl_account_id is required (posting account UUID from chart)"
+                    f"Row {i + 2}: source_cash_gl_account_id is required (posting account UUID or GL **code**, e.g. from chart)"
                 )
                 continue
             valid_rows.append(

@@ -1,4 +1,4 @@
--- Run on lms_db after 28_loan_fee_amounts.sql
+-- Run on farndacred_db after 28_loan_fee_amounts.sql
 --
 -- Align ALL numeric columns (except dates) to NUMERIC(22,10).
 -- Ensures consistent precision across storage and computation.

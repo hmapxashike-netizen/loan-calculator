@@ -8,38 +8,42 @@
    ```
    Or in `psql`: `\i 01_create_database.sql` (after connecting to `postgres`).
 
-2. **Create tables** (connect to `lms_db`):
+   **Already using `lms_db`?** Stop the app, disconnect all sessions, connect to `postgres`, then:
+   `ALTER DATABASE lms_db RENAME TO farndacred_db;`  
+   Update `.env` / `FARNDACRED_DATABASE_URL` / Streamlit `[postgres]` database name to `farndacred_db`.
+
+2. **Create tables** (connect to `farndacred_db`):
    ```bash
-   psql -U postgres -d lms_db -f 02_schema.sql
+   psql -U postgres -d farndacred_db -f 02_schema.sql
    ```
 
 3. **Customer module** (individuals, corporates, addresses, contact persons, directors, shareholders):
    ```bash
-   psql -U postgres -d lms_db -f 03_customers.sql
+   psql -U postgres -d farndacred_db -f 03_customers.sql
    ```
    This adds `type` and `status` to `customers`, creates related tables, and migrates existing name/email/phone into `individuals`.
 
 4. **Loan repayments and loan-detail fields** (for Capture Loan and recording actual payments):
    ```bash
-   psql -U postgres -d lms_db -f 04_loan_repayments.sql
+   psql -U postgres -d farndacred_db -f 04_loan_repayments.sql
    ```
    Adds `first_repayment_date` and `payment_timing` to `loans`, and creates `loan_repayments` for payment/receipt details.
 
 5. **System business date** (decouples business date from calendar):
    ```bash
-   psql -U postgres -d lms_db -f 26_system_business_config.sql
+   psql -U postgres -d farndacred_db -f 26_system_business_config.sql
    ```
    Creates `system_business_config` with `current_system_date`, `eod_auto_run_time`, `is_auto_eod_enabled`.
 
 6. **Financial statement snapshots** (immutable period-close history):
    ```bash
-   psql -U postgres -d lms_db -f 39_financial_statement_snapshots.sql
+   psql -U postgres -d farndacred_db -f 39_financial_statement_snapshots.sql
    ```
    Creates `financial_statement_snapshots` and `financial_statement_snapshot_lines`.
 
 7. **EOD audit logging** (run/stage observability):
    ```bash
-   psql -U postgres -d lms_db -f 43_eod_audit_log.sql
+   psql -U postgres -d farndacred_db -f 43_eod_audit_log.sql
    ```
    Creates `eod_runs` and `eod_stage_events`.
 

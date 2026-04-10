@@ -1,4 +1,4 @@
--- Run this script connected to database: lms_db
+-- Run this script connected to database: farndacred_db
 -- One customer can have many loans; one loan can have many schedules (e.g. rescheduling).
 
 -- Extensions (optional, for UUID if you prefer uuid primary keys later)

@@ -1,4 +1,4 @@
--- Run this script connected to database: lms_db
+-- Run this script connected to database: farndacred_db
 -- Creates users and security_audit_log tables for authentication & audit.
 
 -- Enable extensions (idempotent)

@@ -10,7 +10,6 @@ from decimal_utils import as_10dp
 
 from .approval_journal import build_loan_approval_journal_payload
 from .cash_gl import (
-    _parse_optional_uuid_str,
     _post_event_for_loan,
     get_cached_source_cash_account_entries,
     validate_source_cash_gl_account_id_for_new_posting,
@@ -96,15 +95,18 @@ def save_loan(
         else None
     )
 
-    cash_gl_account_id = _parse_optional_uuid_str(details.get("cash_gl_account_id"))
-    if get_cached_source_cash_account_entries() and cash_gl_account_id is None:
+    _cash_raw = details.get("cash_gl_account_id")
+    _cash_s = None if _cash_raw is None else str(_cash_raw).strip()
+    _cash_entries = get_cached_source_cash_account_entries()
+    if _cash_entries and not _cash_s:
         raise ValueError(
             "Operating cash / bank GL at loan capture is required when the source cash account list is configured. "
             "Select an account in loan capture step 1 (same list as Teller), or clear the cache only if migrating legacy data."
         )
-    if cash_gl_account_id is not None:
-        validate_source_cash_gl_account_id_for_new_posting(
-            cash_gl_account_id,
+    cash_gl_account_id = None
+    if _cash_s:
+        cash_gl_account_id = validate_source_cash_gl_account_id_for_new_posting(
+            _cash_s,
             field_label="cash_gl_account_id",
         )
 

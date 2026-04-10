@@ -75,7 +75,7 @@ WSGI_APPLICATION = 'lms_main.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'lms_db',
+        'NAME': 'farndacred_db',
         'USER': 'postgres',
         'PASSWORD': 'M1k@y1@2017',  # Replace this with your actual pgAdmin password!
         'HOST': '127.0.0.1',

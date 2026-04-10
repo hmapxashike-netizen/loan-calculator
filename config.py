@@ -35,10 +35,10 @@ DB_USER = _env_with_legacy("FARNDACRED_DB_USER", "LMS_DB_USER", "postgres")
 DB_PASSWORD = _env_with_legacy("FARNDACRED_DB_PASSWORD", "LMS_DB_PASSWORD", "")  # no real password in code
 DB_HOST = _env_with_legacy("FARNDACRED_DB_HOST", "LMS_DB_HOST", "localhost")
 DB_PORT = _env_with_legacy("FARNDACRED_DB_PORT", "LMS_DB_PORT", "5432")
-DB_NAME = _env_with_legacy("FARNDACRED_DB_NAME", "LMS_DB_NAME", "lms_db")
+DB_NAME = _env_with_legacy("FARNDACRED_DB_NAME", "LMS_DB_NAME", "farndacred_db")
 
 def get_database_url() -> str:
-    """Build PostgreSQL connection URL for lms_db."""
+    """Build PostgreSQL connection URL for the application database (default name farndacred_db)."""
     # This checks if an environment variable exists first (useful for deployment)
     if os.environ.get("FARNDACRED_DATABASE_URL"):
         return os.environ.get("FARNDACRED_DATABASE_URL")

@@ -1,4 +1,4 @@
--- Run on lms_db after 07_loan_daily_state.sql
+-- Run on farndacred_db after 07_loan_daily_state.sql
 -- Credits = cumulative allocation affecting balances (payment +, reversal -).
 -- Only tracks amounts that reduce buckets (excludes unapplied).
 

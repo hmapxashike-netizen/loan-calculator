@@ -1052,6 +1052,15 @@ def _run_loan_engine_for_date(
         alloc = alloc_map.get(loan_id_int, dict(_EMPTY_ALLOC))
         yesterday_saved = yesterday_map.get(loan_id_int) if yesterday >= disb_date else None
 
+        # Contractual due on as_of_date (needed before interest_accrued persistence rule).
+        v_asof = apply_schedule_version_bumps(as_of_date, bumps)
+        rows_asof = _schedule_rows_for_version(ver_rows, v_asof)
+        try:
+            entries_asof = _build_schedule_entries(loan_row, rows_asof)
+        except ValueError:
+            entries_asof = list(engine_loan.schedule)
+        due_today = any(e.due_date == as_of_date for e in entries_asof)
+
         # Balance today = yesterday's balance + (engine today - engine yesterday) - allocations today.
         # So: interest_arrears_balance = yesterday_balance + new_arrears_today - receipts allocated to interest arrears.
         # Same for default interest, penalty interest, and all other buckets.
@@ -1068,7 +1077,30 @@ def _run_loan_engine_for_date(
 
         principal_not_due = _today_balance("principal_not_due", float(engine_loan.principal_not_due), engine_yesterday["principal_not_due"], "alloc_principal_not_due")
         principal_arrears = _today_balance("principal_arrears", float(engine_loan.principal_arrears), engine_yesterday["principal_arrears"], "alloc_principal_arrears")
-        interest_accrued_balance = _today_balance("interest_accrued_balance", float(engine_loan.interest_accrued_balance), engine_yesterday["interest_accrued_balance"], "alloc_interest_accrued")
+        # Interest accrued is not a waterfall receipt bucket: when nothing is allocated there,
+        # closing must follow persisted opening + today's scheduled daily accrual (matches
+        # ``regular_interest_daily`` / customer statement roll-ups). Engine delta can drift
+        # from saved state after receipts on other buckets; do not zero out accrual growth.
+        alloc_ia = float(alloc.get("alloc_interest_accrued", 0.0) or 0.0)
+        rd_add = float(engine_loan.last_regular_interest_daily or 0)
+        if (
+            not block_accruals
+            and yesterday_saved is not None
+            and "interest_accrued_balance" in yesterday_saved
+            and abs(alloc_ia) <= ARREARS_ZERO_TOLERANCE
+            and not due_today
+        ):
+            interest_accrued_balance = max(
+                0.0,
+                float(yesterday_saved.get("interest_accrued_balance", 0) or 0) + rd_add,
+            )
+        else:
+            interest_accrued_balance = _today_balance(
+                "interest_accrued_balance",
+                float(engine_loan.interest_accrued_balance),
+                engine_yesterday["interest_accrued_balance"],
+                "alloc_interest_accrued",
+            )
         interest_arrears_balance = _today_balance("interest_arrears_balance", float(engine_loan.interest_arrears), engine_yesterday["interest_arrears"], "alloc_interest_arrears")
         default_interest_balance = _today_balance("default_interest_balance", float(engine_loan.default_interest_balance), engine_yesterday["default_interest_balance"], "alloc_default_interest")
         penalty_interest_balance = _today_balance("penalty_interest_balance", float(engine_loan.penalty_interest_balance), engine_yesterday["penalty_interest_balance"], "alloc_penalty_interest")
@@ -1076,13 +1108,6 @@ def _run_loan_engine_for_date(
 
         # Non-due-date guard: arrears principal/interest must only move by persisted allocations.
         # This prevents hidden drift from engine/session recomputation on dates without due transitions.
-        v_asof = apply_schedule_version_bumps(as_of_date, bumps)
-        rows_asof = _schedule_rows_for_version(ver_rows, v_asof)
-        try:
-            entries_asof = _build_schedule_entries(loan_row, rows_asof)
-        except ValueError:
-            entries_asof = list(engine_loan.schedule)
-        due_today = any(e.due_date == as_of_date for e in entries_asof)
         # Period-to-date resets: any contractual due on any saved version (not latest only).
         due_yesterday = yesterday in all_schedule_due_dates_map.get(loan_id_int, frozenset())
         if yesterday_saved is not None and not due_today:

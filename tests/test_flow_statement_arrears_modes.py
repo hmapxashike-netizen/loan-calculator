@@ -62,7 +62,10 @@ def test_flow_arrears_mode_end_snapshot_keeps_single_eod_value(monkeypatch):
     )
 
     assert meta["arrears_mode"] == "end_snapshot"
-    assert [r["Arrears"] for r in rows] == [7.0, 7.0, 7.0]
+    assert meta.get("flow_excluded_same_day_accrual") is True
+    # System date 2025-01-02 has no receipt: same-day accrual dropped; one movement row + total.
+    assert len(rows) == 2
+    assert [r["Arrears"] for r in rows] == [7.0, 7.0]
 
 
 def test_flow_arrears_mode_by_row_date_tracks_daily_state_by_event_date(monkeypatch):
@@ -112,7 +115,111 @@ def test_flow_arrears_mode_by_row_date_tracks_daily_state_by_event_date(monkeypa
     )
 
     assert meta["arrears_mode"] == "by_row_date"
-    assert [r["Arrears"] for r in rows] == [4.0, 6.0, 7.0]
+    assert meta.get("flow_excluded_same_day_accrual") is True
+    assert [r["Arrears"] for r in rows] == [4.0, 7.0]
+
+
+def test_flow_excludes_end_day_accrual_even_when_effective_date_is_later(monkeypatch):
+    """Statement end is historical; live get_effective_date() must not disable end-day exclusion."""
+    monkeypatch.setattr(
+        rs,
+        "get_loan",
+        lambda loan_id: {"id": loan_id, "customer_id": 1, "disbursement_date": date(2025, 1, 1)},
+    )
+    monkeypatch.setattr(
+        rs,
+        "get_loan_daily_state_balances",
+        lambda loan_id, as_of_date: _mk_ds(total_delinquency_arrears="1"),
+    )
+    monkeypatch.setattr(
+        rs,
+        "_get_effective_date",
+        lambda: date(2030, 6, 1),
+    )
+    monkeypatch.setattr(
+        se,
+        "build_merged_customer_flow_events",
+        lambda loan_id, start_date, end_date: (
+            [
+                _mk_event(date(2025, 1, 1), "e1", debit="1"),
+                _mk_event(date(2025, 1, 2), "e2", debit="1"),
+            ],
+            Decimal("0"),
+        ),
+    )
+    monkeypatch.setattr(
+        se,
+        "reconcile_running_to_loan_daily_state",
+        lambda computed_closing, loan_id, as_of_date: {"ok": True},
+    )
+
+    rows, meta = rs.generate_customer_facing_flow_statement(
+        1,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 2),
+        allowed_customer_ids=None,
+        arrears_mode="end_snapshot",
+    )
+
+    assert meta.get("flow_excluded_same_day_accrual") is True
+    assert meta.get("closing_balance_as_of_date") == date(2025, 1, 1)
+    assert len(rows) == 2
+
+
+def test_flow_keeps_system_date_accrual_when_receipt_same_day(monkeypatch):
+    """Receipt on system business date → EOD accrual for that day stays in the flow."""
+    monkeypatch.setattr(
+        rs,
+        "get_loan",
+        lambda loan_id: {"id": loan_id, "customer_id": 1, "disbursement_date": date(2025, 1, 1)},
+    )
+    monkeypatch.setattr(
+        rs,
+        "get_loan_daily_state_balances",
+        lambda loan_id, as_of_date: _mk_ds(total_delinquency_arrears="7")
+        if as_of_date == date(2025, 1, 2)
+        else _mk_ds(total_delinquency_arrears="3"),
+    )
+
+    pay = StatementEvent(
+        event_date=date(2025, 1, 2),
+        event_type="PAYMENT_RECEIPT",
+        narration="Receipt",
+        debit=Decimal("0"),
+        credit=Decimal("5"),
+        repayment_id=99,
+        sort_ordinal=50,
+    )
+
+    monkeypatch.setattr(
+        se,
+        "build_merged_customer_flow_events",
+        lambda loan_id, start_date, end_date: (
+            [
+                _mk_event(date(2025, 1, 1), "e1", debit="1"),
+                _mk_event(date(2025, 1, 2), "e2", debit="2"),
+                pay,
+            ],
+            Decimal("0"),
+        ),
+    )
+    monkeypatch.setattr(
+        se,
+        "reconcile_running_to_loan_daily_state",
+        lambda computed_closing, loan_id, as_of_date: {"ok": True},
+    )
+
+    rows, meta = rs.generate_customer_facing_flow_statement(
+        1,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 2),
+        as_of_date=date(2025, 1, 2),
+        arrears_mode="end_snapshot",
+    )
+
+    assert meta.get("flow_excluded_same_day_accrual") is False
+    assert len(rows) == 4  # accrual + accrual + payment + total
+    assert [r["Narration"] for r in rows[:3]] == ["e1", "e2", "Receipt"]
 
 
 def test_flow_arrears_mode_rejects_unsupported_value(monkeypatch):

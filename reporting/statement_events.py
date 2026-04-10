@@ -628,6 +628,71 @@ def _flow_row_has_receipt_or_fee_on_date(rows: Iterable[dict[str, Any]], on_date
     return False
 
 
+_FLOW_ACCRUAL_TYPES: frozenset[str] = frozenset(
+    {
+        "REGULAR_INTEREST_ACCRUAL",
+        "PENALTY_INTEREST_ACCRUAL",
+        "DEFAULT_INTEREST_ACCRUAL",
+    }
+)
+
+
+def _day_has_cash_or_loan_movement(events: Sequence[StatementEvent], on_date: date) -> bool:
+    """
+    True when ``on_date`` has drawdown, a receipt, or unapplied ledger movement that affects
+    loan outstanding (liquidation / reversal). Used to decide whether EOD accruals on that
+    calendar day belong in the customer flow.
+    """
+    d0 = on_date
+    if hasattr(d0, "date") and callable(getattr(d0, "date", None)):
+        d0 = d0.date()
+    for e in events:
+        if e.event_date != d0:
+            continue
+        if e.event_type == "DISBURSEMENT":
+            return True
+        if e.event_type.startswith("PAYMENT_"):
+            return True
+        if e.event_type == "UNAPPLIED_LEDGER" and (e.debit > 0 or e.credit > 0):
+            return True
+    return False
+
+
+def exclude_statement_end_accruals_without_activity(
+    events: list[StatementEvent],
+    *,
+    statement_end: date,
+    window_start: date,
+) -> tuple[list[StatementEvent], bool]:
+    """
+    Drop interest accrual events dated **statement_end** (the inclusive end of this statement)
+    unless there is drawdown / receipt / loan-moving unapplied activity on that day.
+
+    Uses the statement's **end date**, not the live system clock, so historical statements
+    (e.g. period ending 2024-04-02) behave correctly even when the machine date or DB
+    ``current_system_date`` is years later.
+
+    Returns (filtered_events, applied) where ``applied`` is True if any event was removed.
+    """
+    if not events:
+        return events, False
+    end_d = statement_end
+    if hasattr(end_d, "date") and callable(getattr(end_d, "date", None)):
+        end_d = end_d.date()
+    if end_d < window_start:
+        return events, False
+    if _day_has_cash_or_loan_movement(events, end_d):
+        return events, False
+    out: list[StatementEvent] = []
+    removed = False
+    for e in events:
+        if e.event_type in _FLOW_ACCRUAL_TYPES and e.event_date == end_d:
+            removed = True
+            continue
+        out.append(e)
+    return out, removed
+
+
 def _accrual_inclusion_cap(rows: list[dict[str, Any]], system_business_date: date) -> date:
     cap = system_business_date - timedelta(days=1)
     if _flow_row_has_receipt_or_fee_on_date(rows, system_business_date):

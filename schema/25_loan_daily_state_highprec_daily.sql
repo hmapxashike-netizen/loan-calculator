@@ -1,4 +1,4 @@
--- Run on lms_db after 24_loan_daily_state_net_allocation.sql
+-- Run on farndacred_db after 24_loan_daily_state_net_allocation.sql
 --
 -- Increase the daily-accrual and period-to-date columns from NUMERIC(18,2) to
 -- NUMERIC(22,10).  Balance and exposure columns remain at NUMERIC(18,2) because

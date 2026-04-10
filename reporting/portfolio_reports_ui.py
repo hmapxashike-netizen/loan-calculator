@@ -383,6 +383,10 @@ def _report_master_listing(
             lds.principal_not_due,
             lds.principal_arrears,
             lds.interest_accrued_balance,
+            lds.interest_arrears_balance,
+            COALESCE(lds.default_interest_balance, 0) AS default_interest_balance,
+            COALESCE(lds.penalty_interest_balance, 0) AS penalty_interest_balance,
+            COALESCE(lds.fees_charges_balance, 0) AS fees_charges_balance,
             COALESCE(lds.total_interest_in_suspense_balance, 0) AS total_interest_in_suspense_balance,
             lds.total_exposure,
             lds.days_overdue
