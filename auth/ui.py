@@ -28,6 +28,220 @@ def _logo_path() -> Path:
 
 _AUTH_PANEL_KEY = "_farnda_auth_panel"
 
+# Chrome Password Manager can fill the DOM without notifying Streamlit's React inputs.
+# Injected only from ``login_form`` (matches ``autocomplete="username"`` + ``current-password`` there).
+_LOGIN_CHROME_AUTOFILL_BRIDGE_HTML = """
+<style>
+[data-testid="stAppViewContainer"] input:-webkit-autofill,
+[data-testid="stAppViewContainer"] input:-webkit-autofill:hover,
+[data-testid="stAppViewContainer"] input:-webkit-autofill:focus {
+  animation-name: farndaCredAutofillOn;
+  animation-duration: 0.001s;
+}
+@keyframes farndaCredAutofillOn {
+  from { opacity: 0.99; }
+  to { opacity: 1; }
+}
+</style>
+<span style="display:none" aria-hidden="true"></span>
+<script>
+(function () {
+  var ANIM = "farndaCredAutofillOn";
+  var USER_SEL = 'input[autocomplete="username"]';
+  var PASS_SEL = 'input[autocomplete="current-password"]';
+
+  function poke(el) {
+    if (!el || el.tagName !== "INPUT") {
+      return;
+    }
+    try {
+      var v = el.value;
+      var desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+      if (desc && desc.set) {
+        desc.set.call(el, v);
+      }
+    } catch (e) {}
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function targets() {
+    var u = document.querySelector(USER_SEL);
+    var p = document.querySelector(PASS_SEL);
+    return { u: u, p: p };
+  }
+
+  /* Wire new inputs only — never poke here (Streamlit DOM churn would spam the server). */
+  function wireScan() {
+    var t = targets();
+    wireOnce(t.u);
+    wireOnce(t.p);
+  }
+
+  function pokeIfAnyValue() {
+    var t = targets();
+    if (t.u && t.u.value) {
+      poke(t.u);
+    }
+    if (t.p && t.p.value) {
+      poke(t.p);
+    }
+  }
+
+  /* Flush DOM → React for both fields (e.g. Enter in email before password state caught up). */
+  function syncBothFromDom() {
+    var t = targets();
+    if (t.u) {
+      poke(t.u);
+    }
+    if (t.p) {
+      poke(t.p);
+    }
+  }
+
+  var burstToken = 0;
+  function startAutofillFollowupBurst() {
+    burstToken += 1;
+    var id = burstToken;
+    var n = 0;
+    var iv = setInterval(function () {
+      if (id !== burstToken) {
+        clearInterval(iv);
+        return;
+      }
+      n += 1;
+      if (n > 45) {
+        clearInterval(iv);
+        return;
+      }
+      pokeIfAnyValue();
+      /* Password is often filled one tick after email (Google verification flow). */
+      var t = targets();
+      if (t.u && t.u.value && t.p) {
+        poke(t.p);
+      }
+    }, 200);
+  }
+
+  /* Brief focus on password helps Chrome commit autofill into the control before React sees it. */
+  function nudgePasswordCommit() {
+    var t = targets();
+    if (!t.p || !t.u) {
+      return;
+    }
+    var prev = document.activeElement;
+    t.p.focus();
+    setTimeout(function () {
+      try {
+        if (prev && typeof prev.focus === "function") {
+          prev.focus();
+        } else {
+          t.u.focus();
+        }
+      } catch (e1) {}
+      syncBothFromDom();
+    }, 0);
+  }
+
+  var debounceWireTimer = null;
+  function scheduleWireOnly() {
+    if (debounceWireTimer) {
+      clearTimeout(debounceWireTimer);
+    }
+    debounceWireTimer = setTimeout(function () {
+      debounceWireTimer = null;
+      wireScan();
+    }, 120);
+  }
+
+  if (!window.__farndaLoginAutofillSyncInstalled) {
+    window.__farndaLoginAutofillSyncInstalled = true;
+    document.addEventListener(
+      "animationstart",
+      function (e) {
+        if (e.animationName === ANIM && e.target && e.target.tagName === "INPUT") {
+          poke(e.target);
+          var t = targets();
+          poke(t.u);
+          poke(t.p);
+          startAutofillFollowupBurst();
+          setTimeout(nudgePasswordCommit, 350);
+          setTimeout(nudgePasswordCommit, 900);
+        }
+      },
+      true
+    );
+    document.addEventListener("focusin", scheduleWireOnly, true);
+    /* Click "Sign in" before Streamlit runs — password may exist in DOM but not in widget state yet. */
+    document.addEventListener(
+      "pointerdown",
+      function (ev) {
+        var el = ev.target;
+        if (!el || !el.closest) {
+          return;
+        }
+        if (!document.querySelector(USER_SEL) || !document.querySelector(PASS_SEL)) {
+          return;
+        }
+        var btn = el.closest("button");
+        if (!btn) {
+          return;
+        }
+        var lab = (btn.innerText || "").trim().toLowerCase();
+        if (lab.indexOf("sign in") !== -1) {
+          syncBothFromDom();
+        }
+      },
+      true
+    );
+    var root = document.querySelector('[data-testid="stAppViewContainer"]') || document.body;
+    try {
+      var mo = new MutationObserver(function () {
+        scheduleWireOnly();
+      });
+      mo.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style"] });
+    } catch (e) {}
+  }
+
+  function wireOnce(el) {
+    if (!el || el.dataset.farndaAutofillWire) {
+      return;
+    }
+    el.dataset.farndaAutofillWire = "1";
+    el.addEventListener(
+      "blur",
+      function () {
+        poke(el);
+      },
+      true
+    );
+    el.addEventListener(
+      "keydown",
+      function (ev) {
+        if (ev.key === "Enter") {
+          syncBothFromDom();
+        }
+      },
+      true
+    );
+  }
+
+  wireScan();
+  [50, 150, 400, 800, 1500, 2500, 4000, 6000, 9000, 12000].forEach(function (ms) {
+    setTimeout(pokeIfAnyValue, ms);
+  });
+})();
+</script>
+""".strip()
+
+
+def _inject_login_chrome_autofill_sync_script() -> None:
+    """Push browser-autofilled values into Streamlit widget state (Chrome / Google Password Manager)."""
+    html_fn = getattr(st, "html", None)
+    if html_fn is None:
+        return
+    html_fn(_LOGIN_CHROME_AUTOFILL_BRIDGE_HTML, unsafe_allow_javascript=True)
+
 
 def _totp_pending() -> dict | None:
     raw = st.session_state.get("_farnda_totp_pending")
@@ -240,6 +454,7 @@ def login_form():
         st.success("Account created. You can now sign in.")
     email = st.text_input("Email", key="login_email", autocomplete="username")
     password = st.text_input("Password", type="password", key="login_password", autocomplete="current-password")
+    _inject_login_chrome_autofill_sync_script()
 
     # One compact row: Sign in | Register | Recovery Codes | Reset Password (equal columns keep labels on one line).
     c_login, c_reg, c_rec, c_rst = st.columns(4, gap="small", vertical_alignment="bottom")
@@ -261,7 +476,9 @@ def login_form():
             st.rerun()
 
     if sign_in_clicked:
-        if not email or not password:
+        email_in = (st.session_state.get("login_email") or email or "").strip()
+        password_in = st.session_state.get("login_password") or password or ""
+        if not email_in or not password_in:
             st.error("Please enter both email and password.")
             return
 
@@ -275,7 +492,7 @@ def login_form():
             auth = AuthService(conn)
             user, status = run_with_spinner(
                 "Signing in…",
-                lambda: auth.authenticate(email=email, password=password, ip=None, user_agent=None),
+                lambda: auth.authenticate(email=email_in, password=password_in, ip=None, user_agent=None),
             )
         finally:
             conn.close()
