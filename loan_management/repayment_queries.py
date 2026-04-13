@@ -46,6 +46,33 @@ def get_liquidation_repayment_ids_for_value_date(value_date: date) -> list[int]:
             return [int(r[0]) for r in cur.fetchall()]
 
 
+def get_batch_loan_ids_with_reversed_receipts_in_range(
+    loan_ids: list[int],
+    start_exclusive: date,
+    end_inclusive: date,
+) -> set[int]:
+    """
+    Loans among ``loan_ids`` with at least one reversed receipt whose value_date
+    (or payment_date) is in (start_exclusive, end_inclusive].
+    """
+    if not loan_ids:
+        return set()
+    lids = [int(x) for x in loan_ids]
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT loan_id FROM loan_repayments
+                WHERE loan_id = ANY(%s)
+                  AND status = 'reversed'
+                  AND (COALESCE(value_date, payment_date))::date > %s::date
+                  AND (COALESCE(value_date, payment_date))::date <= %s::date
+                """,
+                (lids, start_exclusive, end_inclusive),
+            )
+            return {int(r[0]) for r in cur.fetchall()}
+
+
 def get_loan_ids_with_reversed_receipts_on_date(value_date: date) -> list[int]:
     """
     Loan IDs that have at least one reversed receipt on the given value_date.

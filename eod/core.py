@@ -37,6 +37,13 @@ from psycopg2.extras import RealDictCursor
 
 from config import get_database_url
 from decimal_utils import as_10dp
+from eod.engine_resume import (
+    apply_engine_resume,
+    engine_resume_is_valid_schema,
+    parse_engine_resume_dict,
+    product_code_matches_resume,
+    serialize_engine_resume,
+)
 from eod.loan_daily_engine import LoanConfig, ScheduleEntry, Loan
 from accounting.periods import (
     get_month_period_bounds,
@@ -53,8 +60,10 @@ from eod.audit import (
     finish_run as audit_finish_run,
     log_stage_event,
 )
+from loan_management.repayment_queries import get_batch_loan_ids_with_reversed_receipts_in_range
 from loan_management.schedules import (
     apply_schedule_version_bumps,
+    batch_list_schedule_bumping_events,
     list_schedule_bumping_events,
     parse_schedule_line_date,
 )
@@ -74,6 +83,7 @@ from loan_management import (
     save_loan_daily_state,
     apply_unapplied_funds_to_arrears_eod,
     load_system_config_from_db,
+    repost_gl_for_loan_date_range,
     get_product_config_from_db,
     _get_waterfall_config,
     _log_allocation_audit,
@@ -386,6 +396,46 @@ def _batch_fetch_yesterday_states(
                 ),
             }
     return result
+
+
+def _batch_fetch_engine_resume_raw(
+    conn, loan_ids: List[int], as_of_exact: date
+) -> Dict[int, Any]:
+    """``loan_id -> engine_resume`` JSON (or None) for the **exact** calendar ``as_of_exact`` row."""
+    empty: Dict[int, Any] = {int(lid): None for lid in loan_ids}
+    if not loan_ids:
+        return empty
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT loan_id, engine_resume
+                FROM loan_daily_state
+                WHERE loan_id = ANY(%s) AND as_of_date = %s
+                """,
+                (loan_ids, as_of_exact),
+            )
+            for row in cur.fetchall():
+                empty[int(row["loan_id"])] = row.get("engine_resume")
+    except Exception as ex:
+        _logger.debug("engine_resume column unavailable or fetch failed: %s", ex)
+        return {int(lid): None for lid in loan_ids}
+    return empty
+
+
+def _bumps_invalidate_incremental_resume(
+    bumps: List[tuple[date, int]], resume_anchor: date, as_of_date: date
+) -> bool:
+    """
+    True when a recast/modification falls strictly between the resume day and ``as_of_date``.
+
+    Bumps on ``as_of_date`` are applied via per-day schedule sync; bumps after ``as_of_date``
+    do not affect this run.
+    """
+    for d, _ in bumps:
+        if resume_anchor < d < as_of_date:
+            return True
+    return False
 
 
 _UNAPPLIED_FILTER_SQL = """
@@ -928,6 +978,7 @@ def _run_loan_engine_for_date(
     *,
     loan_ids_filter: List[int] | None = None,
     allow_system_date_eod: bool = False,
+    replay_refresh_allocations: bool = False,
 ) -> int:
     """
     Core loan engine step: recompute loan buckets and interest into loan_daily_state.
@@ -939,6 +990,8 @@ def _run_loan_engine_for_date(
     allow_system_date_eod must match run_eod_for_date: single-loan and replay paths
     default False so they cannot persist accruals on the system business date.
 
+    replay_refresh_allocations forces a full accrual replay (no incremental engine resume).
+
     Returns the number of loans that were actually processed (i.e. with schedules).
     """
     block_accruals = _persist_accrual_blocked_for_as_of(
@@ -946,6 +999,12 @@ def _run_loan_engine_for_date(
     )
     processed = 0
     yesterday = as_of_date - timedelta(days=1)
+
+    eod_st = sys_cfg.get("eod_settings") or {}
+    tasks_cfg = (eod_st.get("tasks") if isinstance(eod_st, dict) else None) or {}
+    incremental_enabled = bool(tasks_cfg.get("incremental_loan_engine", False)) and (
+        not replay_refresh_allocations
+    )
 
     with _get_conn() as conn:
         loans = _fetch_active_loans(conn, loan_ids_filter=loan_ids_filter)
@@ -960,6 +1019,14 @@ def _run_loan_engine_for_date(
         alloc_map              = _batch_fetch_allocation_totals(conn, loan_ids, as_of_date)
         yesterday_map          = _batch_fetch_yesterday_states(conn, loan_ids, yesterday)
         net_alloc_map, unalloc_map = _batch_fetch_net_alloc_and_unallocated(conn, loan_ids, as_of_date)
+        bumps_by_loan = batch_list_schedule_bumping_events(loan_ids)
+        engine_resume_raw: Dict[int, Any] = {lid: None for lid in loan_ids}
+        reversed_since_resume: set[int] = set()
+        if incremental_enabled:
+            engine_resume_raw = _batch_fetch_engine_resume_raw(conn, loan_ids, yesterday)
+            reversed_since_resume = get_batch_loan_ids_with_reversed_receipts_in_range(
+                loan_ids, yesterday, as_of_date
+            )
 
     for loan_row in loans:
         loan_id_int = int(loan_row["id"])
@@ -988,7 +1055,7 @@ def _run_loan_engine_for_date(
         if disb_date > as_of_date:
             continue
 
-        bumps = list_schedule_bumping_events(loan_id_int)
+        bumps = bumps_by_loan.get(loan_id_int) or []
         v0 = apply_schedule_version_bumps(disb_date, bumps)
         rows0 = _schedule_rows_for_version(ver_rows, v0)
         if not rows0:
@@ -1021,8 +1088,31 @@ def _run_loan_engine_for_date(
         )
         setattr(engine_loan, "_eod_schedule_version", v0)
 
+        resume_payload = parse_engine_resume_dict(engine_resume_raw.get(loan_id_int))
+        use_incremental = (
+            incremental_enabled
+            and resume_payload is not None
+            and engine_resume_is_valid_schema(resume_payload)
+            and product_code_matches_resume(resume_payload, dict(loan_row))
+            and loan_id_int not in reversed_since_resume
+            and not _bumps_invalidate_incremental_resume(bumps, yesterday, as_of_date)
+        )
+        if use_incremental:
+            try:
+                apply_engine_resume(engine_loan, resume_payload)
+            except Exception as ex:
+                _logger.debug(
+                    "EOD loan_id=%s: incremental resume hydrate failed (%s); full replay.",
+                    loan_id_int,
+                    ex,
+                )
+                use_incremental = False
+
         # Run engine to yesterday: use schedule **version in force on each day** (recast/modification).
-        current = disb_date
+        if use_incremental:
+            current = yesterday + timedelta(days=1)
+        else:
+            current = disb_date
         while current <= yesterday:
             _eod_sync_engine_schedule_for_date(engine_loan, loan_row, current, bumps, ver_rows)
             engine_loan.process_day(current)
@@ -1313,6 +1403,12 @@ def _run_loan_engine_for_date(
             as_10dp(max(D("0"), D(str(default_interest_balance_save))))
         )
 
+        pc_raw = loan_row.get("product_code")
+        resume_to_save = serialize_engine_resume(
+            engine_loan,
+            product_code=str(pc_raw).strip() if pc_raw else None,
+        )
+
         save_loan_daily_state(
             loan_id=loan_id_int,
             as_of_date=as_of_date,
@@ -1335,6 +1431,7 @@ def _run_loan_engine_for_date(
             regular_interest_in_suspense_balance=regular_interest_in_suspense_save,
             penalty_interest_in_suspense_balance=penalty_interest_in_suspense_save,
             default_interest_in_suspense_balance=default_interest_in_suspense_save,
+            engine_resume=resume_to_save,
         )
         processed += 1
 
@@ -1393,6 +1490,13 @@ def _replay_refresh_allocations_for_date(as_of_date: date, sys_cfg: Dict[str, An
     Per-receipt failures are logged and skipped so one bad ID does not abort the batch.
     """
     touched = 0
+    cleared = _clear_unapplied_liquidations_for_date(as_of_date)
+    if cleared:
+        _logger.info(
+            "replay_refresh_allocations: cleared %s prior unapplied liquidation repayment(s) on %s.",
+            cleared,
+            as_of_date,
+        )
     for rid in get_repayment_ids_for_value_date(as_of_date):
         try:
             reallocate_repayment(rid, system_config=sys_cfg)
@@ -1403,17 +1507,106 @@ def _replay_refresh_allocations_for_date(as_of_date: date, sys_cfg: Dict[str, An
                 rid,
                 ex,
             )
-    for lid in get_liquidation_repayment_ids_for_value_date(as_of_date):
-        try:
-            allocate_repayment_waterfall(lid, system_config=sys_cfg)
-            touched += 1
-        except Exception as ex:
-            _logger.warning(
-                "replay_refresh_allocations: allocate_repayment_waterfall failed for repayment_id=%s: %s",
-                lid,
-                ex,
-            )
     return touched
+
+
+def _clear_unapplied_liquidations_for_date(as_of_date: date) -> int:
+    """
+    Delete prior system liquidation artifacts for value_date before replay refresh.
+
+    Why: replay previously called ``allocate_repayment_waterfall`` for liquidation
+    repayment IDs, but that function returns early for negative repayments, leaving
+    stale liquidation allocation rows in place. Those stale rows contaminate
+    ``alloc_map`` in ``_run_loan_engine_for_date`` and can mask due-date interest
+    arrears billing.
+
+    During replay/backfill we rebuild liquidations in the later
+    ``apply_unapplied_to_arrears`` stage, so clearing historical system legs for the
+    date keeps the run deterministic and policy-aligned.
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM loan_repayments
+                WHERE status = 'posted'
+                  AND COALESCE(reference, '') = 'Unapplied funds allocation'
+                  AND (COALESCE(value_date, payment_date))::date = %s::date
+                ORDER BY id
+                """,
+                (as_of_date,),
+            )
+            ids = [int(r[0]) for r in cur.fetchall()]
+            if not ids:
+                return 0
+            cur.execute(
+                """
+                DELETE FROM loan_repayment_allocation
+                WHERE repayment_id = ANY(%s)
+                """,
+                (ids,),
+            )
+            cur.execute(
+                """
+                DELETE FROM unapplied_funds
+                WHERE allocation_repayment_id = ANY(%s)
+                  AND entry_type = 'debit'
+                """,
+                (ids,),
+            )
+            cur.execute(
+                """
+                DELETE FROM loan_repayments
+                WHERE id = ANY(%s)
+                """,
+                (ids,),
+            )
+        conn.commit()
+    return len(ids)
+
+
+def _repost_gl_after_replay_for_date(as_of_date: date) -> int:
+    """
+    Replay/backfill only: re-post deterministic GL journals for affected loans on date.
+
+    Replay can rebuild allocations/unapplied subledger rows while leaving previously posted
+    journals that no longer match those rows. Re-posting converges GL to current subledger
+    because journal writes are idempotent by deterministic ``(event_id, event_tag)`` keys.
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT loan_id
+                FROM loan_repayments
+                WHERE (COALESCE(value_date, payment_date))::date = %s::date
+                  AND status IN ('posted', 'reversed')
+                ORDER BY loan_id
+                """,
+                (as_of_date,),
+            )
+            loan_ids = [int(r[0]) for r in cur.fetchall()]
+    if not loan_ids:
+        return 0
+
+    failures: list[tuple[int, str]] = []
+    reposted = 0
+    for loan_id in loan_ids:
+        try:
+            repost_gl_for_loan_date_range(loan_id, as_of_date, as_of_date, created_by="system")
+            reposted += 1
+        except Exception as ex:
+            failures.append((loan_id, str(ex)))
+
+    if failures:
+        first = failures[0]
+        raise RuntimeError(
+            "Replay GL repost failed for "
+            f"{len(failures)} loan(s) on {as_of_date}. "
+            f"First failure loan_id={first[0]}: {first[1]}"
+        )
+    return reposted
 
 
 def _run_eom_regular_interest_income_recognition(
@@ -1714,8 +1907,15 @@ def _run_fee_amortisation_month_end(
                     COALESCE(admin_fee_amount,
                              (principal * admin_fee)) AS admin_fee_amt
                 FROM loans
+                -- Only loans live on or before as_of (same idea as _run_loan_engine_for_date;
+                -- missing dates follow engine fallback to as_of, so they stay eligible).
                 WHERE status = 'active'
-                """
+                  AND (
+                      COALESCE(disbursement_date, start_date) IS NULL
+                      OR COALESCE(disbursement_date, start_date)::date <= %s::date
+                  )
+                """,
+                (as_of_date,),
             )
             loans = cur.fetchall()
 
@@ -2036,6 +2236,7 @@ def run_eod_for_date(
                         as_of_date,
                         sys_cfg,
                         allow_system_date_eod=allow_system_date_eod,
+                        replay_refresh_allocations=replay_refresh_allocations,
                     ),
                 )
                 _stage(
@@ -2047,6 +2248,11 @@ def run_eod_for_date(
                     "apply_unapplied_to_arrears",
                     run_loan_engine and apply_unapplied,
                     lambda: _apply_unapplied_funds_to_arrears(as_of_date, sys_cfg),
+                )
+                _stage(
+                    "repost_gl_after_replay",
+                    replay_refresh_allocations and run_loan_engine,
+                    lambda: _repost_gl_after_replay_for_date(as_of_date),
                 )
                 _stage("accounting_events", post_accounting, lambda: _run_accounting_events(as_of_date, sys_cfg))
                 _stage(

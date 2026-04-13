@@ -63,6 +63,7 @@ def render_system_configurations_ui(
         "generate_statements": False,
         "snapshot_financial_statements": True,
         "send_notifications": False,
+        "incremental_loan_engine": False,
     }
     existing_tasks = eod_cfg.get("tasks") or {}
     eod_tasks: dict[str, bool] = {
@@ -231,6 +232,7 @@ def render_system_configurations_ui(
                     "snapshot_financial_statements", True
                 ),
                 "send_notifications": eod_tasks.get("send_notifications", False),
+                "incremental_loan_engine": eod_tasks.get("incremental_loan_engine", False),
             },
             "stage_policy": {
                 "mode": policy_mode,

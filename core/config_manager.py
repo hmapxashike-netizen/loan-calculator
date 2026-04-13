@@ -123,6 +123,7 @@ def get_system_config(*, key: str = "system_config") -> dict:
                 "generate_statements": False,
                 "snapshot_financial_statements": True,
                 "send_notifications": False,
+                "incremental_loan_engine": False,
             },
             "stage_policy": {
                 "mode": "hybrid",  # strict | hybrid | best_effort

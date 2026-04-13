@@ -82,7 +82,15 @@ def apply_unapplied_funds_to_arrears_eod(
                         COALESCE(uf.repayment_id, uf.source_repayment_id) AS source_repayment_id,
                         MIN(uf.value_date) AS first_value_date,
                         COALESCE(SUM(uf.amount), 0) AS overall_amount,
-                        COALESCE(SUM(CASE WHEN uf.value_date <= %s THEN uf.amount ELSE 0 END), 0) AS as_of_amount
+                        COALESCE(SUM(CASE WHEN uf.value_date <= %s THEN uf.amount ELSE 0 END), 0) AS as_of_amount,
+                        COALESCE(SUM(CASE
+                            WHEN uf.entry_type = 'credit'
+                             AND uf.reference = 'Overpayment'
+                             AND uf.repayment_id = COALESCE(uf.repayment_id, uf.source_repayment_id)
+                             AND uf.value_date <= %s
+                            THEN uf.amount
+                            ELSE 0
+                        END), 0) AS originating_overpayment_credit
                     FROM unapplied_funds uf
                     WHERE uf.loan_id = %s
                       AND COALESCE(uf.repayment_id, uf.source_repayment_id) IS NOT NULL
@@ -93,10 +101,12 @@ def apply_unapplied_funds_to_arrears_eod(
                     LEAST(sb.overall_amount, sb.as_of_amount) AS amount,
                     sb.first_value_date
                 FROM source_balances sb
-                WHERE sb.overall_amount > 0 AND sb.as_of_amount > 0
+                WHERE sb.overall_amount > 0
+                  AND sb.as_of_amount > 0
+                  AND sb.originating_overpayment_credit > 0
                 ORDER BY sb.first_value_date, sb.source_repayment_id
                 """,
-                (as_of_date, loan_id),
+                (as_of_date, as_of_date, loan_id),
             )
             credit_rows = cur.fetchall()
 
@@ -111,6 +121,11 @@ def apply_unapplied_funds_to_arrears_eod(
             if consume <= 0:
                 continue
             src_rep = row.get("repayment_id")
+            if src_rep is None:
+                raise ValueError(
+                    f"Invalid unapplied source lineage for loan_id={loan_id} on {as_of_date}: "
+                    "missing source repayment_id for liquidation candidate."
+                )
             consumptions.append((int(src_rep) if src_rep is not None else None, consume))
             remaining_to_consume = float(as_10dp(remaining_to_consume - consume))
         amount_applied = float(as_10dp(sum(c for _s, c in consumptions)))

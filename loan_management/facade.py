@@ -68,6 +68,7 @@ from .product_catalog import (
 )
 from .reallocation import reallocate_repayment
 from .repayment_queries import (
+    get_batch_loan_ids_with_reversed_receipts_in_range,
     get_liquidation_repayment_ids_for_value_date,
     get_loan_ids_with_reversed_receipts_on_date,
     get_repayment_ids_for_loan_and_date,
@@ -80,6 +81,7 @@ from .reverse_repayment import reverse_repayment
 from .save_loan import save_loan
 from .schedules import (
     apply_schedule_version_bumps,
+    batch_list_schedule_bumping_events,
     collect_due_dates_in_range_all_schedule_versions,
     format_schedule_date_for_storage,
     schedule_date_to_iso_for_exchange,

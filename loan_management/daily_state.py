@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from decimal_utils import as_10dp
+from psycopg2.extras import Json
 
 from .db import RealDictCursor, _connection
 from .serialization import _date_conv
@@ -155,6 +156,7 @@ def save_loan_daily_state(
     regular_interest_in_suspense_balance: float = 0.0,
     penalty_interest_in_suspense_balance: float = 0.0,
     default_interest_in_suspense_balance: float = 0.0,
+    engine_resume: dict[str, Any] | None = None,
     conn: Any = None,
 ) -> None:
     """
@@ -214,6 +216,7 @@ def save_loan_daily_state(
             Decimal(str(reg_susp)) + Decimal(str(pen_susp)) + Decimal(str(def_susp))
         )
     )
+    resume_json = Json(engine_resume) if engine_resume is not None else None
 
     def _do_upsert(c: Any) -> None:
         with c.cursor() as cur:
@@ -243,7 +246,8 @@ def save_loan_daily_state(
                         regular_interest_in_suspense_balance,
                         penalty_interest_in_suspense_balance,
                         default_interest_in_suspense_balance,
-                        total_interest_in_suspense_balance
+                        total_interest_in_suspense_balance,
+                        engine_resume
                     )
                     VALUES (
                         %s, %s,
@@ -251,7 +255,8 @@ def save_loan_daily_state(
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s,
                         %s, %s,
-                        %s, %s, %s, %s
+                        %s, %s, %s, %s,
+                        %s
                     )
                     ON CONFLICT (loan_id, as_of_date) DO UPDATE
                     SET
@@ -276,7 +281,8 @@ def save_loan_daily_state(
                         regular_interest_in_suspense_balance = EXCLUDED.regular_interest_in_suspense_balance,
                         penalty_interest_in_suspense_balance = EXCLUDED.penalty_interest_in_suspense_balance,
                         default_interest_in_suspense_balance = EXCLUDED.default_interest_in_suspense_balance,
-                        total_interest_in_suspense_balance = EXCLUDED.total_interest_in_suspense_balance
+                        total_interest_in_suspense_balance = EXCLUDED.total_interest_in_suspense_balance,
+                        engine_resume = COALESCE(EXCLUDED.engine_resume, loan_daily_state.engine_resume)
                     """,
                     (
                         loan_id,
@@ -303,6 +309,7 @@ def save_loan_daily_state(
                         pen_susp,
                         def_susp,
                         total_int_susp,
+                        resume_json,
                     ),
                 )
             elif credits is not None:
@@ -330,7 +337,8 @@ def save_loan_daily_state(
                         regular_interest_in_suspense_balance,
                         penalty_interest_in_suspense_balance,
                         default_interest_in_suspense_balance,
-                        total_interest_in_suspense_balance
+                        total_interest_in_suspense_balance,
+                        engine_resume
                     )
                     VALUES (
                         %s, %s,
@@ -338,7 +346,8 @@ def save_loan_daily_state(
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s,
                         %s,
-                        %s, %s, %s, %s
+                        %s, %s, %s, %s,
+                        %s
                     )
                     ON CONFLICT (loan_id, as_of_date) DO UPDATE
                     SET
@@ -362,7 +371,8 @@ def save_loan_daily_state(
                         regular_interest_in_suspense_balance = EXCLUDED.regular_interest_in_suspense_balance,
                         penalty_interest_in_suspense_balance = EXCLUDED.penalty_interest_in_suspense_balance,
                         default_interest_in_suspense_balance = EXCLUDED.default_interest_in_suspense_balance,
-                        total_interest_in_suspense_balance = EXCLUDED.total_interest_in_suspense_balance
+                        total_interest_in_suspense_balance = EXCLUDED.total_interest_in_suspense_balance,
+                        engine_resume = COALESCE(EXCLUDED.engine_resume, loan_daily_state.engine_resume)
                     """,
                     (
                         loan_id,
@@ -388,6 +398,7 @@ def save_loan_daily_state(
                         pen_susp,
                         def_susp,
                         total_int_susp,
+                        resume_json,
                     ),
                 )
             else:
@@ -414,14 +425,16 @@ def save_loan_daily_state(
                         regular_interest_in_suspense_balance,
                         penalty_interest_in_suspense_balance,
                         default_interest_in_suspense_balance,
-                        total_interest_in_suspense_balance
+                        total_interest_in_suspense_balance,
+                        engine_resume
                     )
                     VALUES (
                         %s, %s,
                         %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s,
-                        %s, %s, %s, %s
+                        %s, %s, %s, %s,
+                        %s
                     )
                     ON CONFLICT (loan_id, as_of_date) DO UPDATE
                     SET
@@ -444,7 +457,8 @@ def save_loan_daily_state(
                         regular_interest_in_suspense_balance = EXCLUDED.regular_interest_in_suspense_balance,
                         penalty_interest_in_suspense_balance = EXCLUDED.penalty_interest_in_suspense_balance,
                         default_interest_in_suspense_balance = EXCLUDED.default_interest_in_suspense_balance,
-                        total_interest_in_suspense_balance = EXCLUDED.total_interest_in_suspense_balance
+                        total_interest_in_suspense_balance = EXCLUDED.total_interest_in_suspense_balance,
+                        engine_resume = COALESCE(EXCLUDED.engine_resume, loan_daily_state.engine_resume)
                     """,
                     (
                         loan_id,
@@ -469,6 +483,7 @@ def save_loan_daily_state(
                         pen_susp,
                         def_susp,
                         total_int_susp,
+                        resume_json,
                     ),
                 )
 

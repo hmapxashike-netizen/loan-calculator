@@ -257,6 +257,58 @@ def apply_schedule_version_bumps(on_date: date, bumps: Sequence[tuple[date, int]
     return v
 
 
+def batch_list_schedule_bumping_events(loan_ids: list[int]) -> dict[int, list[tuple[date, int]]]:
+    """
+    All schedule version bump events for many loans (one round-trip per source table).
+
+    Same ordering rules as :func:`list_schedule_bumping_events`.
+    """
+    out: dict[int, list[tuple[date, int]]] = {int(lid): [] for lid in loan_ids}
+    if not loan_ids:
+        return out
+    lids = [int(x) for x in loan_ids]
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT loan_id, recast_date AS d, new_schedule_version AS nv, id AS sid
+                FROM loan_recasts
+                WHERE loan_id = ANY(%s)
+                """,
+                (lids,),
+            )
+            raw: dict[int, list[tuple[date, int, int]]] = {lid: [] for lid in lids}
+            for r in cur.fetchall():
+                lid = int(r["loan_id"])
+                if lid not in raw:
+                    continue
+                pd = _parse_line_date(r.get("d"))
+                if pd is not None:
+                    raw[lid].append((pd, int(r["nv"]), int(r["sid"])))
+            try:
+                cur.execute(
+                    """
+                    SELECT loan_id, modification_date AS d, new_schedule_version AS nv, id AS sid
+                    FROM loan_modifications
+                    WHERE loan_id = ANY(%s)
+                    """,
+                    (lids,),
+                )
+                for r in cur.fetchall():
+                    lid = int(r["loan_id"])
+                    if lid not in raw:
+                        continue
+                    pd = _parse_line_date(r.get("d"))
+                    if pd is not None:
+                        raw[lid].append((pd, int(r["nv"]), 1_000_000_000 + int(r["sid"])))
+            except Exception:
+                pass
+    for lid, triples in raw.items():
+        triples.sort(key=lambda x: (x[0], x[2]))
+        out[lid] = [(d, nv) for d, nv, _ in triples]
+    return out
+
+
 def list_schedule_bumping_events(loan_id: int) -> list[tuple[date, int]]:
     """
     Chronological recast + modification events that advance ``loan_schedules.version``.
@@ -264,38 +316,7 @@ def list_schedule_bumping_events(loan_id: int) -> list[tuple[date, int]]:
     Statement instalment rows for date D must use lines from the version effective on D,
     not the latest schedule (post-recast lines change principal/interest splits for history).
     """
-    raw: list[tuple[date, int, int]] = []
-    with _connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT recast_date AS d, new_schedule_version AS nv, id AS sid
-                FROM loan_recasts
-                WHERE loan_id = %s
-                """,
-                (loan_id,),
-            )
-            for r in cur.fetchall():
-                pd = _parse_line_date(r.get("d"))
-                if pd is not None:
-                    raw.append((pd, int(r["nv"]), int(r["sid"])))
-            try:
-                cur.execute(
-                    """
-                    SELECT modification_date AS d, new_schedule_version AS nv, id AS sid
-                    FROM loan_modifications
-                    WHERE loan_id = %s
-                    """,
-                    (loan_id,),
-                )
-                for r in cur.fetchall():
-                    pd = _parse_line_date(r.get("d"))
-                    if pd is not None:
-                        raw.append((pd, int(r["nv"]), 1_000_000_000 + int(r["sid"])))
-            except Exception:
-                pass
-    raw.sort(key=lambda x: (x[0], x[2]))
-    return [(d, nv) for d, nv, _ in raw]
+    return batch_list_schedule_bumping_events([int(loan_id)]).get(int(loan_id), [])
 
 
 def schedule_version_effective_on(loan_id: int, on_date: date) -> int:

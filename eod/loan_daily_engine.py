@@ -229,23 +229,24 @@ class Loan:
         return None
 
     def _apply_due_date_transitions(self, d: date) -> None:
+        """
+        Move principal not-due into arrears per schedule line. For regular interest, bill the
+        full period amount T (schedule ``interest_component`` = sum of daily accruals for
+        ``period_start <= day < due_date``) out of ``interest_accrued_balance`` and into
+        ``interest_arrears``. Accrued cannot go negative; T still bills to arrears if accrued
+        was reduced earlier (e.g. mid-period allocation to accrued).
+        """
         due_entries = [s for s in self.schedule if s.due_date == d]
         for entry in due_entries:
             principal_to_move = min(self.principal_not_due, entry.principal_component)
             self.principal_not_due = _q10(self.principal_not_due - principal_to_move)
             self.principal_arrears = _q10(self.principal_arrears + principal_to_move)
 
-            amount_from_accrued = min(
-                self.interest_accrued_balance, entry.interest_component
-            )
+            T = _q10(entry.interest_component)
             self.interest_accrued_balance = _q10(
-                self.interest_accrued_balance - amount_from_accrued
+                max(Decimal("0"), self.interest_accrued_balance - T)
             )
-            # Instalment interest becomes due in arrears; only add the portion not already
-            # netted out of accrued (adding full component would double-count accrued overlap).
-            self.interest_arrears = _q10(
-                self.interest_arrears + entry.interest_component - amount_from_accrued
-            )
+            self.interest_arrears = _q10(self.interest_arrears + T)
 
     def _accrue_default_and_penalty_interest(self) -> None:
         # Daily default/penalty = balance * (rate_per_month as decimal) / 30.

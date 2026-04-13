@@ -69,6 +69,20 @@ def apply_allocations_for_loan_date(
             + alloc_penalty_interest
         )
         alloc_fees_total = alloc_fees_charges
+        remaining_arrears = float(
+            as_10dp(
+                max(0.0, state.get("interest_arrears_balance", 0.0) - alloc_interest_arrears)
+                + max(0.0, state.get("default_interest_balance", 0.0) - alloc_default_interest)
+                + max(0.0, state.get("penalty_interest_balance", 0.0) - alloc_penalty_interest)
+                + max(0.0, state.get("principal_arrears", 0.0) - alloc_principal_arrears)
+                + max(0.0, state.get("fees_charges_balance", 0.0) - alloc_fees_charges)
+            )
+        )
+        if unapplied > 1e-6 and remaining_arrears > 1e-6:
+            raise ValueError(
+                f"Policy violation for repayment {repayment_id}: unapplied={unapplied} while "
+                f"arrears still outstanding={remaining_arrears}."
+            )
         with _connection() as conn:
             with conn.cursor() as cur:
                 alloc_total = alloc_principal_total + alloc_interest_total + alloc_fees_total

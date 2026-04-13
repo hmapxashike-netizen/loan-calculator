@@ -1,20 +1,69 @@
 id,loan_id,repayment_id,amount,currency,value_date,created_at,applied_at,status,notes,entry_type,reference,allocation_repayment_id,source_repayment_id,source_unapplied_id,movement_type
 22,1753,37,465.19,USD,2024-04-01,2026-04-10T19:11:13.859937+02:00,,pending,,credit,Overpayment,,,,from_receipt
+71,1753,,-465.19,USD,2024-04-01,2026-04-12T22:03:20.439287+02:00,,pending,,debit,Reallocate (remove prior unapplied),,37,,other
+35,1753,,-465.19,USD,2024-04-30,2026-04-12T16:38:16.713416+02:00,,pending,,debit,Applied to arrears (EOD),97,37,,to_loan_arrears_eod
 34,1764,91,55.21,USD,2024-04-01,2026-04-10T19:12:08.266271+02:00,,pending,,credit,Overpayment,,,,from_receipt
+83,1764,,-55.21,USD,2024-04-01,2026-04-12T22:04:04.823047+02:00,,pending,,debit,Reallocate (remove prior unapplied),,91,,other
+50,1764,,-33.12,USD,2024-04-30,2026-04-12T18:28:47.603077+02:00,,pending,,debit,Applied to arrears (EOD),112,91,,to_loan_arrears_eod
 25,1800,55,293.58,USD,2024-04-01,2026-04-10T19:11:30.375495+02:00,,pending,,credit,Overpayment,,,,from_receipt
+74,1800,,-293.58,USD,2024-04-01,2026-04-12T22:03:34.905399+02:00,,pending,,debit,Reallocate (remove prior unapplied),,55,,other
+36,1800,,-170.36,USD,2024-04-30,2026-04-12T16:38:17.603397+02:00,,pending,,debit,Applied to arrears (EOD),98,55,,to_loan_arrears_eod
+51,1800,,-123.22,USD,2024-04-30,2026-04-12T18:28:48.383723+02:00,,pending,,debit,Applied to arrears (EOD),113,55,,to_loan_arrears_eod
 27,1803,62,316.2,USD,2024-04-01,2026-04-10T19:11:36.770951+02:00,,pending,,credit,Overpayment,,,,from_receipt
+76,1803,,-316.2,USD,2024-04-01,2026-04-12T22:03:40.662887+02:00,,pending,,debit,Reallocate (remove prior unapplied),,62,,other
+52,1803,,-210.8,USD,2024-04-30,2026-04-12T18:28:48.881938+02:00,,pending,,debit,Applied to arrears (EOD),114,62,,to_loan_arrears_eod
 17,1823,25,256.3,USD,2024-04-01,2026-04-10T19:10:59.342413+02:00,,pending,,credit,Overpayment,,,,from_receipt
+66,1823,,-256.3,USD,2024-04-01,2026-04-12T22:03:10.241337+02:00,,pending,,debit,Reallocate (remove prior unapplied),,25,,other
+37,1823,,-256.3,USD,2024-04-30,2026-04-12T16:38:18.351015+02:00,,pending,,debit,Applied to arrears (EOD),99,25,,to_loan_arrears_eod
 30,1846,77,55.58,USD,2024-04-01,2026-04-10T19:11:54.279425+02:00,,pending,,credit,Overpayment,,,,from_receipt
+79,1846,,-55.58,USD,2024-04-01,2026-04-12T22:03:52.768954+02:00,,pending,,debit,Reallocate (remove prior unapplied),,77,,other
+38,1846,,-55.58,USD,2024-04-30,2026-04-12T16:38:18.973124+02:00,,pending,,debit,Applied to arrears (EOD),100,77,,to_loan_arrears_eod
 29,1856,73,201.18,USD,2024-04-01,2026-04-10T19:11:49.450310+02:00,,pending,,credit,Overpayment,,,,from_receipt
+78,1856,,-201.18,USD,2024-04-01,2026-04-12T22:03:49.099531+02:00,,pending,,debit,Reallocate (remove prior unapplied),,73,,other
+53,1856,,-167.65,USD,2024-04-30,2026-04-12T18:28:49.581992+02:00,,pending,,debit,Applied to arrears (EOD),115,73,,to_loan_arrears_eod
 32,1934,83,63.33,USD,2024-04-01,2026-04-10T19:12:00.661698+02:00,,pending,,credit,Overpayment,,,,from_receipt
+81,1934,,-63.33,USD,2024-04-01,2026-04-12T22:03:58.411483+02:00,,pending,,debit,Reallocate (remove prior unapplied),,83,,other
+39,1934,,-45.7,USD,2024-04-30,2026-04-12T16:38:19.605114+02:00,,pending,,debit,Applied to arrears (EOD),101,83,,to_loan_arrears_eod
+54,1934,,-17.63,USD,2024-04-30,2026-04-12T18:28:50.082096+02:00,,pending,,debit,Applied to arrears (EOD),116,83,,to_loan_arrears_eod
 23,1947,52,413.56,USD,2024-04-01,2026-04-10T19:11:26.834940+02:00,,pending,,credit,Overpayment,,,,from_receipt
+72,1947,,-413.56,USD,2024-04-01,2026-04-12T22:03:32.113852+02:00,,pending,,debit,Reallocate (remove prior unapplied),,52,,other
+40,1947,,-160.57,USD,2024-04-30,2026-04-12T16:38:20.118075+02:00,,pending,,debit,Applied to arrears (EOD),102,52,,to_loan_arrears_eod
+55,1947,,-252.99,USD,2024-04-30,2026-04-12T18:28:51.355091+02:00,,pending,,debit,Applied to arrears (EOD),117,52,,to_loan_arrears_eod
 19,1973,29,1207.22,USD,2024-04-01,2026-04-10T19:11:04.267049+02:00,,pending,,credit,Overpayment,,,,from_receipt
+68,1973,,-1207.22,USD,2024-04-01,2026-04-12T22:03:13.309747+02:00,,pending,,debit,Reallocate (remove prior unapplied),,29,,other
+41,1973,,-759.43,USD,2024-04-30,2026-04-12T16:38:20.883585+02:00,,pending,,debit,Applied to arrears (EOD),103,29,,to_loan_arrears_eod
+56,1973,,-447.79,USD,2024-04-30,2026-04-12T18:28:52.112501+02:00,,pending,,debit,Applied to arrears (EOD),118,29,,to_loan_arrears_eod
 28,1975,67,179.82,USD,2024-04-01,2026-04-10T19:11:42.995692+02:00,,pending,,credit,Overpayment,,,,from_receipt
+77,1975,,-179.82,USD,2024-04-01,2026-04-12T22:03:44.584927+02:00,,pending,,debit,Reallocate (remove prior unapplied),,67,,other
+42,1975,,-36.36,USD,2024-04-30,2026-04-12T16:38:21.626715+02:00,,pending,,debit,Applied to arrears (EOD),104,67,,to_loan_arrears_eod
+57,1975,,-143.46,USD,2024-04-30,2026-04-12T18:28:52.622479+02:00,,pending,,debit,Applied to arrears (EOD),119,67,,to_loan_arrears_eod
 16,2062,24,1519.8,USD,2024-04-01,2026-04-10T19:10:58.039879+02:00,,pending,,credit,Overpayment,,,,from_receipt
+65,2062,,-1519.8,USD,2024-04-01,2026-04-12T22:03:09.096852+02:00,,pending,,debit,Reallocate (remove prior unapplied),,24,,other
+43,2062,,-1108.11,USD,2024-04-30,2026-04-12T16:38:22.002907+02:00,,pending,,debit,Applied to arrears (EOD),105,24,,to_loan_arrears_eod
+58,2062,,-411.69,USD,2024-04-30,2026-04-12T18:28:53.509211+02:00,,pending,,debit,Applied to arrears (EOD),120,24,,to_loan_arrears_eod
 26,2084,58,302.34,USD,2024-04-01,2026-04-10T19:11:32.949371+02:00,,pending,,credit,Overpayment,,,,from_receipt
+75,2084,,-302.34,USD,2024-04-01,2026-04-12T22:03:37.090746+02:00,,pending,,debit,Reallocate (remove prior unapplied),,58,,other
+44,2084,,-30.41,USD,2024-04-30,2026-04-12T16:38:22.745961+02:00,,pending,,debit,Applied to arrears (EOD),106,58,,to_loan_arrears_eod
+59,2084,,-271.93,USD,2024-04-30,2026-04-12T18:28:54.479132+02:00,,pending,,debit,Applied to arrears (EOD),121,58,,to_loan_arrears_eod
 33,2086,84,89.77,USD,2024-04-01,2026-04-10T19:12:01.712556+02:00,,pending,,credit,Overpayment,,,,from_receipt
+82,2086,,-89.77,USD,2024-04-01,2026-04-12T22:03:59.427769+02:00,,pending,,debit,Reallocate (remove prior unapplied),,84,,other
+45,2086,,-13.87,USD,2024-04-30,2026-04-12T16:38:23.359247+02:00,,pending,,debit,Applied to arrears (EOD),107,84,,to_loan_arrears_eod
+60,2086,,-75.9,USD,2024-04-30,2026-04-12T18:28:54.994129+02:00,,pending,,debit,Applied to arrears (EOD),122,84,,to_loan_arrears_eod
 31,2163,80,160.03,USD,2024-04-01,2026-04-10T19:11:57.487753+02:00,,pending,,credit,Overpayment,,,,from_receipt
+80,2163,,-160.03,USD,2024-04-01,2026-04-12T22:03:55.568102+02:00,,pending,,debit,Reallocate (remove prior unapplied),,80,,other
+61,2163,,-87.29,USD,2024-04-30,2026-04-12T18:28:55.496353+02:00,,pending,,debit,Applied to arrears (EOD),123,80,,to_loan_arrears_eod
 18,2165,26,1649.32,USD,2024-04-01,2026-04-10T19:11:00.810985+02:00,,pending,,credit,Overpayment,,,,from_receipt
+67,2165,,-1649.32,USD,2024-04-01,2026-04-12T22:03:10.866598+02:00,,pending,,debit,Reallocate (remove prior unapplied),,26,,other
+46,2165,,-684.01,USD,2024-04-30,2026-04-12T16:38:24.340501+02:00,,pending,,debit,Applied to arrears (EOD),108,26,,to_loan_arrears_eod
+62,2165,,-965.31,USD,2024-04-30,2026-04-12T18:28:56.466433+02:00,,pending,,debit,Applied to arrears (EOD),124,26,,to_loan_arrears_eod
 24,2174,53,319.3,USD,2024-04-01,2026-04-10T19:11:28.239574+02:00,,pending,,credit,Overpayment,,,,from_receipt
+73,2174,,-319.3,USD,2024-04-01,2026-04-12T22:03:33.085455+02:00,,pending,,debit,Reallocate (remove prior unapplied),,53,,other
+47,2174,,-130.67,USD,2024-04-30,2026-04-12T16:38:25.558617+02:00,,pending,,debit,Applied to arrears (EOD),109,53,,to_loan_arrears_eod
+63,2174,,-188.63,USD,2024-04-30,2026-04-12T18:28:57.384632+02:00,,pending,,debit,Applied to arrears (EOD),125,53,,to_loan_arrears_eod
 20,2187,31,926.99,USD,2024-04-01,2026-04-10T19:11:07.200962+02:00,,pending,,credit,Overpayment,,,,from_receipt
+69,2187,,-926.99,USD,2024-04-01,2026-04-12T22:03:15.103118+02:00,,pending,,debit,Reallocate (remove prior unapplied),,31,,other
+48,2187,,-491.47,USD,2024-04-30,2026-04-12T16:38:26.436610+02:00,,pending,,debit,Applied to arrears (EOD),110,31,,to_loan_arrears_eod
+64,2187,,-435.52,USD,2024-04-30,2026-04-12T18:28:58.100819+02:00,,pending,,debit,Applied to arrears (EOD),126,31,,to_loan_arrears_eod
 21,2253,32,603.95,USD,2024-04-01,2026-04-10T19:11:08.777971+02:00,,pending,,credit,Overpayment,,,,from_receipt
+70,2253,,-603.95,USD,2024-04-01,2026-04-12T22:03:16.204728+02:00,,pending,,debit,Reallocate (remove prior unapplied),,32,,other
+49,2253,,-603.95,USD,2024-04-30,2026-04-12T16:38:27.178929+02:00,,pending,,debit,Applied to arrears (EOD),111,32,,to_loan_arrears_eod

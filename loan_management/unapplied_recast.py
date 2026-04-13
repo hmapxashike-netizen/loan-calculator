@@ -298,12 +298,41 @@ def _credit_unapplied_funds(
     value_date: date,
     currency: str = "USD",
 ) -> None:
-    """Insert a credit row into unapplied_funds (ledger-style, append-only)."""
+    """
+    Insert a credit row into unapplied_funds (ledger-style, append-only).
+
+    Guardrail: credit rows for receipt overpayment must be backed by
+    ``loan_repayment_allocation.unallocated`` for the same ``repayment_id``.
+    """
+    amt = float(as_10dp(amount))
+    if amt <= 1e-6:
+        raise ValueError(
+            f"Refusing unapplied credit for repayment_id={repayment_id}: amount must be > 0."
+        )
     with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COALESCE(unallocated, 0) AS unallocated
+            FROM loan_repayment_allocation
+            WHERE repayment_id = %s
+            """,
+            (repayment_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(
+                f"Refusing unapplied credit for repayment_id={repayment_id}: no allocation row found."
+            )
+        unallocated = float(as_10dp(row[0] if isinstance(row, tuple) else row.get("unallocated", 0)))
+        if unallocated + 1e-6 < amt:
+            raise ValueError(
+                f"Refusing unapplied credit for repayment_id={repayment_id}: "
+                f"credit={amt} exceeds allocation.unallocated={unallocated}."
+            )
         cur.execute(
             """
             INSERT INTO unapplied_funds (loan_id, repayment_id, amount, currency, value_date, entry_type, reference)
             VALUES (%s, %s, %s, %s, %s, 'credit', 'Overpayment')
             """,
-            (loan_id, repayment_id, float(as_10dp(amount)), currency, value_date),
+            (loan_id, repayment_id, amt, currency, value_date),
         )

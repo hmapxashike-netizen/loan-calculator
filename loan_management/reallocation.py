@@ -108,6 +108,20 @@ def reallocate_repayment(
                 amount, opening_balances, bucket_order, profile_key,
                 state_as_of=eff_date, repayment_id=repayment_id,
             )
+            desired_remaining_arrears = float(
+                as_10dp(
+                    max(0.0, opening_balances.get("interest_arrears_balance", 0.0) - desired_alloc.get("alloc_interest_arrears", 0.0))
+                    + max(0.0, opening_balances.get("default_interest_balance", 0.0) - desired_alloc.get("alloc_default_interest", 0.0))
+                    + max(0.0, opening_balances.get("penalty_interest_balance", 0.0) - desired_alloc.get("alloc_penalty_interest", 0.0))
+                    + max(0.0, opening_balances.get("principal_arrears", 0.0) - desired_alloc.get("alloc_principal_arrears", 0.0))
+                    + max(0.0, opening_balances.get("fees_charges_balance", 0.0) - desired_alloc.get("alloc_fees_charges", 0.0))
+                )
+            )
+            if desired_unapplied > 1e-6 and desired_remaining_arrears > 1e-6:
+                raise ValueError(
+                    f"Policy violation for repayment {repayment_id}: unapplied={desired_unapplied} while "
+                    f"arrears still outstanding={desired_remaining_arrears}."
+                )
             def _same_10dp(a, b):
                 return as_10dp(a or 0) == as_10dp(b or 0)
             if all(
@@ -119,9 +133,29 @@ def reallocate_repayment(
                 )
             ) and _same_10dp(alloc_row.get("unallocated", 0), desired_unapplied):
                 # Allocation/unapplied is already correct, but we may still be
-                # missing the GL journal backing for unapplied overpayment.
+                # missing the unapplied ledger credit and/or GL journal backing.
                 # Backfill it idempotently (post_event replaces by (event_id,event_tag)).
                 if desired_unapplied > 1e-6:
+                    cur.execute(
+                        """
+                        SELECT COALESCE(SUM(amount), 0)
+                        FROM unapplied_funds
+                        WHERE repayment_id = %s
+                          AND entry_type = 'credit'
+                          AND reference = 'Overpayment'
+                        """,
+                        (repayment_id,),
+                    )
+                    _credit_row = cur.fetchone()
+                    if isinstance(_credit_row, dict):
+                        existing_credit_raw = next(iter(_credit_row.values()), 0)
+                    else:
+                        existing_credit_raw = (_credit_row[0] if _credit_row else 0)
+                    existing_credit = float(as_10dp(existing_credit_raw or 0))
+                    if existing_credit + 1e-6 < desired_unapplied:
+                        # Guard: never allow GL overpayment credit without matching ledger credit.
+                        missing_credit = float(as_10dp(desired_unapplied - existing_credit))
+                        _credit_unapplied_funds(conn, loan_id, repayment_id, missing_credit, eff_date)
                     try:
                         from accounting.service import AccountingService
                         from decimal import Decimal
@@ -248,6 +282,20 @@ def reallocate_repayment(
         amount, state_before, bucket_order, profile_key,
         state_as_of=eff_date, repayment_id=repayment_id,
     )
+    new_remaining_arrears = float(
+        as_10dp(
+            max(0.0, state_before.get("interest_arrears_balance", 0.0) - new_alloc.get("alloc_interest_arrears", 0.0))
+            + max(0.0, state_before.get("default_interest_balance", 0.0) - new_alloc.get("alloc_default_interest", 0.0))
+            + max(0.0, state_before.get("penalty_interest_balance", 0.0) - new_alloc.get("alloc_penalty_interest", 0.0))
+            + max(0.0, state_before.get("principal_arrears", 0.0) - new_alloc.get("alloc_principal_arrears", 0.0))
+            + max(0.0, state_before.get("fees_charges_balance", 0.0) - new_alloc.get("alloc_fees_charges", 0.0))
+        )
+    )
+    if new_unapplied > 1e-6 and new_remaining_arrears > 1e-6:
+        raise ValueError(
+            f"Policy violation for repayment {repayment_id}: unapplied={new_unapplied} while "
+            f"arrears still outstanding={new_remaining_arrears}."
+        )
 
     new_apr = new_alloc.get("alloc_principal_not_due", 0.0)
     new_apa = new_alloc.get("alloc_principal_arrears", 0.0)

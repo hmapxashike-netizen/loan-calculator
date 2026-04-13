@@ -106,8 +106,6 @@ def allocate_repayment_waterfall(
                 amount, balances, bucket_order, profile_key,
                 state_as_of=state_as_of, repayment_id=repayment_id,
             )
-            if unapplied > 1e-6:
-                _credit_unapplied_funds(conn, loan_id, repayment_id, unapplied, eff_date)
 
             alloc_principal_not_due = alloc.get("alloc_principal_not_due", 0.0)
             alloc_principal_arrears = alloc.get("alloc_principal_arrears", 0.0)
@@ -128,6 +126,20 @@ def allocate_repayment_waterfall(
                 + alloc_penalty_interest
             )
             alloc_fees_total = alloc_fees_charges
+            remaining_arrears = float(
+                as_10dp(
+                    max(0.0, balances.get("interest_arrears_balance", 0.0) - alloc_interest_arrears)
+                    + max(0.0, balances.get("default_interest_balance", 0.0) - alloc_default_interest)
+                    + max(0.0, balances.get("penalty_interest_balance", 0.0) - alloc_penalty_interest)
+                    + max(0.0, balances.get("principal_arrears", 0.0) - alloc_principal_arrears)
+                    + max(0.0, balances.get("fees_charges_balance", 0.0) - alloc_fees_charges)
+                )
+            )
+            if unapplied > 1e-6 and remaining_arrears > 1e-6:
+                raise ValueError(
+                    f"Policy violation for repayment {repayment_id}: unapplied={unapplied} while "
+                    f"arrears still outstanding={remaining_arrears}."
+                )
             total_alloc = alloc_principal_total + alloc_interest_total + alloc_fees_total
             if abs((total_alloc + unapplied) - amount) > 0.01:
                 raise ValueError(
@@ -165,6 +177,8 @@ def allocate_repayment_waterfall(
                     event_type,
                 ),
             )
+            if unapplied > 1e-6:
+                _credit_unapplied_funds(conn, loan_id, repayment_id, unapplied, eff_date)
 
             try:
                 from accounting.service import AccountingService

@@ -135,6 +135,16 @@ def render_eod_config_tab(
         disabled=True,
         key="syscfg_eod_task_engine",
     )
+    eod_tasks["incremental_loan_engine"] = st.checkbox(
+        "Incremental loan engine (resume from prior-day engine snapshot; strict invalidation)",
+        value=eod_tasks.get("incremental_loan_engine", False),
+        key="syscfg_eod_task_incremental_engine",
+        help=(
+            "When enabled, EOD reuses a stored accrual-engine checkpoint from the prior calendar "
+            "day instead of replaying from disbursement. Falls back to full replay when the "
+            "checkpoint is missing or invalidated (reversals, mid-gap schedule bumps, replay mode)."
+        ),
+    )
     eod_tasks["post_accounting_events"] = st.checkbox(
         "Post accounting events after EOD",
         value=eod_tasks.get("post_accounting_events", False),
