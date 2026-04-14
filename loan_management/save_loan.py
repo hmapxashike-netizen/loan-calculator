@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pandas as pd
@@ -18,6 +19,9 @@ from .db import Json, _connection
 from .schema_ddl import _ensure_loans_schema_for_save_loan
 from .schedules import format_schedule_date_for_storage
 from .serialization import _date_conv
+from .loan_approval_gl_guard import should_defer_loan_approval_gl_at_capture
+
+_logger = logging.getLogger(__name__)
 
 
 def save_loan(
@@ -267,27 +271,34 @@ def save_loan(
                     ),
                 )
 
-    try:
-        from accounting.service import AccountingService
-
-        svc = AccountingService()
-        payload = build_loan_approval_journal_payload(details)
-
-        disb_date_str = details.get("disbursement_date") or details.get("start_date")
-        e_date = _date_conv(disb_date_str) if disb_date_str else None
-
-        _post_event_for_loan(
-            svc,
+    if should_defer_loan_approval_gl_at_capture(details):
+        _logger.info(
+            "Skipping LOAN_APPROVAL GL for loan_id=%s: disbursement date is after system business date "
+            "(journal will post on first EOD with as_of_date on or after disbursement).",
             loan_id,
-            event_type="LOAN_APPROVAL",
-            reference=f"LOAN-{loan_id}",
-            description=f"Loan Approval and Disbursement for {loan_id}",
-            event_id=str(loan_id),
-            created_by="system",
-            entry_date=e_date,
-            payload=payload,
         )
-    except Exception as e:
-        print(f"Failed to post LOAN_APPROVAL journal for loan {loan_id}: {e}")
+    else:
+        try:
+            from accounting.service import AccountingService
+
+            svc = AccountingService()
+            payload = build_loan_approval_journal_payload(details)
+
+            disb_date_str = details.get("disbursement_date") or details.get("start_date")
+            e_date = _date_conv(disb_date_str) if disb_date_str else None
+
+            _post_event_for_loan(
+                svc,
+                loan_id,
+                event_type="LOAN_APPROVAL",
+                reference=f"LOAN-{loan_id}",
+                description=f"Loan Approval and Disbursement for {loan_id}",
+                event_id=str(loan_id),
+                created_by="system",
+                entry_date=e_date,
+                payload=payload,
+            )
+        except Exception as e:
+            _logger.warning("Failed to post LOAN_APPROVAL journal for loan %s: %s", loan_id, e)
 
     return loan_id

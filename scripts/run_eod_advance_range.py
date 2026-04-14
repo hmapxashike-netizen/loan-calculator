@@ -15,6 +15,13 @@ Run from project root:
   python scripts/run_eod_advance_range.py 2025-06-17 2025-06-20
   python scripts/run_eod_advance_range.py 2025-06-17 2025-06-20 --quiet
   python scripts/run_eod_advance_range.py 2025-06-17 2025-06-20 --dry-run
+  # Exactly 46 successful EOD days then exit (no 47th run):
+  python scripts/run_eod_advance_range.py 2025-06-17 2025-12-31 --max-runs 46
+  # Or set _EDITABLE_MAX_RUNS = 46 near the top of this file (optional cap without CLI).
+  # While a long run is going: after the day you want completes, create the stop
+  # file; the next loop iteration exits before starting another EOD:
+  #   Windows: New-Item -ItemType File .eod_advance_range_stop
+  #   Unix:    touch .eod_advance_range_stop
 """
 from __future__ import annotations
 
@@ -25,6 +32,14 @@ import sys
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+
+_DEFAULT_STOP_FILE = os.path.join(_PROJECT_ROOT, ".eod_advance_range_stop")
+
+# Optional cap on successful EOD advances in one invocation (no CLI flag needed).
+# None = use only --max-runs (default 3660). If set, the effective cap is
+# min(--max-runs, this value), so e.g. 46 here stops after run 46 even when
+# end_date would allow more days.
+_EDITABLE_MAX_RUNS: int | None = None
 
 
 def _parse_date(s: str):
@@ -77,9 +92,29 @@ def main() -> None:
         type=int,
         default=3660,
         metavar="N",
-        help="Safety cap on EOD invocations (default 3660 ~10 years).",
+        help=(
+            "Run at most N successful EOD advances in this process, then exit 3 "
+            "(before starting the (N+1)th). Example: --max-runs 46 stops after run 46 completes."
+        ),
+    )
+    parser.add_argument(
+        "--stop-file",
+        metavar="PATH",
+        nargs="?",
+        const=_DEFAULT_STOP_FILE,
+        default=None,
+        help=(
+            "If set (default path when flag is bare: .eod_advance_range_stop in project root), "
+            "before each EOD the script checks this path; if the file exists, it is removed and "
+            "the script exits 0 without running that EOD. Create the file after the last day you "
+            "want has finished printing."
+        ),
     )
     args = parser.parse_args()
+
+    effective_max_runs = int(args.max_runs)
+    if _EDITABLE_MAX_RUNS is not None:
+        effective_max_runs = min(effective_max_runs, int(_EDITABLE_MAX_RUNS))
 
     start = _parse_date(args.start_date)
     end = _parse_date(args.end_date)
@@ -112,25 +147,46 @@ def main() -> None:
         return
 
     n_days = (end - planned_first).days + 1
+    capped = min(n_days, effective_max_runs)
     if not args.quiet:
+        span_note = (
+            f"up to {capped} run(s) (calendar span {n_days} day(s), cap {effective_max_runs})"
+            if capped < n_days
+            else f"{n_days} time(s)"
+        )
         print(
-            f"Will run EOD advance {n_days} time(s): "
+            f"Will run EOD advance {span_note}: "
             f"process {planned_first.isoformat()} … {end.isoformat()} "
-            f"(system date will become {(end + timedelta(days=1)).isoformat()})."
+            f"(system date would become {(end + timedelta(days=1)).isoformat()} if the cap is not hit)."
         )
 
     if args.dry_run:
         print("Dry run: no EOD executed.")
         return
 
+    stop_file = args.stop_file
     runs = 0
     while True:
         cfg = get_system_business_config()
         cur = cfg["current_system_date"]
         if cur > end:
             break
-        if runs >= args.max_runs:
-            print(f"Stopped: hit --max-runs {args.max_runs}.", file=sys.stderr)
+        if stop_file and os.path.isfile(stop_file):
+            try:
+                os.remove(stop_file)
+            except OSError:
+                pass
+            print(
+                f"Stop file was present ({stop_file}); exiting before next EOD. "
+                f"Completed {runs} run(s) in this session; current system date {cur.isoformat()}.",
+                file=sys.stderr,
+            )
+            sys.exit(0)
+        if runs >= effective_max_runs:
+            why = f"--max-runs {args.max_runs}"
+            if _EDITABLE_MAX_RUNS is not None:
+                why = f"min(--max-runs {args.max_runs}, _EDITABLE_MAX_RUNS {_EDITABLE_MAX_RUNS}) = {effective_max_runs}"
+            print(f"Stopped: hit run cap ({why}).", file=sys.stderr)
             sys.exit(3)
 
         result = run_eod_process()

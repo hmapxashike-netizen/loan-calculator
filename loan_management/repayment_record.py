@@ -8,6 +8,7 @@ from decimal_utils import as_10dp
 
 from .cash_gl import validate_source_cash_gl_account_id_for_new_posting
 from .db import _connection
+from .loan_approval_gl_guard import require_loan_approval_gl_before_repayment
 from .repayment_waterfall import allocate_repayment_waterfall
 from .serialization import _date_conv
 
@@ -56,6 +57,7 @@ def record_repayment(
     elif isinstance(sdate, str):
         sdate = datetime.fromisoformat(sdate.replace("Z", "+00:00"))
     ref = customer_reference or reference
+    require_loan_approval_gl_before_repayment(loan_id)
     src_cash = validate_source_cash_gl_account_id_for_new_posting(
         source_cash_gl_account_id,
         field_label="source_cash_gl_account_id",

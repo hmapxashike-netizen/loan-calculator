@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 import base64
 from html import escape as html_escape
 from datetime import date, datetime, timedelta
@@ -23,6 +25,39 @@ from style import (
     render_sub_sub_header,
 )
 from ui.components import inject_tertiary_hyperlink_css_once
+
+
+def _configure_logging_from_env() -> None:
+    """
+    Ensure INFO-level logs are visible in Streamlit terminal output when requested.
+
+    Streamlit apps often run with WARNING-level defaults; our EOD timing and
+    incremental stats are emitted via logger.info(...).
+    """
+    lvl_raw = (os.environ.get("PYTHONLOGLEVEL") or "").strip().upper()
+    if not lvl_raw:
+        return
+    level = getattr(logging, lvl_raw, None)
+    if not isinstance(level, int):
+        return
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    # Avoid duplicate handlers on hot reload.
+    if not root.handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+    else:
+        for h in root.handlers:
+            try:
+                h.setLevel(level)
+            except Exception:
+                pass
+
+
+_configure_logging_from_env()
 
 
 def _privileged_roles_touch(old_role: str, new_role: str) -> bool:

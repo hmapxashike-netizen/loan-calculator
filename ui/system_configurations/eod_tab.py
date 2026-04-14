@@ -17,7 +17,7 @@ class EodConfigSnapshot(NamedTuple):
     accrual_start_convention_selected: Any
     eod_mode: str
     eod_time: str
-    eod_tasks: dict[str, bool]
+    eod_tasks: dict[str, Any]
     policy_mode: str
     blocking_stages: list
     advance_date_on_degraded: bool
@@ -27,7 +27,7 @@ def render_eod_config_tab(
     *,
     eod_mode: str,
     eod_time: str,
-    eod_tasks: dict[str, bool],
+    eod_tasks: dict[str, Any],
     policy_mode: str,
     blocking_stages: list,
     advance_date_on_degraded: bool,
@@ -137,7 +137,7 @@ def render_eod_config_tab(
     )
     eod_tasks["incremental_loan_engine"] = st.checkbox(
         "Incremental loan engine (resume from prior-day engine snapshot; strict invalidation)",
-        value=eod_tasks.get("incremental_loan_engine", False),
+        value=eod_tasks.get("incremental_loan_engine", True),
         key="syscfg_eod_task_incremental_engine",
         help=(
             "When enabled, EOD reuses a stored accrual-engine checkpoint from the prior calendar "
@@ -165,6 +165,26 @@ def render_eod_config_tab(
         "Send notifications (e.g. SMS/email) based on EOD results",
         value=eod_tasks.get("send_notifications", False),
         key="syscfg_eod_task_notify",
+    )
+    _batch_default = int(eod_tasks.get("loan_engine_commit_batch_size", 250) or 250)
+    eod_tasks["loan_engine_commit_batch_size"] = st.number_input(
+        "Loan engine commit batch size",
+        min_value=1,
+        max_value=10000,
+        value=max(1, min(10000, _batch_default)),
+        step=1,
+        key="syscfg_eod_loan_engine_commit_batch",
+        help=(
+            "Number of successful loan_daily_state writes before a single database COMMIT. "
+            "Higher values reduce WAL/fsync overhead (better for large portfolios). "
+            "Use 1 for legacy per-loan commits. Default 250."
+        ),
+    )
+    eod_tasks["loan_engine_log_timing"] = st.checkbox(
+        "Log detailed loan engine timing (prefetch / compute / commit)",
+        value=bool(eod_tasks.get("loan_engine_log_timing", False)),
+        key="syscfg_eod_loan_engine_log_timing",
+        help="Adds an extra INFO line with prefetch_s, compute_s, commit_s per EOD run.",
     )
 
     st.markdown("**Stage failure policy**")

@@ -1305,9 +1305,173 @@ class AccountingService:
                     lines,
                     posting_policy=policy,
                     gl_anchor_date=anchor_date,
+                    do_commit=False,
                 )
-        except Exception as e:
-            raise e
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def bulk_post_events(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        posting_policy: str | None = None,
+    ) -> None:
+        """
+        Post many GL events in a single DB transaction (one commit at end).
+
+        Each item dict supports the same keys as post_event: event_type, reference,
+        description, event_id, created_by, entry_date (optional), amount (optional),
+        payload (optional), is_reversal (optional), loan_id, repayment_id (optional).
+        Skips items whose event_type has no transaction templates (same as post_event).
+        """
+        if not items:
+            return
+        policy = posting_policy or get_gl_posting_policy()
+        anchor_date = _get_system_business_date_strict() if policy == "standard" else None
+        conn = get_conn()
+        try:
+            repo = AccountingRepository(conn)
+            templates_cache: dict[str, list[dict[str, Any]]] = {}
+            needs_cash_merge_by_event: dict[str, bool] = {}
+            # Only cache account resolution when there are no overrides; override maps can vary per item.
+            account_cache: dict[tuple[str, int | None], dict[str, Any] | None] = {}
+            journal_entries: list[dict[str, Any]] = []
+            for item in items:
+                event_type = item["event_type"]
+                reference = item["reference"]
+                description = item["description"]
+                event_id = item["event_id"]
+                created_by = item.get("created_by") or "system"
+                entry_date = item.get("entry_date")
+                if entry_date is None:
+                    entry_date = anchor_date if anchor_date is not None else _get_system_business_date_strict()
+                amount = item.get("amount")
+                if amount is not None and not isinstance(amount, Decimal):
+                    amount = Decimal(str(amount))
+                payload = item.get("payload")
+                if payload is None:
+                    payload = {}
+                payload = dict(payload)
+                loan_id = item.get("loan_id")
+                repayment_id = item.get("repayment_id")
+                is_reversal = bool(item.get("is_reversal", False))
+                overrides = payload.get("account_overrides")
+                if not isinstance(overrides, dict):
+                    overrides = {}
+
+                templates = templates_cache.get(event_type)
+                if templates is None:
+                    templates = repo.get_transaction_templates(event_type)
+                    templates_cache[event_type] = templates
+                if not templates:
+                    continue
+
+                need_cash = needs_cash_merge_by_event.get(event_type)
+                if need_cash is None:
+                    need_cash = any((t.get("system_tag") == "cash_operating") for t in templates)
+                    needs_cash_merge_by_event[event_type] = need_cash
+                if need_cash and loan_id is not None:
+                    # Only do the extra DB lookup when templates actually require cash_operating.
+                    payload = _merge_cash_gl_into_payload(int(loan_id), repayment_id, payload)
+                    overrides = payload.get("account_overrides")
+                    if not isinstance(overrides, dict):
+                        overrides = {}
+
+                lines: list[dict[str, Any]] = []
+                for tmpl in templates:
+                    sys_tag = tmpl["system_tag"]
+                    # Cache only when overrides empty (stable resolution path).
+                    if overrides:
+                        account = repo.resolve_posting_account_for_tag(
+                            sys_tag,
+                            loan_id=loan_id,
+                            account_overrides=overrides,
+                        )
+                    else:
+                        ck = (str(sys_tag), int(loan_id) if loan_id is not None else None)
+                        if ck in account_cache:
+                            account = account_cache[ck]
+                        else:
+                            account = repo.resolve_posting_account_for_tag(
+                                sys_tag,
+                                loan_id=loan_id,
+                                account_overrides={},
+                            )
+                            account_cache[ck] = account
+                    if not account:
+                        raise ValueError(f"Account not found for system tag: {tmpl['system_tag']}")
+
+                    line_amount = payload.get(sys_tag, amount)
+                    if line_amount is None:
+                        line_amount = Decimal("0.0")
+                    else:
+                        line_amount = as_10dp(Decimal(str(line_amount)))
+
+                    direction = tmpl["direction"]
+                    if is_reversal:
+                        direction = "CREDIT" if direction == "DEBIT" else "DEBIT"
+
+                    debit = line_amount if direction == "DEBIT" else Decimal("0.0")
+                    credit = line_amount if direction == "CREDIT" else Decimal("0.0")
+
+                    if debit > 0 or credit > 0:
+                        lines.append(
+                            {
+                                "account_id": account["id"],
+                                "debit": debit,
+                                "credit": credit,
+                                "memo": tmpl["description"] or description,
+                            }
+                        )
+
+                if lines:
+                    seen: set[tuple[object, object, object, object]] = set()
+                    deduped_lines = []
+                    for line in lines:
+                        key = (
+                            line["account_id"],
+                            line.get("debit", Decimal("0.0")),
+                            line.get("credit", Decimal("0.0")),
+                            line.get("memo"),
+                        )
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        deduped_lines.append(line)
+                    lines = deduped_lines
+
+                if lines:
+                    assert_journal_lines_balanced(
+                        lines,
+                        context=f"AccountingService.bulk_post_events({event_type!r})",
+                    )
+                    self._validate_not_posting_to_parent_after_transition(conn, entry_date, lines)
+                    journal_entries.append(
+                        {
+                            "entry_date": entry_date,
+                            "reference": reference,
+                            "description": description,
+                            "event_id": event_id,
+                            "event_tag": event_type,
+                            "created_by": created_by,
+                            "lines": lines,
+                        }
+                    )
+            if journal_entries:
+                repo.bulk_save_journal_entries(
+                    journal_entries,
+                    posting_policy=policy,
+                    gl_anchor_date=anchor_date,
+                    do_commit=False,
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

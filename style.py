@@ -34,7 +34,7 @@ import urllib.parse
 import streamlit as st
 
 # Session stores this **integer**; bump when global/brand heading CSS must refresh in the browser.
-_FARNDA_CSS_BUNDLE_VERSION = 46
+_FARNDA_CSS_BUNDLE_VERSION = 50
 _SESSION_FLAG = "_farnda_global_css_bundle_version"
 
 # Heading scale: 15% softer than prior (multiply size by 0.85; weights stepped to valid CSS values)
@@ -56,6 +56,12 @@ BRAND_GREEN = "#5CC346"
 BRAND_TEXT_BODY = "#1e293b"
 BRAND_TEXT_MUTED = "#475569"
 BRAND_TEXT_SOFT = "#64748b"
+
+# Loan Management horizontal subnav only (logo palette; global BRAND_* unchanged)
+LM_TABBAR_NAVY = "#1A3668"
+LM_TABBAR_GREEN = "#52B743"
+LM_TABBAR_ACCENT = "#2B579A"
+LM_TABBAR_BORDER = "#E0E0E0"
 
 # Default underline tabs (``st.tabs`` in main + optional ``nav.farnda-tab-bar`` for custom menus)
 TABS_UNDERLINE_ACTIVE = BRAND_GREEN
@@ -330,6 +336,378 @@ html, body, input, button, textarea, select {
   border-bottom-color: """ + BRAND_GREEN + """ !important;
   font-weight: 600 !important;
   background: transparent !important;
+}
+/* Loan Management: pill tab bar (``#farnda-lm-tabbar`` before subnav ``st.radio``; logo palette) */
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: wrap !important;
+  gap: 0.5rem !important;
+  align-items: stretch !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  margin: 0 0 1rem 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+}
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0.5rem 0.65rem !important;
+  border-radius: 8px !important;
+  border: 1px solid """ + LM_TABBAR_BORDER + """ !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease !important;
+  text-align: center !important;
+}
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] p,
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] p {
+  margin: 0 !important;
+  color: """ + LM_TABBAR_NAVY + """ !important;
+  font-weight: 600 !important;
+  font-size: 0.95rem !important;
+  line-height: 1.25 !important;
+}
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:hover,
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:hover {
+  border-color: """ + LM_TABBAR_GREEN + """ !important;
+}
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked),
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) {
+  background: """ + LM_TABBAR_NAVY + """ !important;
+  border-color: """ + LM_TABBAR_NAVY + """ !important;
+  box-shadow: 0 3px 0 0 """ + LM_TABBAR_GREEN + """ !important;
+}
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) p,
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) p {
+  color: #ffffff !important;
+}
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:focus-within,
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:focus-within {
+  outline: 2px solid """ + LM_TABBAR_ACCENT + """ !important;
+  outline-offset: 2px !important;
+}
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] input[type="radio"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] input[type="radio"] {
+  position: absolute !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+}
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] > input[type="radio"] + div,
+[data-testid="stMain"] [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] svg,
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] > input[type="radio"] + div,
+[data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] svg {
+  display: none !important;
+}
+
+/* Aggressive BaseWeb reset for Loan Management only (hide stubborn circles and pseudo markers). */
+div.stApp [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] div[role="radiogroup"][data-testid="stRadioGroup"],
+div.stApp [data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] div[role="radiogroup"][data-testid="stRadioGroup"] {
+  flex-direction: row !important;
+  align-items: center !important;
+}
+div.stApp [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] > div:first-child,
+div.stApp [data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] > div:first-child,
+div.stApp [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] svg,
+div.stApp [data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] svg {
+  display: none !important;
+}
+div.stApp [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] > div:nth-child(2),
+div.stApp [data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] > div:nth-child(2),
+div.stApp [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] p,
+div.stApp [data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] p {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+div.stApp [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"]::before,
+div.stApp [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"]::after,
+div.stApp [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] *::before,
+div.stApp [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] *::after,
+div.stApp [data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"]::before,
+div.stApp [data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"]::after,
+div.stApp [data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] *::before,
+div.stApp [data-testid="stAppViewContainer"] > .main [data-testid="stElementContainer"]:has(#farnda-lm-tabbar)
+  + [data-testid="stElementContainer"] label[data-baseweb="radio"] *::after {
+  content: none !important;
+}
+/* Fallback: target Loan Management radio by widget key (most robust against container shifts). */
+div.stApp [data-testid="stRadioGroup"]:has(input[id*="loan_mgmt_subnav"]),
+div.stApp [data-testid="stRadioGroup"]:has(input[name*="loan_mgmt_subnav"]) {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: stretch !important;
+  justify-content: space-between !important;
+  flex-wrap: wrap !important;
+  gap: 0.5rem !important;
+  width: 100% !important;
+  margin: 0 0 1rem 0 !important;
+  padding: 0 !important;
+}
+div.stApp [data-testid="stRadioGroup"]:has(input[id*="loan_mgmt_subnav"]) label[data-baseweb="radio"],
+div.stApp [data-testid="stRadioGroup"]:has(input[name*="loan_mgmt_subnav"]) label[data-baseweb="radio"] {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0.5rem 0.65rem !important;
+  border-radius: 8px !important;
+  border: 1px solid """ + LM_TABBAR_BORDER + """ !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+div.stApp [data-testid="stRadioGroup"]:has(input[id*="loan_mgmt_subnav"]) label[data-baseweb="radio"] p,
+div.stApp [data-testid="stRadioGroup"]:has(input[name*="loan_mgmt_subnav"]) label[data-baseweb="radio"] p {
+  margin: 0 !important;
+  padding: 0 !important;
+  color: """ + LM_TABBAR_NAVY + """ !important;
+}
+div.stApp [data-testid="stRadioGroup"]:has(input[id*="loan_mgmt_subnav"]) label[data-baseweb="radio"]:hover,
+div.stApp [data-testid="stRadioGroup"]:has(input[name*="loan_mgmt_subnav"]) label[data-baseweb="radio"]:hover {
+  border-color: """ + LM_TABBAR_GREEN + """ !important;
+}
+div.stApp [data-testid="stRadioGroup"]:has(input[id*="loan_mgmt_subnav"]) label[data-baseweb="radio"]:has(input:checked),
+div.stApp [data-testid="stRadioGroup"]:has(input[name*="loan_mgmt_subnav"]) label[data-baseweb="radio"]:has(input:checked) {
+  background: """ + LM_TABBAR_NAVY + """ !important;
+  border-color: """ + LM_TABBAR_NAVY + """ !important;
+  box-shadow: 0 3px 0 0 """ + LM_TABBAR_GREEN + """ !important;
+}
+div.stApp [data-testid="stRadioGroup"]:has(input[id*="loan_mgmt_subnav"]) label[data-baseweb="radio"]:has(input:checked) p,
+div.stApp [data-testid="stRadioGroup"]:has(input[name*="loan_mgmt_subnav"]) label[data-baseweb="radio"]:has(input:checked) p {
+  color: #ffffff !important;
+}
+div.stApp [data-testid="stRadioGroup"]:has(input[id*="loan_mgmt_subnav"]) label[data-baseweb="radio"] > div:first-child,
+div.stApp [data-testid="stRadioGroup"]:has(input[name*="loan_mgmt_subnav"]) label[data-baseweb="radio"] > div:first-child,
+div.stApp [data-testid="stRadioGroup"]:has(input[id*="loan_mgmt_subnav"]) label[data-baseweb="radio"] svg,
+div.stApp [data-testid="stRadioGroup"]:has(input[name*="loan_mgmt_subnav"]) label[data-baseweb="radio"] svg {
+  display: none !important;
+}
+/* Horizontal section subnav — underline (Reamortisation, Teller, Statements only; each ``:has`` fully prefixed) */
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"],
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"],
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] {
+  flex-wrap: wrap !important;
+  gap: 0.35rem 0.45rem !important;
+  align-items: flex-end !important;
+  border-bottom: 1px solid """ + TABS_UNDERLINE_TRACK + """ !important;
+  margin: 0 0 0.65rem 0 !important;
+  padding: 0 0 0.15rem 0 !important;
+  background: transparent !important;
+}
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"],
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"],
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  margin: 0 0 -1px 0 !important;
+  padding: 0.48rem 0.55rem 0.42rem !important;
+  min-height: auto !important;
+  border-bottom: """ + str(TAB_UNDERLINE_WIDTH_PX) + """px solid transparent !important;
+}
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] p,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] p,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] p {
+  color: """ + BRAND_NAVY + """ !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em !important;
+  margin: 0 !important;
+}
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:hover,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:hover,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:hover {
+  background: rgba(17, 60, 122, 0.04) !important;
+}
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked),
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked),
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) {
+  border-bottom-color: """ + BRAND_GREEN + """ !important;
+  background: transparent !important;
+}
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) p,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) p,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) p {
+  color: """ + BRAND_NAVY + """ !important;
+}
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] svg,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] svg,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] svg,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] > input[type="radio"] + div,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] > input[type="radio"] + div,
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] > input[type="radio"] + div {
+  display: none !important;
+}
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] input[type="radio"],
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] input[type="radio"],
+[data-testid="stMain"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] input[type="radio"] {
+  position: absolute !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] {
+  flex-wrap: wrap !important;
+  gap: 0.35rem 0.45rem !important;
+  align-items: flex-end !important;
+  border-bottom: 1px solid """ + TABS_UNDERLINE_TRACK + """ !important;
+  margin: 0 0 0.65rem 0 !important;
+  padding: 0 0 0.15rem 0 !important;
+  background: transparent !important;
+}
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  margin: 0 0 -1px 0 !important;
+  padding: 0.48rem 0.55rem 0.42rem !important;
+  min-height: auto !important;
+  border-bottom: """ + str(TAB_UNDERLINE_WIDTH_PX) + """px solid transparent !important;
+}
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] p,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] p,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] p {
+  color: """ + BRAND_NAVY + """ !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em !important;
+  margin: 0 !important;
+}
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:hover,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:hover,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:hover {
+  background: rgba(17, 60, 122, 0.04) !important;
+}
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked),
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked),
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) {
+  border-bottom-color: """ + BRAND_GREEN + """ !important;
+  background: transparent !important;
+}
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) p,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) p,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"]:has(input:checked) p {
+  color: """ + BRAND_NAVY + """ !important;
+}
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] svg,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] svg,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] svg,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] > input[type="radio"] + div,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] > input[type="radio"] + div,
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] > input[type="radio"] + div {
+  display: none !important;
+}
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-ream-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] input[type="radio"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-teller-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] input[type="radio"],
+[data-testid="stAppViewContainer"] > .main [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"]:has(p.farnda-statements-section-nav)
+  + [data-testid="stElementContainer"] [data-testid="stRadioGroup"] label[data-baseweb="radio"] input[type="radio"] {
+  position: absolute !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 /* Custom menus: <nav class="farnda-tab-bar" aria-label="…">…</nav> with <a class="farnda-tab"> / .farnda-tab--active */
 [data-testid="stMain"] nav.farnda-tab-bar,

@@ -72,19 +72,30 @@ def render_teller_ui(
     from accounting.service import AccountingService
     from services import teller_service
 
-    acct_svc = AccountingService()
-
-    tab_single, tab_batch, tab_reverse, tab_borrowing_payment, tab_writeoff_recovery = st.tabs(
-        [
-            "Single repayment",
-            "Batch payments",
-            "Reverse receipt",
-            "Payment of borrowings",
-            "Receipt from fully written-off loan",
-        ]
+    _teller_sections = [
+        "Single repayment",
+        "Batch payments",
+        "Reverse receipt",
+        "Payment of borrowings",
+        "Receipt from fully written-off loan",
+    ]
+    st.session_state.setdefault("teller_subnav", _teller_sections[0])
+    if st.session_state["teller_subnav"] not in _teller_sections:
+        st.session_state["teller_subnav"] = _teller_sections[0]
+    st.markdown(
+        '<p class="farnda-teller-section-nav" aria-hidden="true"></p>',
+        unsafe_allow_html=True,
     )
+    st.radio(
+        "Teller section",
+        _teller_sections,
+        key="teller_subnav",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    _teller_active = st.session_state["teller_subnav"]
 
-    with tab_single:
+    if _teller_active == "Single repayment":
         render_sub_sub_header("Single repayment capture")
         customers_list = list_customers(status="active") or []
         if not customers_list:
@@ -255,7 +266,7 @@ def render_teller_ui(
                                         st.error(f"Could not record repayment: {e}")
                                         st.exception(e)
 
-    with tab_batch:
+    elif _teller_active == "Batch payments":
         render_sub_sub_header("Batch payments")
         st.caption(
             "Upload an Excel file with repayment rows. **source_cash_gl_account_id** must be a UUID that appears in the "
@@ -320,7 +331,7 @@ def render_teller_ui(
                 st.error(f"Could not read file: {e}")
                 st.exception(e)
 
-    with tab_reverse:
+    elif _teller_active == "Reverse receipt":
         render_sub_sub_header("Reverse receipt")
         st.caption("Select a customer and loan, then enter a receipt ID or choose one from the list to reverse it.")
 
@@ -436,7 +447,8 @@ def render_teller_ui(
                                     )
                                     st.exception(e)
 
-    with tab_borrowing_payment:
+    elif _teller_active == "Payment of borrowings":
+        acct_svc = AccountingService()
         render_sub_sub_header("Payment of borrowings")
         st.caption(
             "Use this tab to post payments made to external lenders/borrowings. "
@@ -509,7 +521,8 @@ def render_teller_ui(
                     st.error(f"Error posting borrowing payment journal: {e}")
                     st.exception(e)
 
-    with tab_writeoff_recovery:
+    elif _teller_active == "Receipt from fully written-off loan":
+        acct_svc = AccountingService()
         render_sub_sub_header("Receipt from a fully written-off loan")
         st.caption(
             "Use this tab when you receive a recovery on a loan that has been fully written off. "

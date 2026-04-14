@@ -6,7 +6,8 @@ Discrete statement events for flow-based loan outstanding (no GL changes).
   omit fee deltas when analysing payment-inclusive flows).
 - **Full slice:** drawdown debits + daily accruals + one line per receipt for allocations
   (net ``alloc_*`` from ``get_repayments_with_allocations``); optional ``meta['unapplied_delta']``
-  when ``unallocated`` is non-zero, with matching unapplied-ledger **credit** rows omitted.
+  when ``unallocated`` is non-zero, with matching unapplied-ledger **credit** / **reversal**
+  rows omitted when they duplicate that delta.
   No separate fee-balance delta lines (fee movement is inside ``alloc_fees_charges``).
 
 Unapplied-ledger-only movements stay out of the **loan outstanding** running total until
@@ -340,8 +341,13 @@ def _dedupe_unapplied_ledger_credits_bundled_on_receipts(
     unapplied_events: list[StatementEvent],
 ) -> list[StatementEvent]:
     """
-    Remove unapplied-ledger **credit** events that only repeat the same delta already carried
+    Remove unapplied-ledger rows that only repeat the same ``unapplied_delta`` already carried
     on a ``PAYMENT_RECEIPT`` for the same repayment and date.
+
+    Covers **credit** (overpayment bundled on the receipt line) and **reversal** (negative
+    ``unallocated`` on the reversal receipt). Without dropping the ledger reversal, dual
+    running would zero unapplied on the receipt reversal row then subtract again on the
+    ledger line (incorrect negative balance on statements).
     """
     bundled: dict[tuple[int, date], Decimal] = {}
     for e in loan_events:
@@ -370,7 +376,7 @@ def _dedupe_unapplied_ledger_credits_bundled_on_receipts(
             kept.append(u)
             continue
         kind = str(u.meta.get("entry_kind") or "").lower()
-        if kind != "credit":
+        if kind not in ("credit", "reversal"):
             kept.append(u)
             continue
         rid_u = u.repayment_id or 0

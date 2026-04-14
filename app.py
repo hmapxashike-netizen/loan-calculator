@@ -1227,9 +1227,7 @@ def render_loan_app_section(nav: str) -> None:
 
         render_portfolio_reports_ui()
     elif nav == "Loan management":
-        # Use ``st.tabs`` (Baseweb tab list), not ``st.segmented_control``: theme styles on the
-        # button-group widget override global CSS, so the segmented bar stayed “boxed”. Tabs share
-        # the same underline rules as the rest of the app (see ``style.FARNDA_GLOBAL_CSS``).
+        # Single subnav + one active branch: avoids ``st.tabs`` running every tab body on each rerun.
         _lm_sections = [
             "Loan Capture",
             "Batch Capture",
@@ -1254,69 +1252,74 @@ def render_loan_app_section(nav: str) -> None:
         st.session_state.setdefault("loan_mgmt_subnav", "Loan Capture")
         if st.session_state["loan_mgmt_subnav"] not in _lm_sections:
             st.session_state["loan_mgmt_subnav"] = "Loan Capture"
-        _lm_default = st.session_state["loan_mgmt_subnav"]
-        (
-            t_capture,
-            t_batch,
-            t_schedule,
-            t_calc,
-            t_update,
-            t_suspense,
-            t_approve,
-        ) = st.tabs(_lm_sections, default=_lm_default)
 
-        with t_capture:
+        st.markdown(
+            '<p id="farnda-lm-tabbar" aria-hidden="true"></p>',
+            unsafe_allow_html=True,
+        )
+        st.radio(
+            "Loan management section",
+            _lm_sections,
+            key="loan_mgmt_subnav",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+
+        _lm_active = st.session_state["loan_mgmt_subnav"]
+
+        if _lm_active == "Loan Capture":
             try:
                 from subscription.access import basic_tier_hide_loan_capture
 
-                if basic_tier_hide_loan_capture():
-                    st.warning("Loan capture (origination) requires a **Premium** subscription.")
-                    return
+                _hide_capture = basic_tier_hide_loan_capture()
             except Exception:
-                pass
-            inject_tertiary_hyperlink_css_once()
-            st.session_state.setdefault("capture_open_draft_panel", None)
-            _cap_panel = st.session_state.get("capture_open_draft_panel")
-            st.markdown(
-                '<span class="farnda-lm-subnav-secondary" aria-hidden="true"></span>',
-                unsafe_allow_html=True,
-            )
-            _sc1, _sc2, _sc_sp = st.columns([1.35, 1.45, 4], gap="small")
-            with _sc1:
-                if st.button(
-                    "See Loans for Rework",
-                    key="cap_open_rework_panel",
-                    type="primary",
-                    icon=":material/assignment_return:",
-                    help="Open the list of drafts returned for rework",
-                ):
-                    st.session_state["capture_open_draft_panel"] = (
-                        None if _cap_panel == "rework" else "rework"
-                    )
-                    st.rerun()
-            with _sc2:
-                if st.button(
-                    "Resume Capture Draft",
-                    key="cap_open_staged_panel",
-                    type="primary",
-                    icon=":material/edit_note:",
-                    help="Open staged drafts to resume capture",
-                ):
-                    st.session_state["capture_open_draft_panel"] = (
-                        None if _cap_panel == "staged" else "staged"
-                    )
-                    st.rerun()
-            with _sc_sp:
-                st.empty()
-            capture_loan_ui()
+                _hide_capture = False
+            if _hide_capture:
+                st.warning("Loan capture (origination) requires a **Premium** subscription.")
+            else:
+                inject_tertiary_hyperlink_css_once()
+                st.session_state.setdefault("capture_open_draft_panel", None)
+                _cap_panel = st.session_state.get("capture_open_draft_panel")
+                st.markdown(
+                    '<span class="farnda-lm-subnav-secondary" aria-hidden="true"></span>',
+                    unsafe_allow_html=True,
+                )
+                _sc1, _sc2, _sc_sp = st.columns([1.35, 1.45, 4], gap="small")
+                with _sc1:
+                    if st.button(
+                        "See Loans for Rework",
+                        key="cap_open_rework_panel",
+                        type="primary",
+                        icon=":material/assignment_return:",
+                        help="Open the list of drafts returned for rework",
+                    ):
+                        st.session_state["capture_open_draft_panel"] = (
+                            None if _cap_panel == "rework" else "rework"
+                        )
+                        st.rerun()
+                with _sc2:
+                    if st.button(
+                        "Resume Capture Draft",
+                        key="cap_open_staged_panel",
+                        type="primary",
+                        icon=":material/edit_note:",
+                        help="Open staged drafts to resume capture",
+                    ):
+                        st.session_state["capture_open_draft_panel"] = (
+                            None if _cap_panel == "staged" else "staged"
+                        )
+                        st.rerun()
+                with _sc_sp:
+                    st.empty()
+                capture_loan_ui()
 
-        with t_schedule:
-            view_schedule_ui()
-
-        with t_batch:
+        elif _lm_active == "Batch Capture":
             batch_loans_ui()
 
-        with t_calc:
+        elif _lm_active == "View Schedule":
+            view_schedule_ui()
+
+        elif _lm_active == "Loan Calculators":
             _calc_types = [
                 "Consumer Loan",
                 "Term Loan",
@@ -1351,15 +1354,15 @@ def render_loan_app_section(nav: str) -> None:
             else:
                 customised_repayments_ui()
 
-        with t_update:
+        elif _lm_active == "Update Loans":
             update_loans_ui()
 
-        with t_suspense:
+        elif _lm_active == "Interest In Suspense":
             from interest_suspense_ui import render_suspense_ui
 
             render_suspense_ui()
 
-        with t_approve:
+        elif _lm_active == "Approve Loans":
             approve_loans_ui()
     elif nav == "Accounting":
         accounting_ui()

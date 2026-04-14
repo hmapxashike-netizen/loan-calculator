@@ -75,20 +75,62 @@ def render_reamortisation_ui(
     _ream_tab_labels = ["Loan Modification", "Loan Recast", "Approve Modifications", "Unapplied Funds"]
     if direct_principal_tab:
         _ream_tab_labels.append("Direct principal (admin)")
-    _ream_tabs = st.tabs(_ream_tab_labels)
-    tab_mod = _ream_tabs[0]
-    tab_recast = _ream_tabs[1]
-    tab_approve = _ream_tabs[2]
-    tab_unapplied = _ream_tabs[3]
-    tab_direct = _ream_tabs[4] if direct_principal_tab else None
-    customers = list_customers() if customers_available else []
-    customers_ctx_ok = bool(customers_available and customers)
+    st.session_state.setdefault("reamortisation_subnav", _ream_tab_labels[0])
+    if st.session_state["reamortisation_subnav"] not in _ream_tab_labels:
+        st.session_state["reamortisation_subnav"] = "Loan Modification"
+    st.markdown(
+        '<p class="farnda-ream-section-nav" aria-hidden="true"></p>',
+        unsafe_allow_html=True,
+    )
+    st.radio(
+        "Reamortisation section",
+        _ream_tab_labels,
+        key="reamortisation_subnav",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    _ream_active = st.session_state["reamortisation_subnav"]
 
-    # Streamlit 1.54+ ``st.stop()`` requests a script halt without raising; anything *after* it in this run
-    # never executes. Render Recast and Unapplied *before* Loan Modification so ``st.stop()`` there cannot
-    # blank the other tabs (tab order in the UI is unchanged).
+    if _ream_active == "Loan Modification":
+        from ui.reamortisation_modification import render_loan_modification_tab
 
-    with tab_recast:
+        _ldc = list_document_categories or (lambda **k: [])
+        _lps = list_provision_security_subtypes or (lambda: [])
+        try:
+            render_loan_modification_tab(
+                list_customers=list_customers,
+                get_display_name=get_display_name,
+                get_system_date=get_system_date,
+                get_loan_for_modification=get_loan_for_modification,
+                list_products=list_products,
+                get_product_config_from_db=get_product_config_from_db,
+                get_system_config=get_system_config,
+                get_consumer_schemes=get_consumer_schemes,
+                get_product_rate_basis=get_product_rate_basis,
+                compute_consumer_schedule=compute_consumer_schedule,
+                compute_term_schedule=compute_term_schedule,
+                compute_bullet_schedule=compute_bullet_schedule,
+                pct_to_monthly=pct_to_monthly,
+                save_loan_approval_draft=save_loan_approval_draft,
+                update_loan_approval_draft_staged=update_loan_approval_draft_staged,
+                resubmit_loan_approval_draft=resubmit_loan_approval_draft,
+                documents_available=bool(documents_available),
+                list_document_categories=_ldc,
+                upload_document=upload_document,
+                provisions_config_ok=bool(provisions_config_ok),
+                list_provision_security_subtypes=_lps,
+                source_cash_gl_cached_labels_and_ids=source_cash_gl_cached_labels_and_ids,
+                created_by=created_by or "reamortisation_ui",
+                money_df_column_config=money_df_column_config,
+                schedule_editor_disabled_amounts=schedule_editor_disabled_amounts,
+                first_repayment_from_customised_table=first_repayment_from_customised_table,
+            )
+        except Exception as ex:
+            st.error(f"Loan Modification failed to render: {ex}")
+
+    elif _ream_active == "Loan Recast":
+        customers = list_customers() if customers_available else []
+        customers_ctx_ok = bool(customers_available and customers)
         _section_heading("Loan Recast (Unapplied → Liquidation → Re-amortise)")
         if not customers_ctx_ok:
             if not customers_available:
@@ -345,7 +387,7 @@ def render_reamortisation_ui(
                                 del st.session_state[recast_preview_key]
                             st.rerun()
 
-    with tab_approve:
+    elif _ream_active == "Approve Modifications":
         _section_heading("Approve Modifications & Recasts")
         st.caption(
             "Review pending **Loan Modification / Split Modification / Loan Recast** drafts. "
@@ -906,7 +948,7 @@ def render_reamortisation_ui(
                         except Exception as ex:
                             st.error(str(ex))
 
-    with tab_unapplied:
+    elif _ream_active == "Unapplied Funds":
         try:
             from loan_management import apply_unapplied_funds_to_arrears_eod as _apply_ua_to_arrears_fn
         except Exception:
@@ -1006,170 +1048,134 @@ def render_reamortisation_ui(
                 except Exception as ex:
                     st.error(str(ex))
 
-    if direct_principal_tab and tab_direct is not None:
-        with tab_direct:
-            _direct_preview_key = "recast_direct_preview_v1"
-            _section_heading("Direct principal & schedule (no unapplied)")
-            st.caption(
-                "**Admin only.** Skips unapplied suspense and liquidation journals. Use only for controlled "
-                "**exceptions** (e.g. data correction). Standard recasts must use **Loan Recast** so subledger and GL "
-                "stay aligned."
-            )
-            if not customers_ctx_ok:
-                if not customers_available:
+    elif direct_principal_tab and _ream_active == "Direct principal (admin)":
+        customers = list_customers() if customers_available else []
+        customers_ctx_ok = bool(customers_available and customers)
+        _direct_preview_key = "recast_direct_preview_v1"
+        _section_heading("Direct principal & schedule (no unapplied)")
+        st.caption(
+            "**Admin only.** Skips unapplied suspense and liquidation journals. Use only for controlled "
+            "**exceptions** (e.g. data correction). Standard recasts must use **Loan Recast** so subledger and GL "
+            "stay aligned."
+        )
+        if not customers_ctx_ok:
+            if not customers_available:
+                st.warning(
+                    (customers_error or "").strip()
+                    or "Customer list is unavailable (customers module did not load)."
+                )
+            else:
+                st.info("No customers were returned.")
+        if customers_ctx_ok:
+            dm1, dm2 = st.columns(2)
+            with dm1:
+                cust_sel_d = st.selectbox(
+                    "Customer",
+                    [get_display_name(c["id"]) for c in customers],
+                    key="recast_direct_cust",
+                )
+            cust_id_d = next(c["id"] for c in customers if get_display_name(c["id"]) == cust_sel_d)
+            loans_d = get_loans_by_customer(cust_id_d)
+            loans_active_d = [l for l in loans_d if l.get("status") == "active"]
+            if loans_active_d:
+                loan_opts_d = [(l["id"], f"Loan #{l['id']}") for l in loans_active_d]
+                loan_labels_d = [t[1] for t in loan_opts_d]
+                with dm2:
+                    loan_sel_d = st.selectbox("Loan", loan_labels_d, key="recast_direct_loan")
+                loan_id_d = loan_opts_d[loan_labels_d.index(loan_sel_d)][0] if loan_sel_d else None
+            else:
+                with dm2:
+                    st.caption("No active loans.")
+                loan_id_d = None
+            if not loans_active_d or not loan_id_d:
+                st.info("No active loans for this customer.")
+            else:
+                from loan_management import get_loan_daily_state_balances
+
+                dm3, dm4, dm5 = st.columns(3)
+                with dm3:
+                    recast_date_d = st.date_input(
+                        "Effective date", value=get_system_date(), key="recast_direct_date"
+                    )
+                bal_d = get_loan_daily_state_balances(loan_id_d, recast_date_d)
+                with dm4:
+                    new_principal_d = st.number_input(
+                        "New principal",
+                        min_value=0.01,
+                        value=round(
+                            (bal_d["principal_not_due"] + bal_d["principal_arrears"]) if bal_d else 0, 2
+                        )
+                        or 1000.0,
+                        step=100.0,
+                        key="recast_direct_principal",
+                    )
+                with dm5:
+                    if st.button("Preview schedule", type="secondary", key="recast_direct_preview_btn"):
+                        try:
+                            preview_d = preview_loan_recast(loan_id_d, recast_date_d, new_principal_d)
+                            st.session_state[_direct_preview_key] = {
+                                **preview_d,
+                                "loan_id": loan_id_d,
+                                "recast_date": recast_date_d,
+                                "new_principal_balance": new_principal_d,
+                            }
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(str(ex))
+                if st.session_state.get(_direct_preview_key) and st.session_state[_direct_preview_key].get(
+                    "loan_id"
+                ) == loan_id_d:
+                    rpd = st.session_state[_direct_preview_key]
+                    st.caption(f"New instalment: **{rpd['new_installment']:,.2f}**")
+                    st.dataframe(
+                        format_schedule_df(rpd["schedule_df"]),
+                        width="stretch",
+                        hide_index=True,
+                    )
                     st.warning(
-                        (customers_error or "").strip()
-                        or "Customer list is unavailable (customers module did not load)."
+                        "Applying writes a new schedule and header instalment **without** unapplied liquidation "
+                        "journals. Misuse can break subledger/GL alignment."
                     )
-                else:
-                    st.info("No customers were returned.")
-            if customers_ctx_ok:
-                dm1, dm2 = st.columns(2)
-                with dm1:
-                    cust_sel_d = st.selectbox(
-                        "Customer",
-                        [get_display_name(c["id"]) for c in customers],
-                        key="recast_direct_cust",
-                    )
-                cust_id_d = next(c["id"] for c in customers if get_display_name(c["id"]) == cust_sel_d)
-                loans_d = get_loans_by_customer(cust_id_d)
-                loans_active_d = [l for l in loans_d if l.get("status") == "active"]
-                if loans_active_d:
-                    loan_opts_d = [(l["id"], f"Loan #{l['id']}") for l in loans_active_d]
-                    loan_labels_d = [t[1] for t in loan_opts_d]
-                    with dm2:
-                        loan_sel_d = st.selectbox("Loan", loan_labels_d, key="recast_direct_loan")
-                    loan_id_d = loan_opts_d[loan_labels_d.index(loan_sel_d)][0] if loan_sel_d else None
-                else:
-                    with dm2:
-                        st.caption("No active loans.")
-                    loan_id_d = None
-                if not loans_active_d or not loan_id_d:
-                    st.info("No active loans for this customer.")
-                else:
-                    from loan_management import get_loan_daily_state_balances
-
-                    dm3, dm4, dm5 = st.columns(3)
-                    with dm3:
-                        recast_date_d = st.date_input(
-                            "Effective date", value=get_system_date(), key="recast_direct_date"
+                    with st.expander("Apply to database (extra confirmations)", expanded=False):
+                        st.caption("Execute is only available here, after explicit checks.")
+                        ack_risk = st.checkbox(
+                            "I understand this bypasses unapplied and journal-backed liquidation.",
+                            key="recast_direct_ack_risk",
                         )
-                    bal_d = get_loan_daily_state_balances(loan_id_d, recast_date_d)
-                    with dm4:
-                        new_principal_d = st.number_input(
-                            "New principal",
-                            min_value=0.01,
-                            value=round(
-                                (bal_d["principal_not_due"] + bal_d["principal_arrears"]) if bal_d else 0, 2
-                            )
-                            or 1000.0,
-                            step=100.0,
-                            key="recast_direct_principal",
+                        ack_prev = st.checkbox(
+                            "I have verified the preview schedule and the new principal amount.",
+                            key="recast_direct_ack_preview",
                         )
-                    with dm5:
-                        if st.button("Preview schedule", type="secondary", key="recast_direct_preview_btn"):
-                            try:
-                                preview_d = preview_loan_recast(loan_id_d, recast_date_d, new_principal_d)
-                                st.session_state[_direct_preview_key] = {
-                                    **preview_d,
-                                    "loan_id": loan_id_d,
-                                    "recast_date": recast_date_d,
-                                    "new_principal_balance": new_principal_d,
-                                }
-                                st.rerun()
-                            except Exception as ex:
-                                st.error(str(ex))
-                    if st.session_state.get(_direct_preview_key) and st.session_state[_direct_preview_key].get(
-                        "loan_id"
-                    ) == loan_id_d:
-                        rpd = st.session_state[_direct_preview_key]
-                        st.caption(f"New instalment: **{rpd['new_installment']:,.2f}**")
-                        st.dataframe(
-                            format_schedule_df(rpd["schedule_df"]),
-                            width="stretch",
-                            hide_index=True,
+                        typed_apply = st.text_input(
+                            "Type APPLY (capital letters) to enable execute",
+                            key="recast_direct_type_apply",
+                            placeholder="",
                         )
-                        st.warning(
-                            "Applying writes a new schedule and header instalment **without** unapplied liquidation "
-                            "journals. Misuse can break subledger/GL alignment."
-                        )
-                        with st.expander("Apply to database (extra confirmations)", expanded=False):
-                            st.caption("Execute is only available here, after explicit checks.")
-                            ack_risk = st.checkbox(
-                                "I understand this bypasses unapplied and journal-backed liquidation.",
-                                key="recast_direct_ack_risk",
-                            )
-                            ack_prev = st.checkbox(
-                                "I have verified the preview schedule and the new principal amount.",
-                                key="recast_direct_ack_preview",
-                            )
-                            typed_apply = st.text_input(
-                                "Type APPLY (capital letters) to enable execute",
-                                key="recast_direct_type_apply",
-                                placeholder="",
-                            )
-                            can_execute = ack_risk and ack_prev and typed_apply.strip() == "APPLY"
-                            ex1, ex2 = st.columns(2)
-                            with ex1:
-                                if st.button(
-                                    "Execute direct principal recast",
-                                    type="secondary",
-                                    disabled=not can_execute,
-                                    key="recast_direct_execute_btn",
-                                ):
-                                    try:
-                                        inst_d = execute_loan_recast(
-                                            rpd["loan_id"],
-                                            rpd["recast_date"],
-                                            rpd["new_principal_balance"],
-                                        )
-                                        del st.session_state[_direct_preview_key]
-                                        for _k in (
-                                            "recast_direct_ack_risk",
-                                            "recast_direct_ack_preview",
-                                            "recast_direct_type_apply",
-                                        ):
-                                            st.session_state.pop(_k, None)
-                                        st.success(f"Recast applied. New instalment: {inst_d:,.2f}.")
-                                        st.rerun()
-                                    except Exception as ex:
-                                        st.error(str(ex))
-                            with ex2:
-                                st.caption("Execute stays disabled until both boxes are ticked and APPLY is entered.")
-
-    with tab_mod:
-        from ui.reamortisation_modification import render_loan_modification_tab
-
-        _ldc = list_document_categories or (lambda **k: [])
-        _lps = list_provision_security_subtypes or (lambda: [])
-        try:
-            render_loan_modification_tab(
-                list_customers=list_customers,
-                get_display_name=get_display_name,
-                get_system_date=get_system_date,
-                get_loan_for_modification=get_loan_for_modification,
-                list_products=list_products,
-                get_product_config_from_db=get_product_config_from_db,
-                get_system_config=get_system_config,
-                get_consumer_schemes=get_consumer_schemes,
-                get_product_rate_basis=get_product_rate_basis,
-                compute_consumer_schedule=compute_consumer_schedule,
-                compute_term_schedule=compute_term_schedule,
-                compute_bullet_schedule=compute_bullet_schedule,
-                pct_to_monthly=pct_to_monthly,
-                save_loan_approval_draft=save_loan_approval_draft,
-                update_loan_approval_draft_staged=update_loan_approval_draft_staged,
-                resubmit_loan_approval_draft=resubmit_loan_approval_draft,
-                documents_available=bool(documents_available),
-                list_document_categories=_ldc,
-                upload_document=upload_document,
-                provisions_config_ok=bool(provisions_config_ok),
-                list_provision_security_subtypes=_lps,
-                source_cash_gl_cached_labels_and_ids=source_cash_gl_cached_labels_and_ids,
-                created_by=created_by or "reamortisation_ui",
-                money_df_column_config=money_df_column_config,
-                schedule_editor_disabled_amounts=schedule_editor_disabled_amounts,
-                first_repayment_from_customised_table=first_repayment_from_customised_table,
-            )
-        except Exception as ex:
-            st.error(f"Loan Modification failed to render: {ex}")
+                        can_execute = ack_risk and ack_prev and typed_apply.strip() == "APPLY"
+                        ex1, ex2 = st.columns(2)
+                        with ex1:
+                            if st.button(
+                                "Execute direct principal recast",
+                                type="secondary",
+                                disabled=not can_execute,
+                                key="recast_direct_execute_btn",
+                            ):
+                                try:
+                                    inst_d = execute_loan_recast(
+                                        rpd["loan_id"],
+                                        rpd["recast_date"],
+                                        rpd["new_principal_balance"],
+                                    )
+                                    del st.session_state[_direct_preview_key]
+                                    for _k in (
+                                        "recast_direct_ack_risk",
+                                        "recast_direct_ack_preview",
+                                        "recast_direct_type_apply",
+                                    ):
+                                        st.session_state.pop(_k, None)
+                                    st.success(f"Recast applied. New instalment: {inst_d:,.2f}.")
+                                    st.rerun()
+                                except Exception as ex:
+                                    st.error(str(ex))
+                        with ex2:
+                            st.caption("Execute stays disabled until both boxes are ticked and APPLY is entered.")

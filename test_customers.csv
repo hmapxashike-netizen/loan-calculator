@@ -1,0 +1,1001 @@
+migration_ref,customer_type,full_name,legal_name,trading_name,reg_number,tin,national_id,employer_details,phone1,phone2,email1,email2,sector_id,sector_name,subsector_id,subsector_name,address_type,line1,line2,city,region,postal_code,country
+CUST-0001,corporate,,Test Corporate 1 (Pvt) Ltd,Test Corp 1,1747/2022,2007640749,,,+263770395927,,finance1@testcorp.co.zw,,,,,,registered,Unit 40 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0002,individual,Test Individual 2,,,,,29-649426A27,Test Employer 2,+263715841639,,indiv2@example.com,,,,,,registered,525 Test Road,,Gweru,Manicaland,,Zimbabwe
+CUST-0003,corporate,,Test Corporate 3 (Pvt) Ltd,Test Corp 3,3445/2022,2001859852,,,+263732511701,+263755372463,finance3@testcorp.co.zw,,,,,,postal,Unit 26 Industrial Park,,Marondera,,,Zimbabwe
+CUST-0004,corporate,,Test Corporate 4 (Pvt) Ltd,,4563/2020,2003859151,,,+263737997406,+263783751816,finance4@testcorp.co.zw,,,,,,physical,Unit 93 Industrial Park,Building A,Bulawayo,Harare Province,,Zimbabwe
+CUST-0005,individual,Test Individual 5,,,,,61-566497A13,Test Employer 5,+263716040985,,indiv5@example.com,,,,,,registered,949 Test Road,Flat 30,Mutare,,,Zimbabwe
+CUST-0006,individual,Test Individual 6,,,,,41-419373A59,Test Employer 6,+263793612606,,indiv6@example.com,,,,,,postal,74 Test Road,,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0007,corporate,,Test Corporate 7 (Pvt) Ltd,Test Corp 7,8648/2020,2004248439,,,+263715551793,,finance7@testcorp.co.zw,,,,,,physical,Unit 11 Industrial Park,Building E,Gweru,Harare Province,85752,Zimbabwe
+CUST-0008,corporate,,Test Corporate 8 (Pvt) Ltd,Test Corp 8,2719/2021,2003677700,,,+263781493597,,finance8@testcorp.co.zw,,,,,,head_office,Unit 26 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0009,corporate,,Test Corporate 9 (Pvt) Ltd,Test Corp 9,9089/2014,2001591521,,,+263735046385,,finance9@testcorp.co.zw,,,,,,postal,Unit 94 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0010,corporate,,Test Corporate 10 (Pvt) Ltd,Test Corp 10,4585/2017,2008792594,,,+263790013126,+263774112399,finance10@testcorp.co.zw,,,,,,postal,Unit 16 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0011,individual,Test Individual 11,,,,,32-180531A77,Test Employer 11,+263799224965,,indiv11@example.com,,,,,,registered,223 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0012,individual,Test Individual 12,,,,,14-713099A56,Test Employer 12,+263716329502,,indiv12@example.com,,,,,,physical,115 Test Road,,Chitungwiza,Midlands,,Zimbabwe
+CUST-0013,individual,Test Individual 13,,,,,39-877243A97,Test Employer 13,+263718810532,,indiv13@example.com,,,,,,registered,248 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0014,corporate,,Test Corporate 14 (Pvt) Ltd,Test Corp 14,9094/2012,2008921289,,,+263782633611,,finance14@testcorp.co.zw,,,,,,postal,Unit 6 Industrial Park,,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0015,corporate,,Test Corporate 15 (Pvt) Ltd,Test Corp 15,1493/2022,2005276688,,,+263736037467,,finance15@testcorp.co.zw,,,,,,head_office,Unit 29 Industrial Park,,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0016,corporate,,Test Corporate 16 (Pvt) Ltd,Test Corp 16,7893/2011,2009004676,,,+263788894605,+263758522120,finance16@testcorp.co.zw,,,,,,physical,Unit 97 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0017,corporate,,Test Corporate 17 (Pvt) Ltd,Test Corp 17,1590/2024,2004822647,,,+263746990044,+263778234637,finance17@testcorp.co.zw,,,,,,head_office,Unit 17 Industrial Park,Building E,Harare,Harare Province,,Zimbabwe
+CUST-0018,individual,Test Individual 18,,,,,56-685354A62,Test Employer 18,+263746630996,+263739109579,indiv18@example.com,indiv18.alt@example.com,,,,,postal,755 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0019,corporate,,Test Corporate 19 (Pvt) Ltd,Test Corp 19,9397/2014,2005020610,,,+263749333504,+263723366726,finance19@testcorp.co.zw,,,,,,head_office,Unit 30 Industrial Park,Building D,Chitungwiza,,80946,Zimbabwe
+CUST-0020,corporate,,Test Corporate 20 (Pvt) Ltd,Test Corp 20,9597/2013,2005285850,,,+263789289604,,finance20@testcorp.co.zw,accounts20@testcorp.co.zw,,,,,registered,Unit 93 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0021,corporate,,Test Corporate 21 (Pvt) Ltd,Test Corp 21,1512/2020,2003092999,,,+263733342784,+263749149685,finance21@testcorp.co.zw,,,,,,physical,Unit 28 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0022,individual,Test Individual 22,,,,,29-547086A55,Test Employer 22,+263781899044,,indiv22@example.com,,,,,,mailing,430 Test Road,,Chitungwiza,,,Zimbabwe
+CUST-0023,corporate,,Test Corporate 23 (Pvt) Ltd,,8482/2018,2003700521,,,+263720494327,+263785203179,finance23@testcorp.co.zw,,,,,,postal,Unit 11 Industrial Park,,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0024,individual,Test Individual 24,,,,,90-287510A67,Test Employer 24,+263765808707,+263749255624,indiv24@example.com,indiv24.alt@example.com,,,,,mailing,401 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0025,corporate,,Test Corporate 25 (Pvt) Ltd,Test Corp 25,8519/2018,2008150390,,,+263733220786,+263747338851,finance25@testcorp.co.zw,,,,,,head_office,Unit 29 Industrial Park,Building A,Kwekwe,,,Zimbabwe
+CUST-0026,individual,Test Individual 26,,,,,58-605347A42,Test Employer 26,+263735027849,+263710297495,indiv26@example.com,indiv26.alt@example.com,,,,,registered,12 Test Road,Flat 7,Masvingo,Mashonaland,,Zimbabwe
+CUST-0027,corporate,,Test Corporate 27 (Pvt) Ltd,Test Corp 27,4771/2018,2008826090,,,+263788129070,+263712428335,finance27@testcorp.co.zw,,,,,,head_office,Unit 32 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0028,individual,Test Individual 28,,,,,53-355353A50,Test Employer 28,+263758003116,,indiv28@example.com,,,,,,physical,588 Test Road,,Kwekwe,Mashonaland,PO Box 6354,Zimbabwe
+CUST-0029,corporate,,Test Corporate 29 (Pvt) Ltd,Test Corp 29,1781/2014,2007809769,,,+263755876854,,finance29@testcorp.co.zw,,,,,,head_office,Unit 24 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0030,corporate,,Test Corporate 30 (Pvt) Ltd,Test Corp 30,8514/2018,2003394279,,,+263782862993,+263749510624,finance30@testcorp.co.zw,accounts30@testcorp.co.zw,,,,,head_office,Unit 14 Industrial Park,Building A,Masvingo,,,Zimbabwe
+CUST-0031,corporate,,Test Corporate 31 (Pvt) Ltd,Test Corp 31,9879/2015,2004740889,,,+263779908084,,finance31@testcorp.co.zw,accounts31@testcorp.co.zw,,,,,physical,Unit 71 Industrial Park,Building A,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0032,corporate,,Test Corporate 32 (Pvt) Ltd,Test Corp 32,9126/2015,2008216596,,,+263756161704,,finance32@testcorp.co.zw,,,,,,head_office,Unit 96 Industrial Park,,Bulawayo,Bulawayo Metro,47354,Zimbabwe
+CUST-0033,corporate,,Test Corporate 33 (Pvt) Ltd,,1666/2020,2009690355,,,+263720481029,,finance33@testcorp.co.zw,,,,,,postal,Unit 40 Industrial Park,,Bulawayo,Harare Province,10835,Zimbabwe
+CUST-0034,individual,Test Individual 34,,,,,85-618697A66,Test Employer 34,+263749464474,+263715065870,indiv34@example.com,indiv34.alt@example.com,,,,,physical,376 Test Road,,Chitungwiza,Matabeleland,,Zimbabwe
+CUST-0035,corporate,,Test Corporate 35 (Pvt) Ltd,Test Corp 35,2428/2018,2002039402,,,+263760914921,,finance35@testcorp.co.zw,,,,,,postal,Unit 60 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0036,individual,Test Individual 36,,,,,94-473053A32,,+263788908021,+263769158250,indiv36@example.com,indiv36.alt@example.com,,,,,physical,356 Test Road,,Kwekwe,Manicaland,,Zimbabwe
+CUST-0037,corporate,,Test Corporate 37 (Pvt) Ltd,Test Corp 37,3889/2011,2009151892,,,+263726663358,,finance37@testcorp.co.zw,,,,,,postal,Unit 47 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0038,individual,Test Individual 38,,,,,32-827270A26,Test Employer 38,+263749164618,,indiv38@example.com,,,,,,postal,858 Test Road,Flat 24,Gweru,Mashonaland,,Zimbabwe
+CUST-0039,individual,Test Individual 39,,,,,15-462382A33,Test Employer 39,+263744758557,,indiv39@example.com,,,,,,physical,579 Test Road,,Harare,Manicaland,,Zimbabwe
+CUST-0040,corporate,,Test Corporate 40 (Pvt) Ltd,Test Corp 40,3953/2010,2005043523,,,+263766462475,+263764506295,finance40@testcorp.co.zw,,,,,,physical,Unit 5 Industrial Park,Building E,Harare,Harare Province,,Zimbabwe
+CUST-0041,corporate,,Test Corporate 41 (Pvt) Ltd,Test Corp 41,2928/2017,2002642549,,,+263769084751,+263727290478,finance41@testcorp.co.zw,,,,,,head_office,Unit 27 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0042,individual,Test Individual 42,,,,,46-141629A98,Test Employer 42,+263746204327,+263760402526,indiv42@example.com,indiv42.alt@example.com,,,,,postal,204 Test Road,,Marondera,Mashonaland,,Zimbabwe
+CUST-0043,corporate,,Test Corporate 43 (Pvt) Ltd,Test Corp 43,2961/2019,2008618624,,,+263766190454,+263723257683,finance43@testcorp.co.zw,,,,,,postal,Unit 63 Industrial Park,Building D,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0044,corporate,,Test Corporate 44 (Pvt) Ltd,Test Corp 44,8959/2021,2008606461,,,+263728842409,,finance44@testcorp.co.zw,accounts44@testcorp.co.zw,,,,,registered,Unit 3 Industrial Park,Building B,Kwekwe,Harare Province,,Zimbabwe
+CUST-0045,individual,Test Individual 45,,,,,84-302004A56,Test Employer 45,+263788857162,+263769528111,indiv45@example.com,indiv45.alt@example.com,,,,,registered,597 Test Road,,Masvingo,,,Zimbabwe
+CUST-0046,individual,Test Individual 46,,,,,72-185565A56,Test Employer 46,+263722353674,,indiv46@example.com,,,,,,physical,821 Test Road,,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0047,individual,Test Individual 47,,,,,30-688501A33,Test Employer 47,+263785480736,,indiv47@example.com,,,,,,mailing,219 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0048,individual,Test Individual 48,,,,,54-174375A73,,+263710579596,+263775014408,indiv48@example.com,indiv48.alt@example.com,,,,,mailing,414 Test Road,,Bulawayo,Mashonaland,,Zimbabwe
+CUST-0049,individual,Test Individual 49,,,,,68-741808A89,Test Employer 49,+263773214217,+263714728414,indiv49@example.com,indiv49.alt@example.com,,,,,mailing,432 Test Road,Flat 31,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0050,individual,Test Individual 50,,,,,99-565699A85,Test Employer 50,+263728622563,,indiv50@example.com,,,,,,postal,87 Test Road,Flat 37,Chitungwiza,Midlands,,Zimbabwe
+CUST-0051,individual,Test Individual 51,,,,,52-495928A74,Test Employer 51,+263763229878,,indiv51@example.com,,,,,,registered,669 Test Road,,Marondera,Mashonaland,,Zimbabwe
+CUST-0052,corporate,,Test Corporate 52 (Pvt) Ltd,Test Corp 52,9894/2019,2006409231,,,+263738713431,,finance52@testcorp.co.zw,,,,,,head_office,Unit 93 Industrial Park,,Masvingo,Harare Province,,Zimbabwe
+CUST-0053,corporate,,Test Corporate 53 (Pvt) Ltd,Test Corp 53,9882/2012,2005197866,,,+263756026993,+263751944295,finance53@testcorp.co.zw,accounts53@testcorp.co.zw,,,,,head_office,Unit 36 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0054,corporate,,Test Corporate 54 (Pvt) Ltd,Test Corp 54,7877/2024,2005393884,,,+263791115671,,finance54@testcorp.co.zw,,,,,,head_office,Unit 29 Industrial Park,,Gweru,,46991,Zimbabwe
+CUST-0055,individual,Test Individual 55,,,,,47-385965A53,Test Employer 55,+263799900177,,indiv55@example.com,,,,,,physical,572 Test Road,,Harare,Matabeleland,PO Box 4691,Zimbabwe
+CUST-0056,corporate,,Test Corporate 56 (Pvt) Ltd,Test Corp 56,5780/2018,2001628247,,,+263739400366,+263766811054,finance56@testcorp.co.zw,,,,,,physical,Unit 40 Industrial Park,,Kwekwe,Harare Province,30366,Zimbabwe
+CUST-0057,corporate,,Test Corporate 57 (Pvt) Ltd,Test Corp 57,8470/2015,2005751435,,,+263766097377,,finance57@testcorp.co.zw,,,,,,physical,Unit 66 Industrial Park,,Masvingo,,,Zimbabwe
+CUST-0058,individual,Test Individual 58,,,,,57-473327A31,Test Employer 58,+263785523617,,indiv58@example.com,,,,,,postal,277 Test Road,,Gweru,Midlands,,Zimbabwe
+CUST-0059,individual,Test Individual 59,,,,,65-687066A97,Test Employer 59,+263719161035,,indiv59@example.com,,,,,,registered,27 Test Road,Flat 35,Kwekwe,Midlands,,Zimbabwe
+CUST-0060,corporate,,Test Corporate 60 (Pvt) Ltd,Test Corp 60,9290/2021,2007356323,,,+263724554726,+263718328278,finance60@testcorp.co.zw,accounts60@testcorp.co.zw,,,,,physical,Unit 33 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0061,individual,Test Individual 61,,,,,18-254561A96,Test Employer 61,+263744851653,,indiv61@example.com,,,,,,postal,322 Test Road,Flat 32,Harare,Matabeleland,,Zimbabwe
+CUST-0062,corporate,,Test Corporate 62 (Pvt) Ltd,Test Corp 62,4285/2015,2004702940,,,+263720380466,,finance62@testcorp.co.zw,accounts62@testcorp.co.zw,,,,,physical,Unit 48 Industrial Park,,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0063,individual,Test Individual 63,,,,,15-574056A95,Test Employer 63,+263789307685,,indiv63@example.com,,,,,,postal,783 Test Road,,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0064,corporate,,Test Corporate 64 (Pvt) Ltd,Test Corp 64,2725/2022,2007149931,,,+263759144538,,finance64@testcorp.co.zw,accounts64@testcorp.co.zw,,,,,postal,Unit 9 Industrial Park,,Gweru,Bulawayo Metro,84476,Zimbabwe
+CUST-0065,individual,Test Individual 65,,,,,17-213774A25,Test Employer 65,+263762006866,+263772065980,indiv65@example.com,indiv65.alt@example.com,,,,,postal,410 Test Road,,Harare,Matabeleland,,Zimbabwe
+CUST-0066,individual,Test Individual 66,,,,,66-366541A91,Test Employer 66,+263754797665,,indiv66@example.com,,,,,,registered,864 Test Road,,Mutare,Matabeleland,,Zimbabwe
+CUST-0067,corporate,,Test Corporate 67 (Pvt) Ltd,Test Corp 67,9505/2017,2004625300,,,+263751395432,+263769527336,finance67@testcorp.co.zw,accounts67@testcorp.co.zw,,,,,physical,Unit 50 Industrial Park,,Masvingo,,,Zimbabwe
+CUST-0068,individual,Test Individual 68,,,,,94-965278A54,Test Employer 68,+263785586488,+263742703952,indiv68@example.com,indiv68.alt@example.com,,,,,physical,659 Test Road,Flat 4,Harare,,,Zimbabwe
+CUST-0069,individual,Test Individual 69,,,,,67-713477A80,Test Employer 69,+263788542332,+263758913938,indiv69@example.com,indiv69.alt@example.com,,,,,mailing,22 Test Road,,Masvingo,Mashonaland,,Zimbabwe
+CUST-0070,corporate,,Test Corporate 70 (Pvt) Ltd,Test Corp 70,2057/2014,2009610168,,,+263720423711,,finance70@testcorp.co.zw,accounts70@testcorp.co.zw,,,,,head_office,Unit 32 Industrial Park,,Mutare,,,Zimbabwe
+CUST-0071,corporate,,Test Corporate 71 (Pvt) Ltd,Test Corp 71,5633/2022,2004621257,,,+263782301520,+263733267178,finance71@testcorp.co.zw,accounts71@testcorp.co.zw,,,,,registered,Unit 80 Industrial Park,Building B,Kwekwe,Harare Province,,Zimbabwe
+CUST-0072,individual,Test Individual 72,,,,,26-394836A79,Test Employer 72,+263724312165,,indiv72@example.com,,,,,,postal,88 Test Road,Flat 3,Gweru,,,Zimbabwe
+CUST-0073,individual,Test Individual 73,,,,,70-690204A25,Test Employer 73,+263766134090,,indiv73@example.com,,,,,,mailing,103 Test Road,Flat 19,Kwekwe,Matabeleland,PO Box 8335,Zimbabwe
+CUST-0074,corporate,,Test Corporate 74 (Pvt) Ltd,Test Corp 74,6304/2011,2004507577,,,+263789042986,+263752770314,finance74@testcorp.co.zw,,,,,,head_office,Unit 79 Industrial Park,,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0075,individual,Test Individual 75,,,,,27-895310A74,Test Employer 75,+263764600839,+263739492653,indiv75@example.com,indiv75.alt@example.com,,,,,postal,285 Test Road,,Bulawayo,Manicaland,,Zimbabwe
+CUST-0076,corporate,,Test Corporate 76 (Pvt) Ltd,,2836/2015,2002303125,,,+263791000239,,finance76@testcorp.co.zw,accounts76@testcorp.co.zw,,,,,head_office,Unit 90 Industrial Park,,Masvingo,Bulawayo Metro,28784,Zimbabwe
+CUST-0077,individual,Test Individual 77,,,,,49-565994A50,Test Employer 77,+263725254142,+263723284888,indiv77@example.com,indiv77.alt@example.com,,,,,registered,842 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0078,individual,Test Individual 78,,,,,22-443108A86,Test Employer 78,+263719369931,,indiv78@example.com,,,,,,physical,509 Test Road,Flat 12,Marondera,Matabeleland,,Zimbabwe
+CUST-0079,corporate,,Test Corporate 79 (Pvt) Ltd,Test Corp 79,2836/2023,2002543484,,,+263717271853,,finance79@testcorp.co.zw,accounts79@testcorp.co.zw,,,,,registered,Unit 33 Industrial Park,Building D,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0080,corporate,,Test Corporate 80 (Pvt) Ltd,Test Corp 80,3003/2015,2006288478,,,+263743632809,,finance80@testcorp.co.zw,accounts80@testcorp.co.zw,,,,,registered,Unit 60 Industrial Park,Building A,Marondera,Bulawayo Metro,,Zimbabwe
+CUST-0081,individual,Test Individual 81,,,,,77-136003A20,,+263725185314,,indiv81@example.com,,,,,,registered,718 Test Road,,Masvingo,Mashonaland,,Zimbabwe
+CUST-0082,individual,Test Individual 82,,,,,27-429452A98,Test Employer 82,+263768156353,,indiv82@example.com,,,,,,physical,528 Test Road,,Harare,Manicaland,,Zimbabwe
+CUST-0083,corporate,,Test Corporate 83 (Pvt) Ltd,Test Corp 83,6419/2017,2006319121,,,+263720487695,+263712836072,finance83@testcorp.co.zw,,,,,,postal,Unit 78 Industrial Park,,Kwekwe,Harare Province,,Zimbabwe
+CUST-0084,individual,Test Individual 84,,,,,24-495328A92,Test Employer 84,+263783100276,+263710873809,indiv84@example.com,indiv84.alt@example.com,,,,,physical,859 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0085,corporate,,Test Corporate 85 (Pvt) Ltd,Test Corp 85,2511/2013,2003386644,,,+263746430224,+263717344256,finance85@testcorp.co.zw,,,,,,physical,Unit 31 Industrial Park,Building B,Masvingo,Bulawayo Metro,45094,Zimbabwe
+CUST-0086,individual,Test Individual 86,,,,,88-834037A28,Test Employer 86,+263769034484,,indiv86@example.com,,,,,,registered,222 Test Road,Flat 26,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0087,corporate,,Test Corporate 87 (Pvt) Ltd,Test Corp 87,8852/2024,2007698706,,,+263762134071,,finance87@testcorp.co.zw,,,,,,registered,Unit 39 Industrial Park,,Mutare,,,Zimbabwe
+CUST-0088,corporate,,Test Corporate 88 (Pvt) Ltd,Test Corp 88,7673/2022,2006835756,,,+263781988449,,finance88@testcorp.co.zw,,,,,,physical,Unit 83 Industrial Park,Building E,Kwekwe,Harare Province,,Zimbabwe
+CUST-0089,corporate,,Test Corporate 89 (Pvt) Ltd,,2086/2024,2002332864,,,+263726157546,+263770370509,finance89@testcorp.co.zw,,,,,,physical,Unit 89 Industrial Park,,Marondera,Bulawayo Metro,,Zimbabwe
+CUST-0090,corporate,,Test Corporate 90 (Pvt) Ltd,Test Corp 90,2340/2011,2009120779,,,+263791238596,,finance90@testcorp.co.zw,,,,,,physical,Unit 72 Industrial Park,,Mutare,,90296,Zimbabwe
+CUST-0091,corporate,,Test Corporate 91 (Pvt) Ltd,,7743/2021,2006749033,,,+263733308376,,finance91@testcorp.co.zw,,,,,,head_office,Unit 23 Industrial Park,Building E,Kwekwe,Bulawayo Metro,38653,Zimbabwe
+CUST-0092,individual,Test Individual 92,,,,,70-236689A14,Test Employer 92,+263718003580,+263719009685,indiv92@example.com,indiv92.alt@example.com,,,,,postal,55 Test Road,Flat 30,Chitungwiza,Midlands,,Zimbabwe
+CUST-0093,individual,Test Individual 93,,,,,91-681549A14,Test Employer 93,+263790156154,+263787916511,indiv93@example.com,indiv93.alt@example.com,,,,,physical,318 Test Road,,Marondera,,,Zimbabwe
+CUST-0094,individual,Test Individual 94,,,,,12-137082A66,Test Employer 94,+263728981532,+263738939231,indiv94@example.com,indiv94.alt@example.com,,,,,mailing,113 Test Road,,Chitungwiza,Midlands,,Zimbabwe
+CUST-0095,individual,Test Individual 95,,,,,85-364257A64,Test Employer 95,+263777611355,+263757366305,indiv95@example.com,indiv95.alt@example.com,,,,,registered,211 Test Road,Flat 6,Gweru,Mashonaland,,Zimbabwe
+CUST-0096,individual,Test Individual 96,,,,,60-130369A52,Test Employer 96,+263771256576,,indiv96@example.com,,,,,,mailing,734 Test Road,,Masvingo,Manicaland,,Zimbabwe
+CUST-0097,corporate,,Test Corporate 97 (Pvt) Ltd,Test Corp 97,4475/2013,2009645052,,,+263794052419,+263768145231,finance97@testcorp.co.zw,,,,,,physical,Unit 75 Industrial Park,,Masvingo,Harare Province,4761,Zimbabwe
+CUST-0098,corporate,,Test Corporate 98 (Pvt) Ltd,Test Corp 98,4517/2012,2005741799,,,+263713119814,+263773612395,finance98@testcorp.co.zw,,,,,,head_office,Unit 51 Industrial Park,Building B,Bulawayo,Bulawayo Metro,50735,Zimbabwe
+CUST-0099,individual,Test Individual 99,,,,,23-606380A49,Test Employer 99,+263783019310,+263753145172,indiv99@example.com,indiv99.alt@example.com,,,,,physical,426 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0100,individual,Test Individual 100,,,,,81-375964A54,Test Employer 100,+263768080350,,indiv100@example.com,,,,,,registered,483 Test Road,,Kwekwe,Mashonaland,,Zimbabwe
+CUST-0101,individual,Test Individual 101,,,,,53-665525A11,Test Employer 101,+263770692001,,indiv101@example.com,,,,,,postal,839 Test Road,,Gweru,Mashonaland,,Zimbabwe
+CUST-0102,individual,Test Individual 102,,,,,74-440372A27,Test Employer 102,+263754905399,,indiv102@example.com,,,,,,postal,824 Test Road,,Marondera,Midlands,,Zimbabwe
+CUST-0103,individual,Test Individual 103,,,,,36-521632A70,Test Employer 103,+263735583524,+263784433770,indiv103@example.com,indiv103.alt@example.com,,,,,physical,737 Test Road,,Marondera,Manicaland,,Zimbabwe
+CUST-0104,corporate,,Test Corporate 104 (Pvt) Ltd,Test Corp 104,3897/2023,2008667779,,,+263789699871,+263768161473,finance104@testcorp.co.zw,,,,,,physical,Unit 62 Industrial Park,Building D,Masvingo,,,Zimbabwe
+CUST-0105,individual,Test Individual 105,,,,,61-417236A37,Test Employer 105,+263799672608,,indiv105@example.com,,,,,,mailing,910 Test Road,,Marondera,Midlands,,Zimbabwe
+CUST-0106,corporate,,Test Corporate 106 (Pvt) Ltd,Test Corp 106,9005/2014,2006240137,,,+263723504070,,finance106@testcorp.co.zw,accounts106@testcorp.co.zw,,,,,postal,Unit 35 Industrial Park,Building B,Masvingo,,,Zimbabwe
+CUST-0107,individual,Test Individual 107,,,,,84-206374A59,Test Employer 107,+263721198376,,indiv107@example.com,,,,,,mailing,290 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0108,corporate,,Test Corporate 108 (Pvt) Ltd,Test Corp 108,1261/2010,2008297619,,,+263760242480,,finance108@testcorp.co.zw,,,,,,physical,Unit 65 Industrial Park,Building C,Gweru,Bulawayo Metro,92993,Zimbabwe
+CUST-0109,corporate,,Test Corporate 109 (Pvt) Ltd,Test Corp 109,9304/2022,2003291122,,,+263716278353,+263746479589,finance109@testcorp.co.zw,,,,,,postal,Unit 73 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0110,individual,Test Individual 110,,,,,96-805033A57,Test Employer 110,+263778301287,,indiv110@example.com,,,,,,mailing,673 Test Road,,Harare,,,Zimbabwe
+CUST-0111,individual,Test Individual 111,,,,,80-760993A51,Test Employer 111,+263750241897,,indiv111@example.com,,,,,,physical,815 Test Road,,Masvingo,Mashonaland,,Zimbabwe
+CUST-0112,corporate,,Test Corporate 112 (Pvt) Ltd,Test Corp 112,6334/2011,2002973815,,,+263714508126,,finance112@testcorp.co.zw,,,,,,physical,Unit 96 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0113,individual,Test Individual 113,,,,,86-220483A96,Test Employer 113,+263785445852,+263730795196,indiv113@example.com,indiv113.alt@example.com,,,,,postal,225 Test Road,,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0114,corporate,,Test Corporate 114 (Pvt) Ltd,Test Corp 114,9720/2022,2007392591,,,+263751864429,,finance114@testcorp.co.zw,,,,,,postal,Unit 88 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0115,corporate,,Test Corporate 115 (Pvt) Ltd,,9204/2016,2001400449,,,+263799200565,,finance115@testcorp.co.zw,accounts115@testcorp.co.zw,,,,,head_office,Unit 72 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0116,individual,Test Individual 116,,,,,73-951562A94,Test Employer 116,+263774851481,+263761599138,indiv116@example.com,indiv116.alt@example.com,,,,,physical,450 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0117,corporate,,Test Corporate 117 (Pvt) Ltd,Test Corp 117,2511/2020,2002483211,,,+263788546893,,finance117@testcorp.co.zw,,,,,,registered,Unit 30 Industrial Park,,Bulawayo,Harare Province,58956,Zimbabwe
+CUST-0118,corporate,,Test Corporate 118 (Pvt) Ltd,Test Corp 118,1272/2010,2007652215,,,+263725877156,,finance118@testcorp.co.zw,accounts118@testcorp.co.zw,,,,,registered,Unit 18 Industrial Park,,Marondera,,,Zimbabwe
+CUST-0119,individual,Test Individual 119,,,,,29-206346A68,Test Employer 119,+263780234758,,indiv119@example.com,,,,,,physical,47 Test Road,,Marondera,,,Zimbabwe
+CUST-0120,individual,Test Individual 120,,,,,93-247953A33,Test Employer 120,+263735129589,,indiv120@example.com,,,,,,mailing,599 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0121,individual,Test Individual 121,,,,,45-632363A50,Test Employer 121,+263772968959,+263744055096,indiv121@example.com,indiv121.alt@example.com,,,,,postal,716 Test Road,Flat 37,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0122,corporate,,Test Corporate 122 (Pvt) Ltd,Test Corp 122,4622/2021,2002737188,,,+263795597768,+263716244856,finance122@testcorp.co.zw,,,,,,registered,Unit 67 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0123,corporate,,Test Corporate 123 (Pvt) Ltd,Test Corp 123,7057/2024,2008713637,,,+263726258927,+263726747145,finance123@testcorp.co.zw,,,,,,postal,Unit 28 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0124,individual,Test Individual 124,,,,,56-264670A90,,+263739814812,,indiv124@example.com,,,,,,physical,232 Test Road,Flat 10,Gweru,Midlands,,Zimbabwe
+CUST-0125,individual,Test Individual 125,,,,,27-158233A96,Test Employer 125,+263791890720,+263772731324,indiv125@example.com,indiv125.alt@example.com,,,,,mailing,335 Test Road,,Gweru,Mashonaland,,Zimbabwe
+CUST-0126,corporate,,Test Corporate 126 (Pvt) Ltd,Test Corp 126,8966/2021,2007544363,,,+263727287182,,finance126@testcorp.co.zw,,,,,,registered,Unit 8 Industrial Park,,Chitungwiza,,87582,Zimbabwe
+CUST-0127,corporate,,Test Corporate 127 (Pvt) Ltd,Test Corp 127,7875/2021,2008309663,,,+263745732879,+263775959745,finance127@testcorp.co.zw,accounts127@testcorp.co.zw,,,,,physical,Unit 95 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0128,corporate,,Test Corporate 128 (Pvt) Ltd,Test Corp 128,2933/2015,2006694634,,,+263756140884,+263748798617,finance128@testcorp.co.zw,,,,,,head_office,Unit 27 Industrial Park,,Harare,Harare Province,,Zimbabwe
+CUST-0129,corporate,,Test Corporate 129 (Pvt) Ltd,,1374/2015,2006013186,,,+263793474435,,finance129@testcorp.co.zw,,,,,,physical,Unit 49 Industrial Park,,Bulawayo,Bulawayo Metro,78577,Zimbabwe
+CUST-0130,individual,Test Individual 130,,,,,89-174158A83,Test Employer 130,+263725742213,,indiv130@example.com,,,,,,mailing,11 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0131,corporate,,Test Corporate 131 (Pvt) Ltd,Test Corp 131,1255/2023,2002059206,,,+263792307869,,finance131@testcorp.co.zw,,,,,,registered,Unit 36 Industrial Park,,Kwekwe,,,Zimbabwe
+CUST-0132,individual,Test Individual 132,,,,,68-358804A54,Test Employer 132,+263710893888,,indiv132@example.com,,,,,,postal,702 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0133,corporate,,Test Corporate 133 (Pvt) Ltd,Test Corp 133,8423/2022,2004110475,,,+263740306586,+263718743739,finance133@testcorp.co.zw,,,,,,postal,Unit 15 Industrial Park,Building A,Marondera,Harare Province,,Zimbabwe
+CUST-0134,individual,Test Individual 134,,,,,75-318179A38,Test Employer 134,+263747175760,+263725985954,indiv134@example.com,indiv134.alt@example.com,,,,,physical,69 Test Road,Flat 14,Gweru,,,Zimbabwe
+CUST-0135,individual,Test Individual 135,,,,,29-551666A56,Test Employer 135,+263756862055,+263718489249,indiv135@example.com,indiv135.alt@example.com,,,,,physical,519 Test Road,,Mutare,,,Zimbabwe
+CUST-0136,corporate,,Test Corporate 136 (Pvt) Ltd,Test Corp 136,2359/2018,2003673163,,,+263740869443,,finance136@testcorp.co.zw,,,,,,head_office,Unit 68 Industrial Park,Building B,Kwekwe,Harare Province,,Zimbabwe
+CUST-0137,corporate,,Test Corporate 137 (Pvt) Ltd,Test Corp 137,3893/2013,2002367400,,,+263754132712,+263732549140,finance137@testcorp.co.zw,,,,,,physical,Unit 87 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0138,corporate,,Test Corporate 138 (Pvt) Ltd,Test Corp 138,9851/2020,2006955605,,,+263761204303,,finance138@testcorp.co.zw,,,,,,head_office,Unit 86 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0139,corporate,,Test Corporate 139 (Pvt) Ltd,Test Corp 139,8829/2013,2009483080,,,+263715316491,,finance139@testcorp.co.zw,,,,,,physical,Unit 23 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0140,individual,Test Individual 140,,,,,59-776768A15,Test Employer 140,+263745286265,,indiv140@example.com,,,,,,mailing,379 Test Road,Flat 6,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0141,corporate,,Test Corporate 141 (Pvt) Ltd,,3892/2024,2004821864,,,+263793878554,,finance141@testcorp.co.zw,,,,,,physical,Unit 19 Industrial Park,,Masvingo,Bulawayo Metro,23511,Zimbabwe
+CUST-0142,corporate,,Test Corporate 142 (Pvt) Ltd,,9240/2016,2009125615,,,+263747452739,,finance142@testcorp.co.zw,,,,,,registered,Unit 71 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0143,corporate,,Test Corporate 143 (Pvt) Ltd,Test Corp 143,2526/2019,2007761064,,,+263735376131,,finance143@testcorp.co.zw,,,,,,physical,Unit 90 Industrial Park,,Bulawayo,Harare Province,69864,Zimbabwe
+CUST-0144,corporate,,Test Corporate 144 (Pvt) Ltd,Test Corp 144,2021/2013,2005870095,,,+263728253303,,finance144@testcorp.co.zw,,,,,,physical,Unit 16 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0145,individual,Test Individual 145,,,,,16-157733A94,Test Employer 145,+263734140014,+263742827913,indiv145@example.com,indiv145.alt@example.com,,,,,physical,38 Test Road,Flat 34,Gweru,Midlands,,Zimbabwe
+CUST-0146,individual,Test Individual 146,,,,,28-493634A48,Test Employer 146,+263721312482,,indiv146@example.com,,,,,,postal,929 Test Road,,Harare,Matabeleland,,Zimbabwe
+CUST-0147,individual,Test Individual 147,,,,,64-874176A55,Test Employer 147,+263715561978,,indiv147@example.com,,,,,,physical,353 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0148,individual,Test Individual 148,,,,,70-721134A44,Test Employer 148,+263729124059,,indiv148@example.com,,,,,,registered,99 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0149,individual,Test Individual 149,,,,,33-288876A67,Test Employer 149,+263798706909,,indiv149@example.com,,,,,,mailing,604 Test Road,,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0150,corporate,,Test Corporate 150 (Pvt) Ltd,Test Corp 150,6443/2024,2001508729,,,+263776283048,+263777962274,finance150@testcorp.co.zw,accounts150@testcorp.co.zw,,,,,postal,Unit 29 Industrial Park,,Mutare,Bulawayo Metro,10460,Zimbabwe
+CUST-0151,individual,Test Individual 151,,,,,75-285273A90,,+263756780936,,indiv151@example.com,,,,,,mailing,61 Test Road,Flat 22,Harare,Manicaland,PO Box 5486,Zimbabwe
+CUST-0152,corporate,,Test Corporate 152 (Pvt) Ltd,,5516/2018,2002603929,,,+263710395289,+263725604426,finance152@testcorp.co.zw,,,,,,registered,Unit 91 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0153,individual,Test Individual 153,,,,,49-591290A14,Test Employer 153,+263761795450,,indiv153@example.com,,,,,,registered,152 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0154,corporate,,Test Corporate 154 (Pvt) Ltd,Test Corp 154,1057/2022,2003796735,,,+263718275378,,finance154@testcorp.co.zw,,,,,,postal,Unit 28 Industrial Park,,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0155,corporate,,Test Corporate 155 (Pvt) Ltd,,9406/2011,2002717860,,,+263754002582,,finance155@testcorp.co.zw,,,,,,registered,Unit 7 Industrial Park,,Kwekwe,Harare Province,71450,Zimbabwe
+CUST-0156,corporate,,Test Corporate 156 (Pvt) Ltd,Test Corp 156,1725/2022,2004516290,,,+263779698212,+263746318200,finance156@testcorp.co.zw,,,,,,registered,Unit 96 Industrial Park,,Harare,Harare Province,77950,Zimbabwe
+CUST-0157,corporate,,Test Corporate 157 (Pvt) Ltd,Test Corp 157,8161/2024,2009912241,,,+263776960131,,finance157@testcorp.co.zw,,,,,,head_office,Unit 80 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0158,corporate,,Test Corporate 158 (Pvt) Ltd,,6128/2021,2004062391,,,+263745220802,+263735031596,finance158@testcorp.co.zw,accounts158@testcorp.co.zw,,,,,postal,Unit 77 Industrial Park,Building C,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0159,corporate,,Test Corporate 159 (Pvt) Ltd,Test Corp 159,5590/2013,2002568586,,,+263748150662,,finance159@testcorp.co.zw,,,,,,postal,Unit 67 Industrial Park,Building D,Gweru,,,Zimbabwe
+CUST-0160,corporate,,Test Corporate 160 (Pvt) Ltd,Test Corp 160,1579/2016,2002611977,,,+263771320673,,finance160@testcorp.co.zw,,,,,,registered,Unit 98 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0161,individual,Test Individual 161,,,,,49-995213A53,Test Employer 161,+263769197864,+263731548513,indiv161@example.com,indiv161.alt@example.com,,,,,registered,295 Test Road,,Kwekwe,,,Zimbabwe
+CUST-0162,corporate,,Test Corporate 162 (Pvt) Ltd,Test Corp 162,2259/2015,2002663670,,,+263715069152,,finance162@testcorp.co.zw,accounts162@testcorp.co.zw,,,,,postal,Unit 37 Industrial Park,Building E,Marondera,Bulawayo Metro,,Zimbabwe
+CUST-0163,corporate,,Test Corporate 163 (Pvt) Ltd,Test Corp 163,2420/2023,2007027123,,,+263779859288,+263783041131,finance163@testcorp.co.zw,,,,,,registered,Unit 4 Industrial Park,,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0164,individual,Test Individual 164,,,,,91-856801A16,Test Employer 164,+263789028834,+263769870715,indiv164@example.com,indiv164.alt@example.com,,,,,registered,73 Test Road,,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0165,individual,Test Individual 165,,,,,61-228305A61,Test Employer 165,+263791721523,+263745935392,indiv165@example.com,indiv165.alt@example.com,,,,,mailing,187 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0166,corporate,,Test Corporate 166 (Pvt) Ltd,Test Corp 166,7845/2015,2007331905,,,+263784779666,,finance166@testcorp.co.zw,,,,,,registered,Unit 56 Industrial Park,,Marondera,Harare Province,79194,Zimbabwe
+CUST-0167,corporate,,Test Corporate 167 (Pvt) Ltd,Test Corp 167,6909/2023,2002828040,,,+263731006731,+263738349598,finance167@testcorp.co.zw,,,,,,head_office,Unit 38 Industrial Park,Building E,Marondera,Harare Province,,Zimbabwe
+CUST-0168,individual,Test Individual 168,,,,,52-797208A29,Test Employer 168,+263786420320,,indiv168@example.com,,,,,,postal,937 Test Road,,Kwekwe,Midlands,,Zimbabwe
+CUST-0169,corporate,,Test Corporate 169 (Pvt) Ltd,Test Corp 169,5528/2017,2007616644,,,+263745561354,,finance169@testcorp.co.zw,,,,,,physical,Unit 46 Industrial Park,,Masvingo,,59979,Zimbabwe
+CUST-0170,individual,Test Individual 170,,,,,66-420474A18,Test Employer 170,+263757140657,+263782330685,indiv170@example.com,indiv170.alt@example.com,,,,,mailing,696 Test Road,,Chitungwiza,,PO Box 4358,Zimbabwe
+CUST-0171,individual,Test Individual 171,,,,,24-462099A61,Test Employer 171,+263779606241,+263782908260,indiv171@example.com,indiv171.alt@example.com,,,,,physical,359 Test Road,,Masvingo,Manicaland,PO Box 8826,Zimbabwe
+CUST-0172,corporate,,Test Corporate 172 (Pvt) Ltd,Test Corp 172,6057/2011,2006527328,,,+263754475238,,finance172@testcorp.co.zw,,,,,,physical,Unit 61 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0173,individual,Test Individual 173,,,,,55-859862A33,Test Employer 173,+263719481565,,indiv173@example.com,,,,,,physical,773 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0174,corporate,,Test Corporate 174 (Pvt) Ltd,Test Corp 174,2117/2015,2006035203,,,+263741280587,,finance174@testcorp.co.zw,,,,,,registered,Unit 20 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0175,individual,Test Individual 175,,,,,62-511296A13,Test Employer 175,+263728161803,,indiv175@example.com,,,,,,physical,926 Test Road,,Mutare,,,Zimbabwe
+CUST-0176,corporate,,Test Corporate 176 (Pvt) Ltd,Test Corp 176,4415/2022,2007107899,,,+263796402747,+263774678447,finance176@testcorp.co.zw,,,,,,registered,Unit 52 Industrial Park,,Bulawayo,Harare Province,40029,Zimbabwe
+CUST-0177,corporate,,Test Corporate 177 (Pvt) Ltd,Test Corp 177,2194/2022,2006452020,,,+263788155643,,finance177@testcorp.co.zw,,,,,,physical,Unit 62 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0178,corporate,,Test Corporate 178 (Pvt) Ltd,Test Corp 178,5253/2020,2009076059,,,+263715903223,,finance178@testcorp.co.zw,accounts178@testcorp.co.zw,,,,,head_office,Unit 64 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0179,individual,Test Individual 179,,,,,81-104261A35,,+263735377773,+263781590334,indiv179@example.com,indiv179.alt@example.com,,,,,registered,229 Test Road,,Kwekwe,Midlands,,Zimbabwe
+CUST-0180,individual,Test Individual 180,,,,,27-857187A67,Test Employer 180,+263716344487,+263793136115,indiv180@example.com,indiv180.alt@example.com,,,,,mailing,89 Test Road,Flat 11,Masvingo,Matabeleland,PO Box 8959,Zimbabwe
+CUST-0181,individual,Test Individual 181,,,,,25-414212A22,Test Employer 181,+263751653829,,indiv181@example.com,,,,,,mailing,777 Test Road,,Marondera,Manicaland,,Zimbabwe
+CUST-0182,individual,Test Individual 182,,,,,51-951017A33,Test Employer 182,+263714797394,,indiv182@example.com,,,,,,registered,994 Test Road,Flat 19,Kwekwe,,,Zimbabwe
+CUST-0183,corporate,,Test Corporate 183 (Pvt) Ltd,Test Corp 183,6901/2020,2001818298,,,+263715142101,,finance183@testcorp.co.zw,,,,,,postal,Unit 7 Industrial Park,Building A,Chitungwiza,Harare Province,53964,Zimbabwe
+CUST-0184,individual,Test Individual 184,,,,,40-804352A40,Test Employer 184,+263773704046,,indiv184@example.com,,,,,,registered,553 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0185,corporate,,Test Corporate 185 (Pvt) Ltd,Test Corp 185,6191/2011,2004492873,,,+263794030124,,finance185@testcorp.co.zw,accounts185@testcorp.co.zw,,,,,physical,Unit 85 Industrial Park,,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0186,individual,Test Individual 186,,,,,92-661031A34,Test Employer 186,+263785983641,+263779855340,indiv186@example.com,indiv186.alt@example.com,,,,,mailing,147 Test Road,Flat 19,Masvingo,,,Zimbabwe
+CUST-0187,individual,Test Individual 187,,,,,32-918037A46,Test Employer 187,+263713117822,+263788117044,indiv187@example.com,indiv187.alt@example.com,,,,,mailing,6 Test Road,,Bulawayo,Manicaland,,Zimbabwe
+CUST-0188,individual,Test Individual 188,,,,,38-356370A41,Test Employer 188,+263763408063,,indiv188@example.com,,,,,,physical,569 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0189,individual,Test Individual 189,,,,,36-681786A59,Test Employer 189,+263794455825,,indiv189@example.com,,,,,,registered,438 Test Road,,Masvingo,,,Zimbabwe
+CUST-0190,corporate,,Test Corporate 190 (Pvt) Ltd,Test Corp 190,1439/2018,2009615726,,,+263794626519,,finance190@testcorp.co.zw,,,,,,postal,Unit 76 Industrial Park,,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0191,corporate,,Test Corporate 191 (Pvt) Ltd,Test Corp 191,2185/2022,2001535690,,,+263736489195,,finance191@testcorp.co.zw,,,,,,head_office,Unit 3 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0192,corporate,,Test Corporate 192 (Pvt) Ltd,Test Corp 192,4942/2010,2008728962,,,+263783228672,,finance192@testcorp.co.zw,accounts192@testcorp.co.zw,,,,,postal,Unit 98 Industrial Park,,Mutare,,34114,Zimbabwe
+CUST-0193,individual,Test Individual 193,,,,,19-424364A90,Test Employer 193,+263772886209,+263793167460,indiv193@example.com,indiv193.alt@example.com,,,,,physical,332 Test Road,Flat 18,Mutare,Mashonaland,PO Box 8632,Zimbabwe
+CUST-0194,individual,Test Individual 194,,,,,97-567290A56,Test Employer 194,+263741744147,,indiv194@example.com,,,,,,physical,590 Test Road,,Masvingo,,,Zimbabwe
+CUST-0195,corporate,,Test Corporate 195 (Pvt) Ltd,Test Corp 195,4465/2013,2006938624,,,+263790289847,+263724568985,finance195@testcorp.co.zw,,,,,,physical,Unit 2 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0196,individual,Test Individual 196,,,,,64-907732A23,,+263764552682,,indiv196@example.com,,,,,,postal,387 Test Road,,Bulawayo,Midlands,,Zimbabwe
+CUST-0197,individual,Test Individual 197,,,,,62-928496A88,Test Employer 197,+263774677264,+263792827368,indiv197@example.com,indiv197.alt@example.com,,,,,postal,339 Test Road,,Masvingo,,,Zimbabwe
+CUST-0198,corporate,,Test Corporate 198 (Pvt) Ltd,Test Corp 198,8690/2021,2005081220,,,+263767856738,,finance198@testcorp.co.zw,,,,,,physical,Unit 41 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0199,corporate,,Test Corporate 199 (Pvt) Ltd,,3616/2022,2003466722,,,+263762849829,+263769926787,finance199@testcorp.co.zw,,,,,,registered,Unit 76 Industrial Park,Building A,Gweru,,,Zimbabwe
+CUST-0200,individual,Test Individual 200,,,,,75-896692A89,Test Employer 200,+263799226458,,indiv200@example.com,,,,,,registered,279 Test Road,Flat 29,Chitungwiza,Manicaland,PO Box 4599,Zimbabwe
+CUST-0201,individual,Test Individual 201,,,,,10-313654A40,Test Employer 201,+263751546569,+263778340232,indiv201@example.com,indiv201.alt@example.com,,,,,mailing,347 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0202,individual,Test Individual 202,,,,,47-105691A60,,+263717458072,+263780361676,indiv202@example.com,indiv202.alt@example.com,,,,,physical,270 Test Road,,Kwekwe,Manicaland,,Zimbabwe
+CUST-0203,corporate,,Test Corporate 203 (Pvt) Ltd,Test Corp 203,7876/2022,2009310931,,,+263761792373,,finance203@testcorp.co.zw,,,,,,postal,Unit 16 Industrial Park,Building A,Chitungwiza,Harare Province,8951,Zimbabwe
+CUST-0204,corporate,,Test Corporate 204 (Pvt) Ltd,Test Corp 204,4495/2022,2004682156,,,+263742221339,+263761643195,finance204@testcorp.co.zw,accounts204@testcorp.co.zw,,,,,head_office,Unit 3 Industrial Park,,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0205,individual,Test Individual 205,,,,,76-526364A62,Test Employer 205,+263733720744,+263775549385,indiv205@example.com,indiv205.alt@example.com,,,,,physical,35 Test Road,,Masvingo,Midlands,PO Box 1534,Zimbabwe
+CUST-0206,individual,Test Individual 206,,,,,61-423084A35,Test Employer 206,+263789378864,,indiv206@example.com,,,,,,postal,354 Test Road,,Masvingo,Mashonaland,,Zimbabwe
+CUST-0207,individual,Test Individual 207,,,,,54-387896A12,Test Employer 207,+263777874478,,indiv207@example.com,,,,,,postal,804 Test Road,,Kwekwe,Manicaland,PO Box 8591,Zimbabwe
+CUST-0208,individual,Test Individual 208,,,,,32-503296A16,Test Employer 208,+263732564847,,indiv208@example.com,,,,,,postal,772 Test Road,,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0209,individual,Test Individual 209,,,,,13-614756A25,Test Employer 209,+263725793830,+263719888025,indiv209@example.com,indiv209.alt@example.com,,,,,physical,374 Test Road,,Mutare,Mashonaland,,Zimbabwe
+CUST-0210,corporate,,Test Corporate 210 (Pvt) Ltd,Test Corp 210,8356/2016,2004523577,,,+263792517404,,finance210@testcorp.co.zw,,,,,,postal,Unit 53 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0211,individual,Test Individual 211,,,,,40-304113A32,Test Employer 211,+263724652351,,indiv211@example.com,,,,,,registered,182 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0212,corporate,,Test Corporate 212 (Pvt) Ltd,Test Corp 212,5219/2014,2006745667,,,+263782271461,,finance212@testcorp.co.zw,,,,,,registered,Unit 59 Industrial Park,,Bulawayo,Harare Province,,Zimbabwe
+CUST-0213,corporate,,Test Corporate 213 (Pvt) Ltd,,7081/2024,2003534186,,,+263730266858,,finance213@testcorp.co.zw,,,,,,head_office,Unit 13 Industrial Park,,Masvingo,,80490,Zimbabwe
+CUST-0214,corporate,,Test Corporate 214 (Pvt) Ltd,Test Corp 214,6959/2014,2005471819,,,+263786000571,+263731320469,finance214@testcorp.co.zw,,,,,,head_office,Unit 64 Industrial Park,,Mutare,,,Zimbabwe
+CUST-0215,individual,Test Individual 215,,,,,47-608589A13,Test Employer 215,+263763383592,+263738793858,indiv215@example.com,indiv215.alt@example.com,,,,,postal,91 Test Road,,Marondera,Mashonaland,,Zimbabwe
+CUST-0216,individual,Test Individual 216,,,,,55-574736A71,,+263733944699,+263720132035,indiv216@example.com,indiv216.alt@example.com,,,,,postal,597 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0217,individual,Test Individual 217,,,,,77-877162A78,Test Employer 217,+263721146193,+263760783231,indiv217@example.com,indiv217.alt@example.com,,,,,mailing,858 Test Road,,Mutare,Manicaland,,Zimbabwe
+CUST-0218,individual,Test Individual 218,,,,,20-909640A33,Test Employer 218,+263792491924,,indiv218@example.com,,,,,,physical,729 Test Road,,Bulawayo,Manicaland,,Zimbabwe
+CUST-0219,corporate,,Test Corporate 219 (Pvt) Ltd,Test Corp 219,2024/2017,2002007956,,,+263746462582,,finance219@testcorp.co.zw,,,,,,postal,Unit 82 Industrial Park,Building E,Marondera,,,Zimbabwe
+CUST-0220,corporate,,Test Corporate 220 (Pvt) Ltd,,6555/2019,2001628902,,,+263773964724,+263745242233,finance220@testcorp.co.zw,,,,,,physical,Unit 98 Industrial Park,,Kwekwe,Harare Province,,Zimbabwe
+CUST-0221,individual,Test Individual 221,,,,,89-205258A88,Test Employer 221,+263785378266,+263714789490,indiv221@example.com,indiv221.alt@example.com,,,,,registered,928 Test Road,Flat 33,Marondera,Matabeleland,PO Box 7215,Zimbabwe
+CUST-0222,corporate,,Test Corporate 222 (Pvt) Ltd,Test Corp 222,6569/2022,2002756688,,,+263755524854,,finance222@testcorp.co.zw,,,,,,registered,Unit 59 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0223,corporate,,Test Corporate 223 (Pvt) Ltd,Test Corp 223,1802/2022,2007396695,,,+263758631097,+263740001343,finance223@testcorp.co.zw,accounts223@testcorp.co.zw,,,,,head_office,Unit 66 Industrial Park,,Kwekwe,Harare Province,10022,Zimbabwe
+CUST-0224,individual,Test Individual 224,,,,,35-743055A98,Test Employer 224,+263715722958,,indiv224@example.com,,,,,,mailing,613 Test Road,Flat 7,Masvingo,,,Zimbabwe
+CUST-0225,individual,Test Individual 225,,,,,78-406929A46,Test Employer 225,+263766998720,,indiv225@example.com,,,,,,mailing,192 Test Road,Flat 23,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0226,individual,Test Individual 226,,,,,74-287468A66,Test Employer 226,+263714935033,,indiv226@example.com,,,,,,postal,374 Test Road,,Marondera,Matabeleland,,Zimbabwe
+CUST-0227,individual,Test Individual 227,,,,,21-370552A19,Test Employer 227,+263760236236,+263745864721,indiv227@example.com,indiv227.alt@example.com,,,,,registered,633 Test Road,Flat 19,Bulawayo,Midlands,,Zimbabwe
+CUST-0228,individual,Test Individual 228,,,,,60-124148A79,Test Employer 228,+263712778878,,indiv228@example.com,,,,,,postal,29 Test Road,,Gweru,Manicaland,,Zimbabwe
+CUST-0229,corporate,,Test Corporate 229 (Pvt) Ltd,Test Corp 229,4001/2018,2006996383,,,+263713289828,+263797270256,finance229@testcorp.co.zw,,,,,,postal,Unit 12 Industrial Park,Building B,Kwekwe,Harare Province,,Zimbabwe
+CUST-0230,individual,Test Individual 230,,,,,60-750640A71,Test Employer 230,+263730840035,,indiv230@example.com,,,,,,mailing,391 Test Road,,Harare,Midlands,PO Box 5752,Zimbabwe
+CUST-0231,individual,Test Individual 231,,,,,13-193513A66,Test Employer 231,+263713737184,+263771194304,indiv231@example.com,indiv231.alt@example.com,,,,,registered,258 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0232,individual,Test Individual 232,,,,,27-998849A22,Test Employer 232,+263796661847,+263764401272,indiv232@example.com,indiv232.alt@example.com,,,,,registered,739 Test Road,,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0233,individual,Test Individual 233,,,,,50-348203A69,Test Employer 233,+263764159896,+263716716897,indiv233@example.com,indiv233.alt@example.com,,,,,registered,325 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0234,corporate,,Test Corporate 234 (Pvt) Ltd,Test Corp 234,2483/2018,2007027084,,,+263789708608,+263795763137,finance234@testcorp.co.zw,,,,,,postal,Unit 38 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0235,individual,Test Individual 235,,,,,62-337007A80,Test Employer 235,+263763231402,,indiv235@example.com,,,,,,postal,353 Test Road,,Kwekwe,Matabeleland,PO Box 6808,Zimbabwe
+CUST-0236,individual,Test Individual 236,,,,,68-776834A65,Test Employer 236,+263769373513,,indiv236@example.com,,,,,,registered,888 Test Road,,Bulawayo,Matabeleland,PO Box 8896,Zimbabwe
+CUST-0237,individual,Test Individual 237,,,,,85-653210A29,Test Employer 237,+263723904103,+263785614655,indiv237@example.com,indiv237.alt@example.com,,,,,physical,419 Test Road,,Harare,Manicaland,,Zimbabwe
+CUST-0238,individual,Test Individual 238,,,,,81-425609A15,,+263759698365,+263725368251,indiv238@example.com,indiv238.alt@example.com,,,,,mailing,321 Test Road,,Gweru,Matabeleland,PO Box 1179,Zimbabwe
+CUST-0239,corporate,,Test Corporate 239 (Pvt) Ltd,Test Corp 239,1893/2017,2008239190,,,+263784327776,,finance239@testcorp.co.zw,,,,,,head_office,Unit 2 Industrial Park,,Kwekwe,,,Zimbabwe
+CUST-0240,individual,Test Individual 240,,,,,14-225639A27,Test Employer 240,+263758715256,,indiv240@example.com,,,,,,postal,681 Test Road,,Gweru,Midlands,PO Box 6074,Zimbabwe
+CUST-0241,individual,Test Individual 241,,,,,31-198918A41,Test Employer 241,+263784629314,+263746145589,indiv241@example.com,indiv241.alt@example.com,,,,,mailing,746 Test Road,,Marondera,Midlands,,Zimbabwe
+CUST-0242,individual,Test Individual 242,,,,,61-707675A69,Test Employer 242,+263738169692,,indiv242@example.com,,,,,,mailing,71 Test Road,,Gweru,,,Zimbabwe
+CUST-0243,corporate,,Test Corporate 243 (Pvt) Ltd,Test Corp 243,3452/2014,2005052108,,,+263724437811,+263747875588,finance243@testcorp.co.zw,,,,,,head_office,Unit 47 Industrial Park,Building E,Masvingo,Harare Province,,Zimbabwe
+CUST-0244,individual,Test Individual 244,,,,,96-213238A81,Test Employer 244,+263750675249,+263739444918,indiv244@example.com,indiv244.alt@example.com,,,,,postal,518 Test Road,,Masvingo,Matabeleland,PO Box 8351,Zimbabwe
+CUST-0245,individual,Test Individual 245,,,,,96-126009A70,Test Employer 245,+263768969548,+263776711320,indiv245@example.com,indiv245.alt@example.com,,,,,mailing,155 Test Road,,Masvingo,Manicaland,PO Box 5771,Zimbabwe
+CUST-0246,corporate,,Test Corporate 246 (Pvt) Ltd,Test Corp 246,4005/2021,2006179796,,,+263768932311,,finance246@testcorp.co.zw,,,,,,postal,Unit 48 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0247,individual,Test Individual 247,,,,,68-641526A75,Test Employer 247,+263730004734,,indiv247@example.com,,,,,,registered,31 Test Road,,Harare,Manicaland,,Zimbabwe
+CUST-0248,individual,Test Individual 248,,,,,89-819544A26,Test Employer 248,+263735785546,+263710444667,indiv248@example.com,indiv248.alt@example.com,,,,,physical,355 Test Road,,Gweru,Mashonaland,,Zimbabwe
+CUST-0249,corporate,,Test Corporate 249 (Pvt) Ltd,Test Corp 249,3887/2013,2003529324,,,+263792362582,,finance249@testcorp.co.zw,,,,,,postal,Unit 18 Industrial Park,,Gweru,Bulawayo Metro,82785,Zimbabwe
+CUST-0250,corporate,,Test Corporate 250 (Pvt) Ltd,Test Corp 250,5994/2019,2008979689,,,+263753695729,,finance250@testcorp.co.zw,accounts250@testcorp.co.zw,,,,,postal,Unit 73 Industrial Park,,Bulawayo,Bulawayo Metro,24080,Zimbabwe
+CUST-0251,individual,Test Individual 251,,,,,39-233307A22,Test Employer 251,+263726585028,,indiv251@example.com,,,,,,mailing,426 Test Road,Flat 33,Marondera,,,Zimbabwe
+CUST-0252,individual,Test Individual 252,,,,,61-748759A53,Test Employer 252,+263791864231,,indiv252@example.com,,,,,,registered,124 Test Road,Flat 33,Bulawayo,Midlands,,Zimbabwe
+CUST-0253,individual,Test Individual 253,,,,,43-537697A15,Test Employer 253,+263789848283,,indiv253@example.com,,,,,,mailing,344 Test Road,,Kwekwe,Mashonaland,,Zimbabwe
+CUST-0254,corporate,,Test Corporate 254 (Pvt) Ltd,Test Corp 254,1331/2011,2009104093,,,+263761064735,,finance254@testcorp.co.zw,,,,,,postal,Unit 32 Industrial Park,Building C,Marondera,,10161,Zimbabwe
+CUST-0255,corporate,,Test Corporate 255 (Pvt) Ltd,,2908/2018,2002029822,,,+263754850814,,finance255@testcorp.co.zw,,,,,,postal,Unit 98 Industrial Park,,Harare,,,Zimbabwe
+CUST-0256,individual,Test Individual 256,,,,,36-770546A27,Test Employer 256,+263747782067,,indiv256@example.com,,,,,,registered,794 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0257,corporate,,Test Corporate 257 (Pvt) Ltd,Test Corp 257,4713/2013,2005878536,,,+263789512595,+263768004469,finance257@testcorp.co.zw,,,,,,head_office,Unit 14 Industrial Park,,Masvingo,Bulawayo Metro,40694,Zimbabwe
+CUST-0258,individual,Test Individual 258,,,,,34-521069A10,Test Employer 258,+263799522906,+263775339948,indiv258@example.com,indiv258.alt@example.com,,,,,mailing,69 Test Road,,Marondera,Matabeleland,,Zimbabwe
+CUST-0259,individual,Test Individual 259,,,,,86-811837A83,Test Employer 259,+263788026989,+263771651895,indiv259@example.com,indiv259.alt@example.com,,,,,mailing,565 Test Road,,Chitungwiza,Midlands,,Zimbabwe
+CUST-0260,corporate,,Test Corporate 260 (Pvt) Ltd,Test Corp 260,9685/2017,2006699273,,,+263740478725,+263759333720,finance260@testcorp.co.zw,,,,,,head_office,Unit 16 Industrial Park,Building A,Masvingo,Harare Province,,Zimbabwe
+CUST-0261,individual,Test Individual 261,,,,,11-329960A51,Test Employer 261,+263745148263,+263779761216,indiv261@example.com,indiv261.alt@example.com,,,,,registered,863 Test Road,,Harare,Mashonaland,,Zimbabwe
+CUST-0262,corporate,,Test Corporate 262 (Pvt) Ltd,Test Corp 262,3034/2014,2003641979,,,+263768532089,,finance262@testcorp.co.zw,accounts262@testcorp.co.zw,,,,,registered,Unit 26 Industrial Park,,Marondera,Bulawayo Metro,,Zimbabwe
+CUST-0263,individual,Test Individual 263,,,,,23-328120A71,Test Employer 263,+263781190070,,indiv263@example.com,,,,,,postal,354 Test Road,,Marondera,Mashonaland,,Zimbabwe
+CUST-0264,individual,Test Individual 264,,,,,70-803581A50,Test Employer 264,+263718077910,+263759468582,indiv264@example.com,indiv264.alt@example.com,,,,,postal,142 Test Road,Flat 16,Gweru,Matabeleland,PO Box 1712,Zimbabwe
+CUST-0265,individual,Test Individual 265,,,,,80-714564A71,Test Employer 265,+263740261170,,indiv265@example.com,,,,,,physical,535 Test Road,,Harare,Mashonaland,,Zimbabwe
+CUST-0266,corporate,,Test Corporate 266 (Pvt) Ltd,Test Corp 266,8948/2010,2001290465,,,+263736467983,,finance266@testcorp.co.zw,,,,,,physical,Unit 78 Industrial Park,,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0267,corporate,,Test Corporate 267 (Pvt) Ltd,Test Corp 267,5822/2023,2004286727,,,+263780411194,,finance267@testcorp.co.zw,,,,,,physical,Unit 34 Industrial Park,,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0268,individual,Test Individual 268,,,,,97-548150A78,Test Employer 268,+263723942312,,indiv268@example.com,,,,,,registered,854 Test Road,Flat 34,Harare,Midlands,,Zimbabwe
+CUST-0269,individual,Test Individual 269,,,,,15-245719A19,Test Employer 269,+263756018307,,indiv269@example.com,,,,,,mailing,189 Test Road,,Kwekwe,,,Zimbabwe
+CUST-0270,individual,Test Individual 270,,,,,82-883453A59,Test Employer 270,+263796572992,,indiv270@example.com,,,,,,physical,522 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0271,corporate,,Test Corporate 271 (Pvt) Ltd,Test Corp 271,4536/2013,2009313902,,,+263740031582,,finance271@testcorp.co.zw,,,,,,registered,Unit 7 Industrial Park,Building D,Masvingo,Harare Province,,Zimbabwe
+CUST-0272,corporate,,Test Corporate 272 (Pvt) Ltd,,7164/2018,2006621854,,,+263713721676,,finance272@testcorp.co.zw,,,,,,physical,Unit 82 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0273,individual,Test Individual 273,,,,,96-820444A76,Test Employer 273,+263718796666,+263795082459,indiv273@example.com,indiv273.alt@example.com,,,,,postal,697 Test Road,,Gweru,Manicaland,,Zimbabwe
+CUST-0274,individual,Test Individual 274,,,,,63-116718A94,Test Employer 274,+263710032425,,indiv274@example.com,,,,,,registered,84 Test Road,,Mutare,Mashonaland,,Zimbabwe
+CUST-0275,individual,Test Individual 275,,,,,35-296700A11,,+263749855541,+263720000514,indiv275@example.com,indiv275.alt@example.com,,,,,postal,553 Test Road,Flat 27,Harare,,,Zimbabwe
+CUST-0276,corporate,,Test Corporate 276 (Pvt) Ltd,Test Corp 276,8549/2020,2004561182,,,+263737169932,+263756780060,finance276@testcorp.co.zw,,,,,,head_office,Unit 32 Industrial Park,Building C,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0277,individual,Test Individual 277,,,,,36-162690A23,Test Employer 277,+263728679414,,indiv277@example.com,,,,,,physical,188 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0278,individual,Test Individual 278,,,,,53-691516A78,Test Employer 278,+263775468881,+263795295556,indiv278@example.com,indiv278.alt@example.com,,,,,mailing,777 Test Road,,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0279,corporate,,Test Corporate 279 (Pvt) Ltd,Test Corp 279,5542/2014,2006359352,,,+263762039264,+263787412936,finance279@testcorp.co.zw,accounts279@testcorp.co.zw,,,,,head_office,Unit 75 Industrial Park,,Marondera,Bulawayo Metro,64220,Zimbabwe
+CUST-0280,corporate,,Test Corporate 280 (Pvt) Ltd,Test Corp 280,9015/2013,2006031919,,,+263721263008,,finance280@testcorp.co.zw,accounts280@testcorp.co.zw,,,,,registered,Unit 38 Industrial Park,,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0281,individual,Test Individual 281,,,,,78-925534A37,Test Employer 281,+263773767377,,indiv281@example.com,,,,,,registered,349 Test Road,,Mutare,Mashonaland,,Zimbabwe
+CUST-0282,individual,Test Individual 282,,,,,98-122504A46,Test Employer 282,+263744400790,+263746474061,indiv282@example.com,indiv282.alt@example.com,,,,,physical,733 Test Road,Flat 1,Harare,Manicaland,,Zimbabwe
+CUST-0283,individual,Test Individual 283,,,,,87-242089A22,Test Employer 283,+263737554556,,indiv283@example.com,,,,,,mailing,294 Test Road,,Masvingo,,,Zimbabwe
+CUST-0284,individual,Test Individual 284,,,,,12-418219A38,,+263763197854,,indiv284@example.com,,,,,,postal,209 Test Road,,Gweru,Manicaland,,Zimbabwe
+CUST-0285,corporate,,Test Corporate 285 (Pvt) Ltd,,2728/2023,2006152700,,,+263744867889,+263742024437,finance285@testcorp.co.zw,,,,,,registered,Unit 39 Industrial Park,Building B,Harare,,,Zimbabwe
+CUST-0286,corporate,,Test Corporate 286 (Pvt) Ltd,Test Corp 286,5693/2012,2007302459,,,+263787958765,+263765821303,finance286@testcorp.co.zw,,,,,,registered,Unit 43 Industrial Park,Building E,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0287,individual,Test Individual 287,,,,,22-887663A53,Test Employer 287,+263714529515,+263755283682,indiv287@example.com,indiv287.alt@example.com,,,,,physical,48 Test Road,,Marondera,Matabeleland,PO Box 5496,Zimbabwe
+CUST-0288,corporate,,Test Corporate 288 (Pvt) Ltd,Test Corp 288,1263/2014,2009777522,,,+263788053762,,finance288@testcorp.co.zw,accounts288@testcorp.co.zw,,,,,physical,Unit 84 Industrial Park,,Mutare,,49184,Zimbabwe
+CUST-0289,individual,Test Individual 289,,,,,83-471106A66,Test Employer 289,+263778859144,+263720151383,indiv289@example.com,indiv289.alt@example.com,,,,,registered,699 Test Road,Flat 6,Harare,Matabeleland,,Zimbabwe
+CUST-0290,individual,Test Individual 290,,,,,83-147088A19,Test Employer 290,+263766127472,+263779838137,indiv290@example.com,indiv290.alt@example.com,,,,,physical,329 Test Road,,Chitungwiza,Matabeleland,,Zimbabwe
+CUST-0291,corporate,,Test Corporate 291 (Pvt) Ltd,Test Corp 291,6430/2011,2008335709,,,+263799897215,+263785570100,finance291@testcorp.co.zw,,,,,,head_office,Unit 83 Industrial Park,,Chitungwiza,Bulawayo Metro,51481,Zimbabwe
+CUST-0292,individual,Test Individual 292,,,,,74-703477A67,Test Employer 292,+263767742008,+263729331762,indiv292@example.com,indiv292.alt@example.com,,,,,registered,990 Test Road,,Bulawayo,Mashonaland,,Zimbabwe
+CUST-0293,individual,Test Individual 293,,,,,44-921478A27,Test Employer 293,+263723706586,,indiv293@example.com,,,,,,postal,341 Test Road,,Harare,Mashonaland,PO Box 2606,Zimbabwe
+CUST-0294,corporate,,Test Corporate 294 (Pvt) Ltd,Test Corp 294,6815/2013,2006876638,,,+263736111488,,finance294@testcorp.co.zw,,,,,,postal,Unit 48 Industrial Park,Building C,Harare,,,Zimbabwe
+CUST-0295,individual,Test Individual 295,,,,,33-690784A94,Test Employer 295,+263724700335,,indiv295@example.com,,,,,,registered,896 Test Road,Flat 15,Masvingo,Midlands,,Zimbabwe
+CUST-0296,individual,Test Individual 296,,,,,40-333900A45,,+263713825462,+263753043720,indiv296@example.com,indiv296.alt@example.com,,,,,physical,330 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0297,individual,Test Individual 297,,,,,78-331186A23,Test Employer 297,+263741586685,+263735457342,indiv297@example.com,indiv297.alt@example.com,,,,,postal,942 Test Road,,Marondera,Midlands,,Zimbabwe
+CUST-0298,individual,Test Individual 298,,,,,27-537857A96,Test Employer 298,+263788658498,,indiv298@example.com,,,,,,physical,375 Test Road,,Gweru,Midlands,,Zimbabwe
+CUST-0299,corporate,,Test Corporate 299 (Pvt) Ltd,Test Corp 299,2090/2016,2006041685,,,+263785542039,+263730645474,finance299@testcorp.co.zw,,,,,,head_office,Unit 64 Industrial Park,,Marondera,,,Zimbabwe
+CUST-0300,individual,Test Individual 300,,,,,19-406245A42,Test Employer 300,+263732498714,+263710648692,indiv300@example.com,indiv300.alt@example.com,,,,,mailing,143 Test Road,Flat 4,Marondera,Manicaland,,Zimbabwe
+CUST-0301,individual,Test Individual 301,,,,,42-683626A82,Test Employer 301,+263779257070,+263779077046,indiv301@example.com,indiv301.alt@example.com,,,,,postal,65 Test Road,,Chitungwiza,,,Zimbabwe
+CUST-0302,individual,Test Individual 302,,,,,26-495109A28,Test Employer 302,+263721171994,+263734826664,indiv302@example.com,indiv302.alt@example.com,,,,,mailing,590 Test Road,,Harare,,PO Box 673,Zimbabwe
+CUST-0303,individual,Test Individual 303,,,,,46-824100A14,Test Employer 303,+263750940621,,indiv303@example.com,,,,,,physical,49 Test Road,,Mutare,Mashonaland,,Zimbabwe
+CUST-0304,corporate,,Test Corporate 304 (Pvt) Ltd,Test Corp 304,6899/2023,2006093927,,,+263797843786,,finance304@testcorp.co.zw,,,,,,physical,Unit 48 Industrial Park,Building C,Chitungwiza,Harare Province,48726,Zimbabwe
+CUST-0305,corporate,,Test Corporate 305 (Pvt) Ltd,Test Corp 305,4017/2021,2008592346,,,+263733102578,,finance305@testcorp.co.zw,accounts305@testcorp.co.zw,,,,,postal,Unit 32 Industrial Park,Building D,Chitungwiza,,,Zimbabwe
+CUST-0306,corporate,,Test Corporate 306 (Pvt) Ltd,Test Corp 306,8529/2024,2005127819,,,+263772799494,,finance306@testcorp.co.zw,accounts306@testcorp.co.zw,,,,,registered,Unit 35 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0307,corporate,,Test Corporate 307 (Pvt) Ltd,Test Corp 307,2381/2024,2001715259,,,+263711046512,,finance307@testcorp.co.zw,,,,,,head_office,Unit 54 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0308,corporate,,Test Corporate 308 (Pvt) Ltd,Test Corp 308,8659/2016,2009380847,,,+263785495753,,finance308@testcorp.co.zw,accounts308@testcorp.co.zw,,,,,registered,Unit 66 Industrial Park,,Kwekwe,Harare Province,53435,Zimbabwe
+CUST-0309,corporate,,Test Corporate 309 (Pvt) Ltd,Test Corp 309,9211/2024,2009882134,,,+263760725535,+263740493675,finance309@testcorp.co.zw,,,,,,head_office,Unit 84 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0310,individual,Test Individual 310,,,,,63-672313A82,Test Employer 310,+263764656618,,indiv310@example.com,,,,,,physical,562 Test Road,,Kwekwe,,,Zimbabwe
+CUST-0311,corporate,,Test Corporate 311 (Pvt) Ltd,Test Corp 311,6830/2010,2006891686,,,+263760676720,,finance311@testcorp.co.zw,,,,,,head_office,Unit 59 Industrial Park,Building E,Mutare,,,Zimbabwe
+CUST-0312,individual,Test Individual 312,,,,,31-966455A19,Test Employer 312,+263754967868,+263733530036,indiv312@example.com,indiv312.alt@example.com,,,,,physical,572 Test Road,,Bulawayo,Midlands,,Zimbabwe
+CUST-0313,individual,Test Individual 313,,,,,70-408218A24,Test Employer 313,+263749161402,+263728359092,indiv313@example.com,indiv313.alt@example.com,,,,,mailing,647 Test Road,,Marondera,,,Zimbabwe
+CUST-0314,individual,Test Individual 314,,,,,71-451221A52,Test Employer 314,+263798695878,,indiv314@example.com,,,,,,mailing,529 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0315,individual,Test Individual 315,,,,,96-600145A74,Test Employer 315,+263775268097,,indiv315@example.com,,,,,,registered,474 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0316,corporate,,Test Corporate 316 (Pvt) Ltd,Test Corp 316,6236/2023,2004256975,,,+263783204733,,finance316@testcorp.co.zw,accounts316@testcorp.co.zw,,,,,physical,Unit 12 Industrial Park,Building B,Kwekwe,,,Zimbabwe
+CUST-0317,corporate,,Test Corporate 317 (Pvt) Ltd,Test Corp 317,2622/2012,2008766979,,,+263752113840,+263757582992,finance317@testcorp.co.zw,,,,,,physical,Unit 75 Industrial Park,,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0318,individual,Test Individual 318,,,,,95-550438A11,Test Employer 318,+263757238458,,indiv318@example.com,,,,,,postal,346 Test Road,,Marondera,Matabeleland,PO Box 453,Zimbabwe
+CUST-0319,individual,Test Individual 319,,,,,52-334518A26,Test Employer 319,+263754265423,,indiv319@example.com,,,,,,postal,211 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0320,corporate,,Test Corporate 320 (Pvt) Ltd,Test Corp 320,8810/2024,2008911983,,,+263719190982,,finance320@testcorp.co.zw,accounts320@testcorp.co.zw,,,,,registered,Unit 99 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0321,individual,Test Individual 321,,,,,93-140879A99,Test Employer 321,+263793199584,,indiv321@example.com,,,,,,physical,328 Test Road,,Chitungwiza,Midlands,,Zimbabwe
+CUST-0322,corporate,,Test Corporate 322 (Pvt) Ltd,Test Corp 322,5286/2020,2009784630,,,+263741839084,,finance322@testcorp.co.zw,,,,,,physical,Unit 99 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0323,corporate,,Test Corporate 323 (Pvt) Ltd,Test Corp 323,4364/2019,2007357622,,,+263768356343,,finance323@testcorp.co.zw,,,,,,head_office,Unit 96 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0324,corporate,,Test Corporate 324 (Pvt) Ltd,,6423/2020,2009154717,,,+263773993007,+263730034500,finance324@testcorp.co.zw,,,,,,registered,Unit 30 Industrial Park,Building D,Kwekwe,,,Zimbabwe
+CUST-0325,individual,Test Individual 325,,,,,45-504696A64,Test Employer 325,+263773377052,+263717249417,indiv325@example.com,indiv325.alt@example.com,,,,,postal,284 Test Road,,Chitungwiza,Midlands,,Zimbabwe
+CUST-0326,individual,Test Individual 326,,,,,17-852561A84,,+263717118729,+263720770218,indiv326@example.com,indiv326.alt@example.com,,,,,physical,213 Test Road,,Masvingo,,,Zimbabwe
+CUST-0327,individual,Test Individual 327,,,,,18-988622A74,Test Employer 327,+263757703750,,indiv327@example.com,,,,,,mailing,379 Test Road,Flat 25,Marondera,Mashonaland,,Zimbabwe
+CUST-0328,individual,Test Individual 328,,,,,17-332305A26,Test Employer 328,+263785584559,+263710136752,indiv328@example.com,indiv328.alt@example.com,,,,,registered,879 Test Road,,Marondera,,PO Box 9022,Zimbabwe
+CUST-0329,individual,Test Individual 329,,,,,35-464775A11,Test Employer 329,+263770209183,,indiv329@example.com,,,,,,mailing,838 Test Road,,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0330,corporate,,Test Corporate 330 (Pvt) Ltd,,3635/2011,2002218777,,,+263714572742,,finance330@testcorp.co.zw,,,,,,physical,Unit 85 Industrial Park,,Bulawayo,Harare Province,,Zimbabwe
+CUST-0331,individual,Test Individual 331,,,,,70-632422A54,Test Employer 331,+263790846273,,indiv331@example.com,,,,,,physical,69 Test Road,,Harare,Manicaland,,Zimbabwe
+CUST-0332,individual,Test Individual 332,,,,,78-797937A83,Test Employer 332,+263768523715,,indiv332@example.com,,,,,,registered,620 Test Road,Flat 23,Chitungwiza,Matabeleland,,Zimbabwe
+CUST-0333,individual,Test Individual 333,,,,,92-246581A20,Test Employer 333,+263753017292,+263741490131,indiv333@example.com,indiv333.alt@example.com,,,,,physical,334 Test Road,,Marondera,Midlands,,Zimbabwe
+CUST-0334,corporate,,Test Corporate 334 (Pvt) Ltd,Test Corp 334,2872/2022,2006935772,,,+263710931283,+263738965617,finance334@testcorp.co.zw,accounts334@testcorp.co.zw,,,,,head_office,Unit 62 Industrial Park,Building C,Marondera,,,Zimbabwe
+CUST-0335,corporate,,Test Corporate 335 (Pvt) Ltd,Test Corp 335,3010/2015,2002883071,,,+263758695983,+263780037857,finance335@testcorp.co.zw,,,,,,registered,Unit 40 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0336,individual,Test Individual 336,,,,,96-351854A69,Test Employer 336,+263785765558,,indiv336@example.com,,,,,,registered,427 Test Road,Flat 8,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0337,individual,Test Individual 337,,,,,87-648705A67,Test Employer 337,+263786676923,,indiv337@example.com,,,,,,physical,208 Test Road,,Kwekwe,Mashonaland,,Zimbabwe
+CUST-0338,individual,Test Individual 338,,,,,54-883946A44,Test Employer 338,+263794647367,,indiv338@example.com,,,,,,registered,443 Test Road,,Marondera,Manicaland,,Zimbabwe
+CUST-0339,corporate,,Test Corporate 339 (Pvt) Ltd,Test Corp 339,8106/2010,2005436199,,,+263748569577,,finance339@testcorp.co.zw,,,,,,head_office,Unit 4 Industrial Park,,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0340,individual,Test Individual 340,,,,,67-556106A44,Test Employer 340,+263731562486,,indiv340@example.com,,,,,,registered,706 Test Road,,Kwekwe,Mashonaland,,Zimbabwe
+CUST-0341,individual,Test Individual 341,,,,,35-532277A91,Test Employer 341,+263775539391,,indiv341@example.com,,,,,,registered,639 Test Road,Flat 17,Kwekwe,Mashonaland,,Zimbabwe
+CUST-0342,corporate,,Test Corporate 342 (Pvt) Ltd,Test Corp 342,7307/2010,2001851204,,,+263760908377,,finance342@testcorp.co.zw,accounts342@testcorp.co.zw,,,,,registered,Unit 54 Industrial Park,,Harare,Harare Province,,Zimbabwe
+CUST-0343,individual,Test Individual 343,,,,,65-245666A51,Test Employer 343,+263789423794,,indiv343@example.com,,,,,,physical,560 Test Road,,Marondera,Matabeleland,,Zimbabwe
+CUST-0344,individual,Test Individual 344,,,,,58-324548A10,Test Employer 344,+263777600291,,indiv344@example.com,,,,,,mailing,369 Test Road,,Mutare,Manicaland,,Zimbabwe
+CUST-0345,corporate,,Test Corporate 345 (Pvt) Ltd,Test Corp 345,9156/2016,2005370812,,,+263723538328,+263757611428,finance345@testcorp.co.zw,,,,,,physical,Unit 4 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0346,corporate,,Test Corporate 346 (Pvt) Ltd,,1707/2010,2003682704,,,+263722505408,,finance346@testcorp.co.zw,accounts346@testcorp.co.zw,,,,,physical,Unit 80 Industrial Park,,Gweru,Bulawayo Metro,69699,Zimbabwe
+CUST-0347,individual,Test Individual 347,,,,,20-158648A21,Test Employer 347,+263761913547,,indiv347@example.com,,,,,,registered,700 Test Road,,Chitungwiza,,,Zimbabwe
+CUST-0348,individual,Test Individual 348,,,,,88-309327A75,Test Employer 348,+263728166722,,indiv348@example.com,,,,,,mailing,388 Test Road,Flat 18,Bulawayo,Midlands,PO Box 394,Zimbabwe
+CUST-0349,corporate,,Test Corporate 349 (Pvt) Ltd,Test Corp 349,2384/2012,2007424578,,,+263751830097,,finance349@testcorp.co.zw,,,,,,head_office,Unit 54 Industrial Park,,Marondera,Harare Province,19222,Zimbabwe
+CUST-0350,individual,Test Individual 350,,,,,16-111510A93,Test Employer 350,+263737501529,+263770499965,indiv350@example.com,indiv350.alt@example.com,,,,,postal,701 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0351,individual,Test Individual 351,,,,,62-788905A96,Test Employer 351,+263761899004,,indiv351@example.com,,,,,,postal,582 Test Road,Flat 32,Mutare,Mashonaland,PO Box 8681,Zimbabwe
+CUST-0352,individual,Test Individual 352,,,,,99-583766A46,Test Employer 352,+263753646607,,indiv352@example.com,,,,,,postal,909 Test Road,,Harare,Manicaland,PO Box 8513,Zimbabwe
+CUST-0353,corporate,,Test Corporate 353 (Pvt) Ltd,Test Corp 353,2300/2013,2006274173,,,+263762101109,,finance353@testcorp.co.zw,,,,,,registered,Unit 73 Industrial Park,,Marondera,,39842,Zimbabwe
+CUST-0354,corporate,,Test Corporate 354 (Pvt) Ltd,Test Corp 354,8544/2017,2008212729,,,+263793243208,,finance354@testcorp.co.zw,,,,,,physical,Unit 36 Industrial Park,Building E,Mutare,Harare Province,52297,Zimbabwe
+CUST-0355,corporate,,Test Corporate 355 (Pvt) Ltd,Test Corp 355,4056/2018,2009366661,,,+263717409230,+263770342879,finance355@testcorp.co.zw,,,,,,physical,Unit 39 Industrial Park,,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0356,individual,Test Individual 356,,,,,75-893325A98,Test Employer 356,+263773443608,+263748566916,indiv356@example.com,indiv356.alt@example.com,,,,,mailing,970 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0357,individual,Test Individual 357,,,,,11-639387A32,,+263798842972,,indiv357@example.com,,,,,,mailing,884 Test Road,,Marondera,Midlands,,Zimbabwe
+CUST-0358,individual,Test Individual 358,,,,,83-137881A51,Test Employer 358,+263774657577,,indiv358@example.com,,,,,,mailing,896 Test Road,,Kwekwe,Manicaland,,Zimbabwe
+CUST-0359,individual,Test Individual 359,,,,,28-497337A98,Test Employer 359,+263723954890,,indiv359@example.com,,,,,,mailing,894 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0360,corporate,,Test Corporate 360 (Pvt) Ltd,Test Corp 360,9213/2022,2001736667,,,+263778856127,,finance360@testcorp.co.zw,,,,,,postal,Unit 5 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0361,individual,Test Individual 361,,,,,84-275598A95,,+263728257703,+263758693333,indiv361@example.com,indiv361.alt@example.com,,,,,postal,503 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0362,individual,Test Individual 362,,,,,57-814409A18,Test Employer 362,+263774565620,+263780737004,indiv362@example.com,indiv362.alt@example.com,,,,,mailing,819 Test Road,,Kwekwe,,PO Box 5278,Zimbabwe
+CUST-0363,individual,Test Individual 363,,,,,65-550362A65,Test Employer 363,+263773661506,+263772548791,indiv363@example.com,indiv363.alt@example.com,,,,,mailing,653 Test Road,,Masvingo,,,Zimbabwe
+CUST-0364,corporate,,Test Corporate 364 (Pvt) Ltd,Test Corp 364,4636/2014,2003513765,,,+263719935159,,finance364@testcorp.co.zw,,,,,,postal,Unit 13 Industrial Park,Building B,Masvingo,,,Zimbabwe
+CUST-0365,individual,Test Individual 365,,,,,18-930855A77,Test Employer 365,+263757172047,+263793830300,indiv365@example.com,indiv365.alt@example.com,,,,,registered,992 Test Road,,Marondera,Matabeleland,,Zimbabwe
+CUST-0366,individual,Test Individual 366,,,,,11-627232A82,Test Employer 366,+263764120113,+263765951288,indiv366@example.com,indiv366.alt@example.com,,,,,physical,39 Test Road,,Harare,,,Zimbabwe
+CUST-0367,individual,Test Individual 367,,,,,56-899922A44,Test Employer 367,+263750759157,+263724918543,indiv367@example.com,indiv367.alt@example.com,,,,,physical,783 Test Road,,Mutare,Matabeleland,,Zimbabwe
+CUST-0368,corporate,,Test Corporate 368 (Pvt) Ltd,Test Corp 368,7112/2011,2006861012,,,+263713455646,+263796270009,finance368@testcorp.co.zw,accounts368@testcorp.co.zw,,,,,head_office,Unit 21 Industrial Park,Building C,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0369,corporate,,Test Corporate 369 (Pvt) Ltd,Test Corp 369,7804/2017,2002665323,,,+263761851986,,finance369@testcorp.co.zw,,,,,,physical,Unit 29 Industrial Park,Building A,Chitungwiza,,78099,Zimbabwe
+CUST-0370,individual,Test Individual 370,,,,,78-549992A42,Test Employer 370,+263751212740,+263721474136,indiv370@example.com,indiv370.alt@example.com,,,,,mailing,705 Test Road,,Bulawayo,Manicaland,,Zimbabwe
+CUST-0371,individual,Test Individual 371,,,,,34-148791A33,Test Employer 371,+263789751493,,indiv371@example.com,,,,,,mailing,294 Test Road,,Harare,Mashonaland,,Zimbabwe
+CUST-0372,corporate,,Test Corporate 372 (Pvt) Ltd,Test Corp 372,2988/2024,2003505989,,,+263717437001,+263710973463,finance372@testcorp.co.zw,,,,,,physical,Unit 17 Industrial Park,,Kwekwe,,41803,Zimbabwe
+CUST-0373,corporate,,Test Corporate 373 (Pvt) Ltd,Test Corp 373,4677/2013,2005419938,,,+263779960580,+263791783800,finance373@testcorp.co.zw,,,,,,head_office,Unit 98 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0374,corporate,,Test Corporate 374 (Pvt) Ltd,,1422/2013,2003009446,,,+263791657141,+263763867174,finance374@testcorp.co.zw,,,,,,physical,Unit 30 Industrial Park,Building B,Marondera,Harare Province,,Zimbabwe
+CUST-0375,corporate,,Test Corporate 375 (Pvt) Ltd,Test Corp 375,7582/2018,2009887684,,,+263748979122,+263758084581,finance375@testcorp.co.zw,,,,,,postal,Unit 29 Industrial Park,,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0376,individual,Test Individual 376,,,,,56-549681A37,Test Employer 376,+263789752649,+263736384475,indiv376@example.com,indiv376.alt@example.com,,,,,postal,811 Test Road,,Kwekwe,Midlands,,Zimbabwe
+CUST-0377,individual,Test Individual 377,,,,,17-194793A32,Test Employer 377,+263773959095,,indiv377@example.com,,,,,,registered,506 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0378,corporate,,Test Corporate 378 (Pvt) Ltd,Test Corp 378,9163/2015,2008733920,,,+263739275245,+263759018061,finance378@testcorp.co.zw,accounts378@testcorp.co.zw,,,,,registered,Unit 51 Industrial Park,,Bulawayo,Harare Province,39456,Zimbabwe
+CUST-0379,corporate,,Test Corporate 379 (Pvt) Ltd,Test Corp 379,5577/2020,2003663473,,,+263796975031,+263761068980,finance379@testcorp.co.zw,,,,,,physical,Unit 21 Industrial Park,,Harare,,,Zimbabwe
+CUST-0380,individual,Test Individual 380,,,,,90-881946A56,Test Employer 380,+263748100999,,indiv380@example.com,,,,,,postal,932 Test Road,Flat 8,Chitungwiza,,PO Box 3008,Zimbabwe
+CUST-0381,corporate,,Test Corporate 381 (Pvt) Ltd,Test Corp 381,3861/2017,2005011633,,,+263769856778,,finance381@testcorp.co.zw,,,,,,postal,Unit 46 Industrial Park,Building A,Bulawayo,Harare Province,,Zimbabwe
+CUST-0382,corporate,,Test Corporate 382 (Pvt) Ltd,Test Corp 382,5201/2024,2002898076,,,+263757286025,,finance382@testcorp.co.zw,,,,,,registered,Unit 7 Industrial Park,,Kwekwe,Harare Province,,Zimbabwe
+CUST-0383,corporate,,Test Corporate 383 (Pvt) Ltd,,7017/2021,2007768667,,,+263768017371,+263720617648,finance383@testcorp.co.zw,,,,,,head_office,Unit 65 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0384,corporate,,Test Corporate 384 (Pvt) Ltd,,5900/2024,2003103633,,,+263735516279,,finance384@testcorp.co.zw,,,,,,head_office,Unit 64 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0385,corporate,,Test Corporate 385 (Pvt) Ltd,Test Corp 385,1268/2012,2003438273,,,+263722744266,+263727096083,finance385@testcorp.co.zw,,,,,,postal,Unit 26 Industrial Park,,Marondera,,,Zimbabwe
+CUST-0386,individual,Test Individual 386,,,,,22-748435A25,Test Employer 386,+263762909685,+263715192700,indiv386@example.com,indiv386.alt@example.com,,,,,mailing,854 Test Road,,Mutare,,,Zimbabwe
+CUST-0387,corporate,,Test Corporate 387 (Pvt) Ltd,Test Corp 387,6158/2020,2006408946,,,+263771000542,,finance387@testcorp.co.zw,,,,,,postal,Unit 89 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0388,individual,Test Individual 388,,,,,89-961187A16,Test Employer 388,+263768206385,+263734403693,indiv388@example.com,indiv388.alt@example.com,,,,,physical,152 Test Road,,Kwekwe,,PO Box 9874,Zimbabwe
+CUST-0389,individual,Test Individual 389,,,,,43-650497A50,Test Employer 389,+263745384668,+263733904125,indiv389@example.com,indiv389.alt@example.com,,,,,registered,177 Test Road,,Mutare,Manicaland,PO Box 5097,Zimbabwe
+CUST-0390,individual,Test Individual 390,,,,,54-363037A17,Test Employer 390,+263727383066,+263786989353,indiv390@example.com,indiv390.alt@example.com,,,,,registered,395 Test Road,Flat 20,Chitungwiza,Midlands,,Zimbabwe
+CUST-0391,corporate,,Test Corporate 391 (Pvt) Ltd,Test Corp 391,9491/2015,2003157625,,,+263781244840,,finance391@testcorp.co.zw,accounts391@testcorp.co.zw,,,,,physical,Unit 54 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0392,corporate,,Test Corporate 392 (Pvt) Ltd,Test Corp 392,1665/2015,2005460772,,,+263793070148,+263712338674,finance392@testcorp.co.zw,,,,,,registered,Unit 87 Industrial Park,,Masvingo,Bulawayo Metro,23764,Zimbabwe
+CUST-0393,individual,Test Individual 393,,,,,53-231813A27,Test Employer 393,+263714671696,,indiv393@example.com,,,,,,mailing,342 Test Road,,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0394,corporate,,Test Corporate 394 (Pvt) Ltd,Test Corp 394,9041/2021,2003135361,,,+263724002983,,finance394@testcorp.co.zw,,,,,,registered,Unit 17 Industrial Park,,Gweru,Bulawayo Metro,48402,Zimbabwe
+CUST-0395,individual,Test Individual 395,,,,,14-435799A97,,+263725403605,+263757309699,indiv395@example.com,indiv395.alt@example.com,,,,,postal,362 Test Road,,Harare,Manicaland,PO Box 1422,Zimbabwe
+CUST-0396,corporate,,Test Corporate 396 (Pvt) Ltd,Test Corp 396,7070/2016,2008939099,,,+263739019509,+263743829761,finance396@testcorp.co.zw,,,,,,registered,Unit 30 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0397,corporate,,Test Corporate 397 (Pvt) Ltd,Test Corp 397,2739/2018,2003641094,,,+263763818062,+263739404690,finance397@testcorp.co.zw,accounts397@testcorp.co.zw,,,,,registered,Unit 13 Industrial Park,,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0398,corporate,,Test Corporate 398 (Pvt) Ltd,,6354/2017,2002572163,,,+263781090891,+263718998296,finance398@testcorp.co.zw,,,,,,head_office,Unit 97 Industrial Park,Building B,Kwekwe,,,Zimbabwe
+CUST-0399,individual,Test Individual 399,,,,,88-909545A31,Test Employer 399,+263737808884,+263766161305,indiv399@example.com,indiv399.alt@example.com,,,,,physical,915 Test Road,,Gweru,Mashonaland,,Zimbabwe
+CUST-0400,corporate,,Test Corporate 400 (Pvt) Ltd,,8487/2013,2005860875,,,+263717888842,,finance400@testcorp.co.zw,,,,,,head_office,Unit 2 Industrial Park,,Harare,,,Zimbabwe
+CUST-0401,corporate,,Test Corporate 401 (Pvt) Ltd,Test Corp 401,5555/2021,2006929494,,,+263780714135,,finance401@testcorp.co.zw,,,,,,postal,Unit 63 Industrial Park,Building C,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0402,corporate,,Test Corporate 402 (Pvt) Ltd,Test Corp 402,6838/2019,2002321589,,,+263739656500,,finance402@testcorp.co.zw,,,,,,physical,Unit 19 Industrial Park,,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0403,corporate,,Test Corporate 403 (Pvt) Ltd,Test Corp 403,2127/2014,2002940090,,,+263763732607,,finance403@testcorp.co.zw,,,,,,postal,Unit 90 Industrial Park,,Chitungwiza,Bulawayo Metro,48257,Zimbabwe
+CUST-0404,individual,Test Individual 404,,,,,79-473134A43,Test Employer 404,+263739376789,,indiv404@example.com,,,,,,mailing,907 Test Road,,Marondera,Matabeleland,,Zimbabwe
+CUST-0405,individual,Test Individual 405,,,,,88-501098A72,Test Employer 405,+263739453417,,indiv405@example.com,,,,,,registered,284 Test Road,,Mutare,Matabeleland,,Zimbabwe
+CUST-0406,individual,Test Individual 406,,,,,55-822798A48,Test Employer 406,+263758465696,,indiv406@example.com,,,,,,registered,132 Test Road,,Bulawayo,Manicaland,,Zimbabwe
+CUST-0407,individual,Test Individual 407,,,,,20-316521A31,Test Employer 407,+263773287784,,indiv407@example.com,,,,,,postal,826 Test Road,,Harare,Midlands,PO Box 8764,Zimbabwe
+CUST-0408,corporate,,Test Corporate 408 (Pvt) Ltd,Test Corp 408,8130/2013,2005340904,,,+263755788910,,finance408@testcorp.co.zw,,,,,,postal,Unit 97 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0409,corporate,,Test Corporate 409 (Pvt) Ltd,Test Corp 409,1767/2013,2004287486,,,+263723918428,,finance409@testcorp.co.zw,,,,,,head_office,Unit 20 Industrial Park,Building A,Marondera,,,Zimbabwe
+CUST-0410,corporate,,Test Corporate 410 (Pvt) Ltd,Test Corp 410,7359/2020,2007788270,,,+263772667021,+263793575773,finance410@testcorp.co.zw,,,,,,head_office,Unit 85 Industrial Park,Building E,Harare,Bulawayo Metro,86647,Zimbabwe
+CUST-0411,corporate,,Test Corporate 411 (Pvt) Ltd,Test Corp 411,1238/2022,2004652927,,,+263779798973,,finance411@testcorp.co.zw,,,,,,registered,Unit 97 Industrial Park,,Kwekwe,Harare Province,,Zimbabwe
+CUST-0412,corporate,,Test Corporate 412 (Pvt) Ltd,Test Corp 412,6160/2013,2009382567,,,+263782999964,+263740005612,finance412@testcorp.co.zw,accounts412@testcorp.co.zw,,,,,head_office,Unit 79 Industrial Park,,Marondera,Harare Province,63825,Zimbabwe
+CUST-0413,corporate,,Test Corporate 413 (Pvt) Ltd,Test Corp 413,2225/2019,2002430540,,,+263780542396,+263749352977,finance413@testcorp.co.zw,,,,,,registered,Unit 42 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0414,individual,Test Individual 414,,,,,72-799324A83,Test Employer 414,+263781354580,,indiv414@example.com,,,,,,mailing,50 Test Road,Flat 34,Kwekwe,Midlands,PO Box 5936,Zimbabwe
+CUST-0415,individual,Test Individual 415,,,,,58-536801A71,,+263747613717,,indiv415@example.com,,,,,,postal,860 Test Road,,Mutare,Matabeleland,PO Box 7038,Zimbabwe
+CUST-0416,individual,Test Individual 416,,,,,35-694438A95,Test Employer 416,+263762861711,+263798553898,indiv416@example.com,indiv416.alt@example.com,,,,,postal,701 Test Road,,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0417,corporate,,Test Corporate 417 (Pvt) Ltd,,8575/2015,2002238332,,,+263784963964,+263756748823,finance417@testcorp.co.zw,accounts417@testcorp.co.zw,,,,,registered,Unit 65 Industrial Park,Building A,Chitungwiza,,78288,Zimbabwe
+CUST-0418,individual,Test Individual 418,,,,,56-116296A74,Test Employer 418,+263779741715,,indiv418@example.com,,,,,,physical,348 Test Road,,Kwekwe,Midlands,,Zimbabwe
+CUST-0419,corporate,,Test Corporate 419 (Pvt) Ltd,Test Corp 419,5459/2019,2009908147,,,+263783468089,,finance419@testcorp.co.zw,,,,,,head_office,Unit 72 Industrial Park,Building D,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0420,individual,Test Individual 420,,,,,48-837333A96,Test Employer 420,+263783878910,+263715139974,indiv420@example.com,indiv420.alt@example.com,,,,,registered,542 Test Road,,Kwekwe,,,Zimbabwe
+CUST-0421,corporate,,Test Corporate 421 (Pvt) Ltd,,3132/2011,2008270517,,,+263777466184,,finance421@testcorp.co.zw,accounts421@testcorp.co.zw,,,,,registered,Unit 51 Industrial Park,,Masvingo,Harare Province,,Zimbabwe
+CUST-0422,corporate,,Test Corporate 422 (Pvt) Ltd,Test Corp 422,9810/2017,2002856755,,,+263757120077,,finance422@testcorp.co.zw,,,,,,physical,Unit 18 Industrial Park,,Bulawayo,Harare Province,69045,Zimbabwe
+CUST-0423,individual,Test Individual 423,,,,,78-401048A48,,+263797984511,,indiv423@example.com,,,,,,physical,813 Test Road,Flat 35,Bulawayo,Mashonaland,,Zimbabwe
+CUST-0424,corporate,,Test Corporate 424 (Pvt) Ltd,Test Corp 424,6937/2011,2007426437,,,+263754890059,,finance424@testcorp.co.zw,,,,,,physical,Unit 33 Industrial Park,,Marondera,,8127,Zimbabwe
+CUST-0425,individual,Test Individual 425,,,,,40-426585A78,Test Employer 425,+263769495971,,indiv425@example.com,,,,,,postal,310 Test Road,Flat 36,Harare,,,Zimbabwe
+CUST-0426,individual,Test Individual 426,,,,,76-735767A35,Test Employer 426,+263768238939,,indiv426@example.com,,,,,,registered,365 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0427,corporate,,Test Corporate 427 (Pvt) Ltd,Test Corp 427,3341/2022,2003595147,,,+263715978301,+263742886482,finance427@testcorp.co.zw,accounts427@testcorp.co.zw,,,,,registered,Unit 63 Industrial Park,,Kwekwe,Bulawayo Metro,30746,Zimbabwe
+CUST-0428,corporate,,Test Corporate 428 (Pvt) Ltd,Test Corp 428,4523/2018,2006287238,,,+263711458648,+263735544444,finance428@testcorp.co.zw,,,,,,registered,Unit 25 Industrial Park,,Harare,Harare Province,90493,Zimbabwe
+CUST-0429,individual,Test Individual 429,,,,,55-752992A32,Test Employer 429,+263780187551,,indiv429@example.com,,,,,,postal,116 Test Road,,Harare,Manicaland,PO Box 438,Zimbabwe
+CUST-0430,corporate,,Test Corporate 430 (Pvt) Ltd,Test Corp 430,2358/2024,2001156295,,,+263774582561,,finance430@testcorp.co.zw,,,,,,postal,Unit 81 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0431,corporate,,Test Corporate 431 (Pvt) Ltd,Test Corp 431,4057/2020,2001098551,,,+263786341938,+263723483440,finance431@testcorp.co.zw,,,,,,registered,Unit 81 Industrial Park,,Mutare,,,Zimbabwe
+CUST-0432,corporate,,Test Corporate 432 (Pvt) Ltd,Test Corp 432,2095/2013,2005216822,,,+263749135032,+263731452071,finance432@testcorp.co.zw,,,,,,head_office,Unit 72 Industrial Park,,Kwekwe,,38498,Zimbabwe
+CUST-0433,corporate,,Test Corporate 433 (Pvt) Ltd,,7128/2010,2007398775,,,+263776740948,,finance433@testcorp.co.zw,,,,,,physical,Unit 22 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0434,individual,Test Individual 434,,,,,63-416945A15,,+263741187132,+263725284502,indiv434@example.com,indiv434.alt@example.com,,,,,registered,770 Test Road,,Masvingo,Manicaland,,Zimbabwe
+CUST-0435,corporate,,Test Corporate 435 (Pvt) Ltd,Test Corp 435,4263/2019,2005373847,,,+263715757869,+263728974433,finance435@testcorp.co.zw,,,,,,registered,Unit 21 Industrial Park,,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0436,corporate,,Test Corporate 436 (Pvt) Ltd,Test Corp 436,8076/2021,2007980896,,,+263754127235,,finance436@testcorp.co.zw,,,,,,registered,Unit 95 Industrial Park,,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0437,corporate,,Test Corporate 437 (Pvt) Ltd,,6983/2012,2001156128,,,+263730231579,,finance437@testcorp.co.zw,,,,,,postal,Unit 42 Industrial Park,Building C,Marondera,,,Zimbabwe
+CUST-0438,corporate,,Test Corporate 438 (Pvt) Ltd,Test Corp 438,9233/2022,2008211859,,,+263757667827,,finance438@testcorp.co.zw,,,,,,postal,Unit 3 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0439,individual,Test Individual 439,,,,,70-794952A64,Test Employer 439,+263798093118,,indiv439@example.com,,,,,,mailing,447 Test Road,,Marondera,Matabeleland,PO Box 2458,Zimbabwe
+CUST-0440,individual,Test Individual 440,,,,,52-711012A69,Test Employer 440,+263749533876,+263767951268,indiv440@example.com,indiv440.alt@example.com,,,,,postal,621 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0441,individual,Test Individual 441,,,,,69-479168A64,Test Employer 441,+263757022120,+263732621140,indiv441@example.com,indiv441.alt@example.com,,,,,physical,236 Test Road,,Mutare,Mashonaland,,Zimbabwe
+CUST-0442,individual,Test Individual 442,,,,,30-788836A74,,+263737666069,,indiv442@example.com,,,,,,registered,16 Test Road,,Marondera,Mashonaland,,Zimbabwe
+CUST-0443,individual,Test Individual 443,,,,,89-431199A70,Test Employer 443,+263717032350,,indiv443@example.com,,,,,,mailing,655 Test Road,,Harare,Mashonaland,PO Box 9847,Zimbabwe
+CUST-0444,corporate,,Test Corporate 444 (Pvt) Ltd,Test Corp 444,2895/2016,2007918877,,,+263717210751,,finance444@testcorp.co.zw,,,,,,head_office,Unit 9 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0445,corporate,,Test Corporate 445 (Pvt) Ltd,Test Corp 445,1068/2018,2004773603,,,+263796222000,,finance445@testcorp.co.zw,,,,,,postal,Unit 11 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0446,individual,Test Individual 446,,,,,86-676735A52,Test Employer 446,+263748523983,+263770038834,indiv446@example.com,indiv446.alt@example.com,,,,,physical,71 Test Road,,Gweru,,,Zimbabwe
+CUST-0447,corporate,,Test Corporate 447 (Pvt) Ltd,Test Corp 447,7977/2024,2008986699,,,+263753703079,+263749125508,finance447@testcorp.co.zw,accounts447@testcorp.co.zw,,,,,head_office,Unit 58 Industrial Park,Building C,Harare,Harare Province,,Zimbabwe
+CUST-0448,individual,Test Individual 448,,,,,46-665843A17,Test Employer 448,+263782323099,,indiv448@example.com,,,,,,mailing,217 Test Road,,Harare,,,Zimbabwe
+CUST-0449,corporate,,Test Corporate 449 (Pvt) Ltd,Test Corp 449,2458/2011,2005646546,,,+263720210763,+263745743976,finance449@testcorp.co.zw,,,,,,postal,Unit 78 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0450,corporate,,Test Corporate 450 (Pvt) Ltd,Test Corp 450,3130/2016,2005611432,,,+263791965971,+263743285663,finance450@testcorp.co.zw,accounts450@testcorp.co.zw,,,,,head_office,Unit 61 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0451,corporate,,Test Corporate 451 (Pvt) Ltd,Test Corp 451,4734/2022,2009453609,,,+263765417818,,finance451@testcorp.co.zw,accounts451@testcorp.co.zw,,,,,head_office,Unit 77 Industrial Park,Building B,Harare,Harare Province,,Zimbabwe
+CUST-0452,corporate,,Test Corporate 452 (Pvt) Ltd,Test Corp 452,1689/2013,2004584443,,,+263799819126,,finance452@testcorp.co.zw,,,,,,physical,Unit 97 Industrial Park,,Masvingo,Harare Province,,Zimbabwe
+CUST-0453,individual,Test Individual 453,,,,,98-411756A27,Test Employer 453,+263774385420,,indiv453@example.com,,,,,,mailing,356 Test Road,,Bulawayo,,PO Box 5906,Zimbabwe
+CUST-0454,individual,Test Individual 454,,,,,27-701822A26,,+263751676807,+263712715777,indiv454@example.com,indiv454.alt@example.com,,,,,registered,102 Test Road,Flat 40,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0455,corporate,,Test Corporate 455 (Pvt) Ltd,Test Corp 455,6676/2014,2005071512,,,+263725520930,+263736632546,finance455@testcorp.co.zw,,,,,,physical,Unit 23 Industrial Park,,Masvingo,,,Zimbabwe
+CUST-0456,corporate,,Test Corporate 456 (Pvt) Ltd,Test Corp 456,3627/2019,2007792721,,,+263758341231,+263742874165,finance456@testcorp.co.zw,,,,,,head_office,Unit 89 Industrial Park,,Kwekwe,Harare Province,,Zimbabwe
+CUST-0457,corporate,,Test Corporate 457 (Pvt) Ltd,Test Corp 457,1992/2011,2001278177,,,+263798330489,,finance457@testcorp.co.zw,,,,,,physical,Unit 87 Industrial Park,,Chitungwiza,Bulawayo Metro,15414,Zimbabwe
+CUST-0458,corporate,,Test Corporate 458 (Pvt) Ltd,Test Corp 458,2167/2017,2003149860,,,+263725762831,,finance458@testcorp.co.zw,,,,,,postal,Unit 98 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0459,individual,Test Individual 459,,,,,68-541778A76,,+263748855457,,indiv459@example.com,,,,,,physical,319 Test Road,,Masvingo,,,Zimbabwe
+CUST-0460,individual,Test Individual 460,,,,,79-453358A30,Test Employer 460,+263793981890,+263750849481,indiv460@example.com,indiv460.alt@example.com,,,,,postal,844 Test Road,,Harare,Matabeleland,PO Box 803,Zimbabwe
+CUST-0461,corporate,,Test Corporate 461 (Pvt) Ltd,Test Corp 461,2157/2013,2008451605,,,+263759768405,,finance461@testcorp.co.zw,,,,,,registered,Unit 65 Industrial Park,Building D,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0462,corporate,,Test Corporate 462 (Pvt) Ltd,Test Corp 462,5980/2018,2004332698,,,+263745414780,+263770307072,finance462@testcorp.co.zw,,,,,,physical,Unit 85 Industrial Park,Building A,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0463,individual,Test Individual 463,,,,,89-603928A39,Test Employer 463,+263722610950,+263771882660,indiv463@example.com,indiv463.alt@example.com,,,,,registered,539 Test Road,,Gweru,Mashonaland,PO Box 9130,Zimbabwe
+CUST-0464,corporate,,Test Corporate 464 (Pvt) Ltd,Test Corp 464,3420/2018,2003470440,,,+263753493831,,finance464@testcorp.co.zw,accounts464@testcorp.co.zw,,,,,registered,Unit 74 Industrial Park,,Bulawayo,Harare Province,,Zimbabwe
+CUST-0465,individual,Test Individual 465,,,,,66-697779A15,Test Employer 465,+263712868186,+263737530589,indiv465@example.com,indiv465.alt@example.com,,,,,postal,445 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0466,individual,Test Individual 466,,,,,97-699611A41,Test Employer 466,+263730230833,,indiv466@example.com,,,,,,postal,236 Test Road,,Kwekwe,,PO Box 8167,Zimbabwe
+CUST-0467,individual,Test Individual 467,,,,,40-891154A78,Test Employer 467,+263799150549,+263736967885,indiv467@example.com,indiv467.alt@example.com,,,,,mailing,131 Test Road,,Mutare,Matabeleland,,Zimbabwe
+CUST-0468,individual,Test Individual 468,,,,,32-429480A58,Test Employer 468,+263786068031,+263785273525,indiv468@example.com,indiv468.alt@example.com,,,,,postal,756 Test Road,,Harare,,,Zimbabwe
+CUST-0469,individual,Test Individual 469,,,,,26-582426A64,Test Employer 469,+263753335434,,indiv469@example.com,,,,,,mailing,817 Test Road,Flat 13,Harare,Matabeleland,,Zimbabwe
+CUST-0470,corporate,,Test Corporate 470 (Pvt) Ltd,Test Corp 470,7619/2011,2009852645,,,+263792056307,+263727208819,finance470@testcorp.co.zw,,,,,,head_office,Unit 78 Industrial Park,Building E,Chitungwiza,,,Zimbabwe
+CUST-0471,corporate,,Test Corporate 471 (Pvt) Ltd,Test Corp 471,5915/2014,2002725684,,,+263737985204,,finance471@testcorp.co.zw,,,,,,head_office,Unit 30 Industrial Park,Building A,Marondera,Harare Province,,Zimbabwe
+CUST-0472,individual,Test Individual 472,,,,,59-496204A89,Test Employer 472,+263740983239,+263761970991,indiv472@example.com,indiv472.alt@example.com,,,,,postal,94 Test Road,,Mutare,Mashonaland,PO Box 8699,Zimbabwe
+CUST-0473,corporate,,Test Corporate 473 (Pvt) Ltd,,5462/2013,2001041140,,,+263758135120,+263775420245,finance473@testcorp.co.zw,,,,,,postal,Unit 72 Industrial Park,,Masvingo,,,Zimbabwe
+CUST-0474,individual,Test Individual 474,,,,,11-677729A24,Test Employer 474,+263751281697,,indiv474@example.com,,,,,,registered,690 Test Road,,Harare,Manicaland,,Zimbabwe
+CUST-0475,individual,Test Individual 475,,,,,31-932997A52,Test Employer 475,+263746087648,,indiv475@example.com,,,,,,registered,962 Test Road,Flat 3,Chitungwiza,Mashonaland,PO Box 4260,Zimbabwe
+CUST-0476,individual,Test Individual 476,,,,,71-814753A88,Test Employer 476,+263774479828,+263720203886,indiv476@example.com,indiv476.alt@example.com,,,,,registered,831 Test Road,,Kwekwe,Midlands,,Zimbabwe
+CUST-0477,individual,Test Individual 477,,,,,73-629309A95,Test Employer 477,+263763277217,,indiv477@example.com,,,,,,physical,942 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0478,corporate,,Test Corporate 478 (Pvt) Ltd,,8390/2021,2001122916,,,+263745079148,,finance478@testcorp.co.zw,accounts478@testcorp.co.zw,,,,,registered,Unit 17 Industrial Park,,Harare,Bulawayo Metro,81175,Zimbabwe
+CUST-0479,corporate,,Test Corporate 479 (Pvt) Ltd,,4521/2013,2001202679,,,+263773425105,,finance479@testcorp.co.zw,,,,,,registered,Unit 17 Industrial Park,,Harare,Bulawayo Metro,54278,Zimbabwe
+CUST-0480,individual,Test Individual 480,,,,,32-924985A19,Test Employer 480,+263720313940,,indiv480@example.com,,,,,,postal,397 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0481,corporate,,Test Corporate 481 (Pvt) Ltd,Test Corp 481,6633/2021,2003115448,,,+263798673010,,finance481@testcorp.co.zw,,,,,,physical,Unit 78 Industrial Park,Building D,Mutare,Harare Province,,Zimbabwe
+CUST-0482,individual,Test Individual 482,,,,,12-398344A64,Test Employer 482,+263791915692,,indiv482@example.com,,,,,,mailing,825 Test Road,Flat 1,Bulawayo,Manicaland,,Zimbabwe
+CUST-0483,corporate,,Test Corporate 483 (Pvt) Ltd,Test Corp 483,9252/2010,2008334757,,,+263764063543,,finance483@testcorp.co.zw,,,,,,registered,Unit 38 Industrial Park,,Mutare,,,Zimbabwe
+CUST-0484,individual,Test Individual 484,,,,,48-537482A36,Test Employer 484,+263760461649,,indiv484@example.com,,,,,,mailing,8 Test Road,,Kwekwe,Mashonaland,,Zimbabwe
+CUST-0485,individual,Test Individual 485,,,,,42-418090A73,Test Employer 485,+263791626667,+263753252140,indiv485@example.com,indiv485.alt@example.com,,,,,postal,688 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0486,corporate,,Test Corporate 486 (Pvt) Ltd,Test Corp 486,8927/2019,2002879861,,,+263756045113,+263751728398,finance486@testcorp.co.zw,,,,,,physical,Unit 6 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0487,individual,Test Individual 487,,,,,64-610733A40,Test Employer 487,+263786978520,+263764166913,indiv487@example.com,indiv487.alt@example.com,,,,,mailing,429 Test Road,Flat 21,Gweru,,PO Box 6458,Zimbabwe
+CUST-0488,corporate,,Test Corporate 488 (Pvt) Ltd,,5428/2016,2002364649,,,+263773853920,,finance488@testcorp.co.zw,accounts488@testcorp.co.zw,,,,,registered,Unit 39 Industrial Park,,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0489,corporate,,Test Corporate 489 (Pvt) Ltd,Test Corp 489,2817/2022,2002327292,,,+263742672709,,finance489@testcorp.co.zw,,,,,,postal,Unit 36 Industrial Park,,Harare,Harare Province,,Zimbabwe
+CUST-0490,individual,Test Individual 490,,,,,29-194973A49,Test Employer 490,+263745409253,,indiv490@example.com,,,,,,postal,317 Test Road,,Gweru,Manicaland,,Zimbabwe
+CUST-0491,corporate,,Test Corporate 491 (Pvt) Ltd,Test Corp 491,7461/2013,2007821120,,,+263716171811,,finance491@testcorp.co.zw,,,,,,physical,Unit 53 Industrial Park,,Marondera,Bulawayo Metro,,Zimbabwe
+CUST-0492,individual,Test Individual 492,,,,,65-825205A77,,+263733613100,,indiv492@example.com,,,,,,physical,128 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0493,corporate,,Test Corporate 493 (Pvt) Ltd,Test Corp 493,9919/2020,2006927072,,,+263789227143,+263745073867,finance493@testcorp.co.zw,,,,,,registered,Unit 16 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0494,corporate,,Test Corporate 494 (Pvt) Ltd,Test Corp 494,5974/2018,2007157648,,,+263727844420,,finance494@testcorp.co.zw,,,,,,physical,Unit 8 Industrial Park,,Kwekwe,Harare Province,34377,Zimbabwe
+CUST-0495,individual,Test Individual 495,,,,,29-225025A45,Test Employer 495,+263732405976,+263746637900,indiv495@example.com,indiv495.alt@example.com,,,,,mailing,70 Test Road,,Mutare,Matabeleland,,Zimbabwe
+CUST-0496,individual,Test Individual 496,,,,,30-797717A10,Test Employer 496,+263740266930,+263732668031,indiv496@example.com,indiv496.alt@example.com,,,,,mailing,767 Test Road,,Kwekwe,Mashonaland,,Zimbabwe
+CUST-0497,individual,Test Individual 497,,,,,51-524057A48,Test Employer 497,+263780028243,+263757244075,indiv497@example.com,indiv497.alt@example.com,,,,,physical,198 Test Road,,Marondera,,,Zimbabwe
+CUST-0498,individual,Test Individual 498,,,,,96-326121A13,Test Employer 498,+263789710405,,indiv498@example.com,,,,,,physical,344 Test Road,,Masvingo,Manicaland,,Zimbabwe
+CUST-0499,corporate,,Test Corporate 499 (Pvt) Ltd,,7173/2019,2008890206,,,+263739263746,,finance499@testcorp.co.zw,,,,,,physical,Unit 65 Industrial Park,,Chitungwiza,Harare Province,17044,Zimbabwe
+CUST-0500,individual,Test Individual 500,,,,,56-273206A30,Test Employer 500,+263790200219,+263727998298,indiv500@example.com,indiv500.alt@example.com,,,,,postal,940 Test Road,,Masvingo,,,Zimbabwe
+CUST-0501,corporate,,Test Corporate 501 (Pvt) Ltd,Test Corp 501,5577/2010,2008680867,,,+263783600748,,finance501@testcorp.co.zw,,,,,,head_office,Unit 12 Industrial Park,Building C,Kwekwe,Harare Province,,Zimbabwe
+CUST-0502,corporate,,Test Corporate 502 (Pvt) Ltd,Test Corp 502,2061/2023,2003834962,,,+263748831362,+263783758327,finance502@testcorp.co.zw,,,,,,postal,Unit 89 Industrial Park,,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0503,corporate,,Test Corporate 503 (Pvt) Ltd,Test Corp 503,2338/2017,2009757203,,,+263732143027,,finance503@testcorp.co.zw,,,,,,physical,Unit 21 Industrial Park,Building E,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0504,individual,Test Individual 504,,,,,21-609048A39,Test Employer 504,+263787914028,,indiv504@example.com,,,,,,postal,574 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0505,corporate,,Test Corporate 505 (Pvt) Ltd,,9198/2024,2003212157,,,+263734612433,,finance505@testcorp.co.zw,accounts505@testcorp.co.zw,,,,,head_office,Unit 6 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0506,corporate,,Test Corporate 506 (Pvt) Ltd,Test Corp 506,5450/2011,2004255644,,,+263757191997,+263782449429,finance506@testcorp.co.zw,accounts506@testcorp.co.zw,,,,,postal,Unit 19 Industrial Park,,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0507,individual,Test Individual 507,,,,,22-535043A57,Test Employer 507,+263741427770,,indiv507@example.com,,,,,,postal,399 Test Road,Flat 11,Harare,Mashonaland,,Zimbabwe
+CUST-0508,individual,Test Individual 508,,,,,96-508695A19,Test Employer 508,+263795061442,+263790702035,indiv508@example.com,indiv508.alt@example.com,,,,,registered,720 Test Road,,Gweru,Matabeleland,PO Box 3456,Zimbabwe
+CUST-0509,individual,Test Individual 509,,,,,17-811873A67,Test Employer 509,+263738689236,+263772851852,indiv509@example.com,indiv509.alt@example.com,,,,,physical,525 Test Road,,Kwekwe,Manicaland,,Zimbabwe
+CUST-0510,corporate,,Test Corporate 510 (Pvt) Ltd,Test Corp 510,8521/2014,2002054279,,,+263791750063,+263735530818,finance510@testcorp.co.zw,,,,,,postal,Unit 59 Industrial Park,,Harare,,,Zimbabwe
+CUST-0511,corporate,,Test Corporate 511 (Pvt) Ltd,Test Corp 511,9971/2023,2001908690,,,+263771902728,,finance511@testcorp.co.zw,,,,,,physical,Unit 62 Industrial Park,Building B,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0512,individual,Test Individual 512,,,,,56-248414A64,Test Employer 512,+263752247023,,indiv512@example.com,,,,,,registered,685 Test Road,,Bulawayo,Midlands,,Zimbabwe
+CUST-0513,corporate,,Test Corporate 513 (Pvt) Ltd,Test Corp 513,2804/2023,2003410072,,,+263792584398,,finance513@testcorp.co.zw,accounts513@testcorp.co.zw,,,,,physical,Unit 53 Industrial Park,,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0514,individual,Test Individual 514,,,,,96-336974A82,,+263746442575,+263727344760,indiv514@example.com,indiv514.alt@example.com,,,,,registered,83 Test Road,,Bulawayo,Mashonaland,,Zimbabwe
+CUST-0515,individual,Test Individual 515,,,,,39-520348A83,Test Employer 515,+263795057877,,indiv515@example.com,,,,,,physical,320 Test Road,,Bulawayo,Mashonaland,,Zimbabwe
+CUST-0516,corporate,,Test Corporate 516 (Pvt) Ltd,Test Corp 516,6915/2021,2003314112,,,+263776912874,+263797093192,finance516@testcorp.co.zw,,,,,,head_office,Unit 45 Industrial Park,Building B,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0517,individual,Test Individual 517,,,,,37-343864A30,,+263726830597,+263776937270,indiv517@example.com,indiv517.alt@example.com,,,,,mailing,636 Test Road,,Kwekwe,Mashonaland,PO Box 114,Zimbabwe
+CUST-0518,individual,Test Individual 518,,,,,60-224696A98,Test Employer 518,+263775846467,+263785797102,indiv518@example.com,indiv518.alt@example.com,,,,,registered,981 Test Road,Flat 32,Masvingo,Midlands,PO Box 8822,Zimbabwe
+CUST-0519,individual,Test Individual 519,,,,,42-570981A81,Test Employer 519,+263749264722,,indiv519@example.com,,,,,,postal,578 Test Road,,Harare,Matabeleland,,Zimbabwe
+CUST-0520,corporate,,Test Corporate 520 (Pvt) Ltd,Test Corp 520,2643/2016,2003469121,,,+263764279263,,finance520@testcorp.co.zw,,,,,,registered,Unit 30 Industrial Park,Building B,Harare,Bulawayo Metro,43265,Zimbabwe
+CUST-0521,corporate,,Test Corporate 521 (Pvt) Ltd,Test Corp 521,2285/2014,2002324778,,,+263770636620,,finance521@testcorp.co.zw,,,,,,physical,Unit 64 Industrial Park,,Mutare,,87468,Zimbabwe
+CUST-0522,corporate,,Test Corporate 522 (Pvt) Ltd,Test Corp 522,6599/2012,2005321098,,,+263766758148,,finance522@testcorp.co.zw,,,,,,registered,Unit 95 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0523,individual,Test Individual 523,,,,,64-161615A81,Test Employer 523,+263777028301,+263746879520,indiv523@example.com,indiv523.alt@example.com,,,,,registered,325 Test Road,,Masvingo,Mashonaland,,Zimbabwe
+CUST-0524,corporate,,Test Corporate 524 (Pvt) Ltd,Test Corp 524,3553/2015,2005338302,,,+263794335888,,finance524@testcorp.co.zw,,,,,,postal,Unit 4 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0525,corporate,,Test Corporate 525 (Pvt) Ltd,,5671/2014,2008610399,,,+263765757379,+263778620856,finance525@testcorp.co.zw,,,,,,postal,Unit 52 Industrial Park,Building E,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0526,individual,Test Individual 526,,,,,34-232205A99,Test Employer 526,+263730821361,,indiv526@example.com,,,,,,physical,458 Test Road,Flat 10,Kwekwe,Midlands,,Zimbabwe
+CUST-0527,corporate,,Test Corporate 527 (Pvt) Ltd,Test Corp 527,2626/2024,2007154588,,,+263744426618,+263777041727,finance527@testcorp.co.zw,,,,,,registered,Unit 69 Industrial Park,,Harare,,,Zimbabwe
+CUST-0528,corporate,,Test Corporate 528 (Pvt) Ltd,Test Corp 528,1586/2018,2006871994,,,+263753858440,+263799470757,finance528@testcorp.co.zw,,,,,,head_office,Unit 18 Industrial Park,Building A,Gweru,Harare Province,,Zimbabwe
+CUST-0529,corporate,,Test Corporate 529 (Pvt) Ltd,Test Corp 529,4277/2023,2006109649,,,+263750754823,+263779852871,finance529@testcorp.co.zw,,,,,,head_office,Unit 33 Industrial Park,,Marondera,,,Zimbabwe
+CUST-0530,individual,Test Individual 530,,,,,64-178064A81,Test Employer 530,+263781314274,+263746577984,indiv530@example.com,indiv530.alt@example.com,,,,,mailing,32 Test Road,,Harare,,,Zimbabwe
+CUST-0531,corporate,,Test Corporate 531 (Pvt) Ltd,Test Corp 531,2961/2013,2004458965,,,+263788402344,,finance531@testcorp.co.zw,accounts531@testcorp.co.zw,,,,,postal,Unit 15 Industrial Park,Building B,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0532,individual,Test Individual 532,,,,,49-425094A20,Test Employer 532,+263753547968,,indiv532@example.com,,,,,,mailing,148 Test Road,Flat 16,Chitungwiza,,,Zimbabwe
+CUST-0533,corporate,,Test Corporate 533 (Pvt) Ltd,Test Corp 533,9670/2019,2006297440,,,+263773592363,+263764155847,finance533@testcorp.co.zw,,,,,,head_office,Unit 61 Industrial Park,,Kwekwe,Harare Province,,Zimbabwe
+CUST-0534,corporate,,Test Corporate 534 (Pvt) Ltd,Test Corp 534,9104/2010,2006586366,,,+263712761568,,finance534@testcorp.co.zw,,,,,,physical,Unit 68 Industrial Park,,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0535,individual,Test Individual 535,,,,,97-382310A74,Test Employer 535,+263721547094,,indiv535@example.com,,,,,,postal,970 Test Road,,Marondera,,,Zimbabwe
+CUST-0536,individual,Test Individual 536,,,,,53-806551A94,,+263758333736,+263755480472,indiv536@example.com,indiv536.alt@example.com,,,,,postal,379 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0537,individual,Test Individual 537,,,,,64-365430A63,Test Employer 537,+263799595255,,indiv537@example.com,,,,,,registered,113 Test Road,,Bulawayo,Midlands,,Zimbabwe
+CUST-0538,corporate,,Test Corporate 538 (Pvt) Ltd,Test Corp 538,2448/2023,2008925955,,,+263742331253,,finance538@testcorp.co.zw,,,,,,head_office,Unit 80 Industrial Park,,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0539,individual,Test Individual 539,,,,,28-919794A33,Test Employer 539,+263733180803,,indiv539@example.com,,,,,,mailing,645 Test Road,Flat 32,Masvingo,,PO Box 784,Zimbabwe
+CUST-0540,individual,Test Individual 540,,,,,14-561704A40,Test Employer 540,+263736627076,+263778389571,indiv540@example.com,indiv540.alt@example.com,,,,,postal,681 Test Road,,Kwekwe,,,Zimbabwe
+CUST-0541,corporate,,Test Corporate 541 (Pvt) Ltd,Test Corp 541,9689/2012,2006319016,,,+263759308787,+263772646762,finance541@testcorp.co.zw,,,,,,registered,Unit 14 Industrial Park,Building C,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0542,corporate,,Test Corporate 542 (Pvt) Ltd,Test Corp 542,2637/2010,2006741051,,,+263773295261,+263732212478,finance542@testcorp.co.zw,,,,,,physical,Unit 56 Industrial Park,,Gweru,,6325,Zimbabwe
+CUST-0543,corporate,,Test Corporate 543 (Pvt) Ltd,,3683/2024,2007069626,,,+263769307251,+263740215308,finance543@testcorp.co.zw,,,,,,registered,Unit 4 Industrial Park,,Marondera,Bulawayo Metro,,Zimbabwe
+CUST-0544,individual,Test Individual 544,,,,,98-401793A31,Test Employer 544,+263784273475,+263791033392,indiv544@example.com,indiv544.alt@example.com,,,,,postal,350 Test Road,,Mutare,Mashonaland,PO Box 441,Zimbabwe
+CUST-0545,corporate,,Test Corporate 545 (Pvt) Ltd,Test Corp 545,2366/2013,2004530500,,,+263755972391,,finance545@testcorp.co.zw,,,,,,head_office,Unit 92 Industrial Park,,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0546,corporate,,Test Corporate 546 (Pvt) Ltd,Test Corp 546,7948/2015,2006123292,,,+263750213989,+263724029977,finance546@testcorp.co.zw,,,,,,registered,Unit 21 Industrial Park,Building A,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0547,individual,Test Individual 547,,,,,61-371255A74,Test Employer 547,+263790255296,,indiv547@example.com,,,,,,registered,641 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0548,individual,Test Individual 548,,,,,59-549162A88,Test Employer 548,+263721794867,,indiv548@example.com,,,,,,postal,874 Test Road,Flat 14,Masvingo,,,Zimbabwe
+CUST-0549,corporate,,Test Corporate 549 (Pvt) Ltd,Test Corp 549,4522/2013,2005809961,,,+263774516284,+263710754240,finance549@testcorp.co.zw,,,,,,physical,Unit 93 Industrial Park,,Chitungwiza,Bulawayo Metro,32628,Zimbabwe
+CUST-0550,individual,Test Individual 550,,,,,81-752838A61,Test Employer 550,+263733668406,,indiv550@example.com,,,,,,registered,295 Test Road,,Harare,,,Zimbabwe
+CUST-0551,individual,Test Individual 551,,,,,60-767843A11,Test Employer 551,+263755510366,,indiv551@example.com,,,,,,mailing,203 Test Road,,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0552,corporate,,Test Corporate 552 (Pvt) Ltd,Test Corp 552,4060/2012,2009819312,,,+263752552073,+263726205051,finance552@testcorp.co.zw,,,,,,postal,Unit 44 Industrial Park,Building E,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0553,corporate,,Test Corporate 553 (Pvt) Ltd,Test Corp 553,9834/2017,2009063465,,,+263718027369,,finance553@testcorp.co.zw,,,,,,postal,Unit 25 Industrial Park,Building C,Kwekwe,Bulawayo Metro,45988,Zimbabwe
+CUST-0554,corporate,,Test Corporate 554 (Pvt) Ltd,Test Corp 554,6398/2024,2009909583,,,+263714172059,+263784194945,finance554@testcorp.co.zw,,,,,,postal,Unit 72 Industrial Park,,Harare,Harare Province,,Zimbabwe
+CUST-0555,individual,Test Individual 555,,,,,45-197525A10,,+263751240754,,indiv555@example.com,,,,,,registered,266 Test Road,Flat 24,Kwekwe,Midlands,PO Box 614,Zimbabwe
+CUST-0556,corporate,,Test Corporate 556 (Pvt) Ltd,Test Corp 556,5314/2011,2005632258,,,+263747456571,+263730989956,finance556@testcorp.co.zw,,,,,,physical,Unit 57 Industrial Park,,Kwekwe,Harare Province,2368,Zimbabwe
+CUST-0557,individual,Test Individual 557,,,,,88-879301A80,Test Employer 557,+263769715469,,indiv557@example.com,,,,,,registered,71 Test Road,,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0558,individual,Test Individual 558,,,,,77-172204A87,Test Employer 558,+263770015272,,indiv558@example.com,,,,,,registered,559 Test Road,,Masvingo,,,Zimbabwe
+CUST-0559,individual,Test Individual 559,,,,,18-800607A71,Test Employer 559,+263752845465,+263722151221,indiv559@example.com,indiv559.alt@example.com,,,,,mailing,838 Test Road,Flat 25,Gweru,Midlands,,Zimbabwe
+CUST-0560,corporate,,Test Corporate 560 (Pvt) Ltd,Test Corp 560,3246/2019,2004783659,,,+263733016632,,finance560@testcorp.co.zw,,,,,,head_office,Unit 7 Industrial Park,Building B,Bulawayo,Bulawayo Metro,86271,Zimbabwe
+CUST-0561,corporate,,Test Corporate 561 (Pvt) Ltd,Test Corp 561,6409/2019,2007351347,,,+263768184295,,finance561@testcorp.co.zw,,,,,,registered,Unit 5 Industrial Park,,Masvingo,,,Zimbabwe
+CUST-0562,individual,Test Individual 562,,,,,70-361586A44,Test Employer 562,+263775599751,,indiv562@example.com,,,,,,postal,76 Test Road,,Kwekwe,Manicaland,,Zimbabwe
+CUST-0563,corporate,,Test Corporate 563 (Pvt) Ltd,Test Corp 563,1457/2012,2001871207,,,+263754516249,,finance563@testcorp.co.zw,accounts563@testcorp.co.zw,,,,,registered,Unit 86 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0564,individual,Test Individual 564,,,,,70-590236A79,Test Employer 564,+263741482983,,indiv564@example.com,,,,,,postal,409 Test Road,,Marondera,,,Zimbabwe
+CUST-0565,individual,Test Individual 565,,,,,31-306433A38,Test Employer 565,+263764892799,,indiv565@example.com,,,,,,registered,914 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0566,corporate,,Test Corporate 566 (Pvt) Ltd,Test Corp 566,4389/2017,2003122001,,,+263791490104,+263739775419,finance566@testcorp.co.zw,,,,,,head_office,Unit 80 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0567,individual,Test Individual 567,,,,,78-753163A91,Test Employer 567,+263761279581,+263754219012,indiv567@example.com,indiv567.alt@example.com,,,,,mailing,982 Test Road,,Kwekwe,Midlands,,Zimbabwe
+CUST-0568,individual,Test Individual 568,,,,,83-986037A73,Test Employer 568,+263777446394,,indiv568@example.com,,,,,,postal,846 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0569,corporate,,Test Corporate 569 (Pvt) Ltd,Test Corp 569,3521/2012,2005051816,,,+263712265376,,finance569@testcorp.co.zw,accounts569@testcorp.co.zw,,,,,registered,Unit 24 Industrial Park,,Kwekwe,,,Zimbabwe
+CUST-0570,corporate,,Test Corporate 570 (Pvt) Ltd,Test Corp 570,4985/2011,2006040829,,,+263739875679,,finance570@testcorp.co.zw,accounts570@testcorp.co.zw,,,,,registered,Unit 30 Industrial Park,,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0571,corporate,,Test Corporate 571 (Pvt) Ltd,Test Corp 571,5617/2011,2009331656,,,+263719823835,,finance571@testcorp.co.zw,,,,,,postal,Unit 81 Industrial Park,,Harare,Harare Province,,Zimbabwe
+CUST-0572,corporate,,Test Corporate 572 (Pvt) Ltd,Test Corp 572,9358/2022,2008090606,,,+263760191318,,finance572@testcorp.co.zw,,,,,,physical,Unit 76 Industrial Park,,Bulawayo,,58502,Zimbabwe
+CUST-0573,individual,Test Individual 573,,,,,26-807121A63,Test Employer 573,+263726325932,,indiv573@example.com,,,,,,physical,251 Test Road,,Harare,Manicaland,,Zimbabwe
+CUST-0574,corporate,,Test Corporate 574 (Pvt) Ltd,Test Corp 574,7602/2011,2005215222,,,+263759017342,,finance574@testcorp.co.zw,,,,,,registered,Unit 81 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0575,individual,Test Individual 575,,,,,62-311277A78,Test Employer 575,+263767455534,,indiv575@example.com,,,,,,registered,4 Test Road,,Mutare,,,Zimbabwe
+CUST-0576,individual,Test Individual 576,,,,,44-951830A32,,+263751686777,+263784579503,indiv576@example.com,indiv576.alt@example.com,,,,,mailing,269 Test Road,Flat 38,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0577,individual,Test Individual 577,,,,,91-201297A60,,+263795429272,,indiv577@example.com,,,,,,mailing,885 Test Road,,Chitungwiza,,,Zimbabwe
+CUST-0578,corporate,,Test Corporate 578 (Pvt) Ltd,Test Corp 578,2743/2013,2002534400,,,+263791738211,,finance578@testcorp.co.zw,,,,,,physical,Unit 23 Industrial Park,,Harare,Bulawayo Metro,52216,Zimbabwe
+CUST-0579,corporate,,Test Corporate 579 (Pvt) Ltd,Test Corp 579,4313/2023,2005570965,,,+263735803156,+263773100199,finance579@testcorp.co.zw,,,,,,physical,Unit 97 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0580,individual,Test Individual 580,,,,,75-598879A61,Test Employer 580,+263722950831,,indiv580@example.com,,,,,,postal,646 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0581,individual,Test Individual 581,,,,,20-611615A61,,+263775300934,,indiv581@example.com,,,,,,mailing,391 Test Road,Flat 8,Bulawayo,Matabeleland,PO Box 8487,Zimbabwe
+CUST-0582,individual,Test Individual 582,,,,,84-161443A73,Test Employer 582,+263741866837,,indiv582@example.com,,,,,,postal,833 Test Road,,Harare,Mashonaland,,Zimbabwe
+CUST-0583,corporate,,Test Corporate 583 (Pvt) Ltd,Test Corp 583,6804/2010,2006403738,,,+263740010029,,finance583@testcorp.co.zw,,,,,,registered,Unit 61 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0584,corporate,,Test Corporate 584 (Pvt) Ltd,Test Corp 584,3901/2023,2008104036,,,+263748308063,+263791538205,finance584@testcorp.co.zw,,,,,,physical,Unit 93 Industrial Park,,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0585,individual,Test Individual 585,,,,,20-436356A14,Test Employer 585,+263773649000,,indiv585@example.com,,,,,,postal,933 Test Road,Flat 3,Mutare,Manicaland,,Zimbabwe
+CUST-0586,corporate,,Test Corporate 586 (Pvt) Ltd,Test Corp 586,1509/2014,2006744255,,,+263713017043,+263772887358,finance586@testcorp.co.zw,,,,,,physical,Unit 5 Industrial Park,,Harare,Harare Province,29831,Zimbabwe
+CUST-0587,individual,Test Individual 587,,,,,45-396949A20,Test Employer 587,+263798383147,,indiv587@example.com,,,,,,registered,43 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0588,individual,Test Individual 588,,,,,98-333900A61,Test Employer 588,+263774858315,+263741132865,indiv588@example.com,indiv588.alt@example.com,,,,,postal,396 Test Road,,Mutare,Matabeleland,,Zimbabwe
+CUST-0589,individual,Test Individual 589,,,,,55-668203A75,Test Employer 589,+263735691442,+263750430886,indiv589@example.com,indiv589.alt@example.com,,,,,registered,936 Test Road,Flat 33,Gweru,Mashonaland,PO Box 7098,Zimbabwe
+CUST-0590,corporate,,Test Corporate 590 (Pvt) Ltd,Test Corp 590,9311/2022,2005630495,,,+263749302891,,finance590@testcorp.co.zw,,,,,,postal,Unit 95 Industrial Park,Building E,Gweru,,,Zimbabwe
+CUST-0591,corporate,,Test Corporate 591 (Pvt) Ltd,,2769/2013,2001722904,,,+263793625536,,finance591@testcorp.co.zw,,,,,,physical,Unit 25 Industrial Park,,Mutare,Harare Province,97242,Zimbabwe
+CUST-0592,corporate,,Test Corporate 592 (Pvt) Ltd,Test Corp 592,4974/2015,2004086292,,,+263711003039,,finance592@testcorp.co.zw,,,,,,head_office,Unit 95 Industrial Park,,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0593,individual,Test Individual 593,,,,,90-846267A53,Test Employer 593,+263744277572,+263773022558,indiv593@example.com,indiv593.alt@example.com,,,,,postal,424 Test Road,,Marondera,Manicaland,PO Box 8897,Zimbabwe
+CUST-0594,corporate,,Test Corporate 594 (Pvt) Ltd,Test Corp 594,8108/2016,2003618905,,,+263798859379,,finance594@testcorp.co.zw,,,,,,physical,Unit 97 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0595,individual,Test Individual 595,,,,,41-563487A77,Test Employer 595,+263716732014,,indiv595@example.com,,,,,,registered,428 Test Road,Flat 6,Chitungwiza,Midlands,,Zimbabwe
+CUST-0596,individual,Test Individual 596,,,,,21-655815A69,Test Employer 596,+263730403343,,indiv596@example.com,,,,,,physical,74 Test Road,,Kwekwe,Manicaland,,Zimbabwe
+CUST-0597,corporate,,Test Corporate 597 (Pvt) Ltd,,1693/2013,2003680813,,,+263740953816,,finance597@testcorp.co.zw,,,,,,physical,Unit 31 Industrial Park,,Kwekwe,,,Zimbabwe
+CUST-0598,individual,Test Individual 598,,,,,21-462513A62,Test Employer 598,+263727602361,,indiv598@example.com,,,,,,physical,762 Test Road,,Chitungwiza,Midlands,,Zimbabwe
+CUST-0599,corporate,,Test Corporate 599 (Pvt) Ltd,Test Corp 599,8953/2019,2002900656,,,+263718833406,,finance599@testcorp.co.zw,,,,,,physical,Unit 24 Industrial Park,,Masvingo,Harare Province,,Zimbabwe
+CUST-0600,individual,Test Individual 600,,,,,30-979459A28,Test Employer 600,+263759278045,,indiv600@example.com,,,,,,registered,445 Test Road,Flat 30,Harare,Matabeleland,,Zimbabwe
+CUST-0601,individual,Test Individual 601,,,,,98-562170A72,,+263751720408,,indiv601@example.com,,,,,,postal,780 Test Road,,Marondera,Midlands,,Zimbabwe
+CUST-0602,individual,Test Individual 602,,,,,72-796408A59,Test Employer 602,+263712071755,+263718472770,indiv602@example.com,indiv602.alt@example.com,,,,,postal,351 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0603,corporate,,Test Corporate 603 (Pvt) Ltd,Test Corp 603,1719/2011,2008152652,,,+263759388092,,finance603@testcorp.co.zw,,,,,,head_office,Unit 59 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0604,individual,Test Individual 604,,,,,30-325845A75,Test Employer 604,+263753782290,,indiv604@example.com,,,,,,postal,584 Test Road,,Kwekwe,,,Zimbabwe
+CUST-0605,individual,Test Individual 605,,,,,96-349028A61,Test Employer 605,+263762577569,+263755877968,indiv605@example.com,indiv605.alt@example.com,,,,,mailing,548 Test Road,,Bulawayo,Mashonaland,,Zimbabwe
+CUST-0606,individual,Test Individual 606,,,,,51-358649A41,Test Employer 606,+263722267568,,indiv606@example.com,,,,,,mailing,116 Test Road,,Gweru,Manicaland,PO Box 5259,Zimbabwe
+CUST-0607,individual,Test Individual 607,,,,,39-266603A67,Test Employer 607,+263765830725,+263769019993,indiv607@example.com,indiv607.alt@example.com,,,,,postal,756 Test Road,,Chitungwiza,Manicaland,PO Box 6903,Zimbabwe
+CUST-0608,corporate,,Test Corporate 608 (Pvt) Ltd,Test Corp 608,9911/2015,2006104060,,,+263798813518,+263753964325,finance608@testcorp.co.zw,,,,,,postal,Unit 21 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0609,corporate,,Test Corporate 609 (Pvt) Ltd,Test Corp 609,3152/2013,2007926249,,,+263798398149,+263790155023,finance609@testcorp.co.zw,accounts609@testcorp.co.zw,,,,,postal,Unit 26 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0610,individual,Test Individual 610,,,,,25-536771A61,Test Employer 610,+263725185626,,indiv610@example.com,,,,,,mailing,922 Test Road,Flat 33,Bulawayo,Manicaland,,Zimbabwe
+CUST-0611,corporate,,Test Corporate 611 (Pvt) Ltd,Test Corp 611,8167/2017,2007948951,,,+263789062101,+263780020617,finance611@testcorp.co.zw,,,,,,registered,Unit 87 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0612,individual,Test Individual 612,,,,,68-979623A69,Test Employer 612,+263762945674,,indiv612@example.com,,,,,,registered,848 Test Road,,Chitungwiza,Matabeleland,,Zimbabwe
+CUST-0613,individual,Test Individual 613,,,,,31-520233A21,,+263712636132,,indiv613@example.com,,,,,,postal,632 Test Road,,Kwekwe,Matabeleland,PO Box 287,Zimbabwe
+CUST-0614,individual,Test Individual 614,,,,,14-147125A20,,+263761662155,,indiv614@example.com,,,,,,mailing,435 Test Road,,Gweru,Manicaland,,Zimbabwe
+CUST-0615,individual,Test Individual 615,,,,,85-576693A13,Test Employer 615,+263768245243,,indiv615@example.com,,,,,,physical,340 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0616,corporate,,Test Corporate 616 (Pvt) Ltd,Test Corp 616,3566/2017,2006861657,,,+263783648061,,finance616@testcorp.co.zw,,,,,,postal,Unit 98 Industrial Park,Building E,Gweru,Harare Province,,Zimbabwe
+CUST-0617,individual,Test Individual 617,,,,,68-149934A32,Test Employer 617,+263723548741,+263747044377,indiv617@example.com,indiv617.alt@example.com,,,,,physical,875 Test Road,,Marondera,Manicaland,,Zimbabwe
+CUST-0618,corporate,,Test Corporate 618 (Pvt) Ltd,Test Corp 618,5410/2022,2007193223,,,+263771236444,,finance618@testcorp.co.zw,accounts618@testcorp.co.zw,,,,,physical,Unit 88 Industrial Park,,Chitungwiza,,90571,Zimbabwe
+CUST-0619,corporate,,Test Corporate 619 (Pvt) Ltd,Test Corp 619,7408/2022,2008746925,,,+263730630883,,finance619@testcorp.co.zw,,,,,,registered,Unit 75 Industrial Park,,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0620,corporate,,Test Corporate 620 (Pvt) Ltd,Test Corp 620,7534/2023,2007289142,,,+263785511145,,finance620@testcorp.co.zw,,,,,,head_office,Unit 97 Industrial Park,Building E,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0621,individual,Test Individual 621,,,,,33-365132A93,Test Employer 621,+263783955358,+263716475495,indiv621@example.com,indiv621.alt@example.com,,,,,mailing,341 Test Road,,Mutare,Manicaland,,Zimbabwe
+CUST-0622,corporate,,Test Corporate 622 (Pvt) Ltd,,5033/2020,2001517659,,,+263753808974,+263778605844,finance622@testcorp.co.zw,,,,,,physical,Unit 28 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0623,individual,Test Individual 623,,,,,59-133437A96,Test Employer 623,+263730906576,,indiv623@example.com,,,,,,mailing,31 Test Road,,Masvingo,Mashonaland,PO Box 5425,Zimbabwe
+CUST-0624,corporate,,Test Corporate 624 (Pvt) Ltd,,2110/2018,2008273111,,,+263782349261,+263761326408,finance624@testcorp.co.zw,,,,,,postal,Unit 21 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0625,corporate,,Test Corporate 625 (Pvt) Ltd,Test Corp 625,9942/2013,2005731254,,,+263714515173,,finance625@testcorp.co.zw,,,,,,registered,Unit 34 Industrial Park,,Mutare,,,Zimbabwe
+CUST-0626,corporate,,Test Corporate 626 (Pvt) Ltd,Test Corp 626,1490/2012,2008540963,,,+263744489123,+263763602684,finance626@testcorp.co.zw,,,,,,postal,Unit 51 Industrial Park,,Kwekwe,Harare Province,,Zimbabwe
+CUST-0627,corporate,,Test Corporate 627 (Pvt) Ltd,Test Corp 627,3150/2023,2007451884,,,+263724811589,,finance627@testcorp.co.zw,,,,,,registered,Unit 17 Industrial Park,Building A,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0628,individual,Test Individual 628,,,,,38-270428A11,Test Employer 628,+263731362077,,indiv628@example.com,,,,,,physical,919 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0629,corporate,,Test Corporate 629 (Pvt) Ltd,Test Corp 629,7150/2011,2008787975,,,+263798012234,+263780053756,finance629@testcorp.co.zw,accounts629@testcorp.co.zw,,,,,physical,Unit 55 Industrial Park,,Marondera,Harare Province,74259,Zimbabwe
+CUST-0630,individual,Test Individual 630,,,,,28-776031A42,Test Employer 630,+263787611942,,indiv630@example.com,,,,,,mailing,212 Test Road,,Kwekwe,Manicaland,,Zimbabwe
+CUST-0631,individual,Test Individual 631,,,,,54-228783A89,Test Employer 631,+263710091046,,indiv631@example.com,,,,,,registered,757 Test Road,Flat 35,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0632,corporate,,Test Corporate 632 (Pvt) Ltd,Test Corp 632,1433/2011,2002371512,,,+263760599030,,finance632@testcorp.co.zw,,,,,,registered,Unit 77 Industrial Park,,Bulawayo,,25343,Zimbabwe
+CUST-0633,individual,Test Individual 633,,,,,20-574925A96,Test Employer 633,+263793627676,+263783468885,indiv633@example.com,indiv633.alt@example.com,,,,,physical,723 Test Road,,Harare,Mashonaland,,Zimbabwe
+CUST-0634,individual,Test Individual 634,,,,,82-723554A20,Test Employer 634,+263752102491,,indiv634@example.com,,,,,,mailing,631 Test Road,,Gweru,Mashonaland,PO Box 3364,Zimbabwe
+CUST-0635,corporate,,Test Corporate 635 (Pvt) Ltd,Test Corp 635,4284/2021,2005822455,,,+263778923125,+263755487738,finance635@testcorp.co.zw,,,,,,physical,Unit 51 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0636,corporate,,Test Corporate 636 (Pvt) Ltd,Test Corp 636,6466/2015,2009608371,,,+263769333839,,finance636@testcorp.co.zw,accounts636@testcorp.co.zw,,,,,head_office,Unit 12 Industrial Park,Building C,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0637,individual,Test Individual 637,,,,,66-129063A50,Test Employer 637,+263725236664,,indiv637@example.com,,,,,,postal,818 Test Road,,Bulawayo,Manicaland,,Zimbabwe
+CUST-0638,individual,Test Individual 638,,,,,37-348194A38,Test Employer 638,+263744698310,+263747151978,indiv638@example.com,indiv638.alt@example.com,,,,,postal,516 Test Road,,Marondera,Mashonaland,,Zimbabwe
+CUST-0639,corporate,,Test Corporate 639 (Pvt) Ltd,Test Corp 639,2494/2020,2005408176,,,+263772474661,+263766235295,finance639@testcorp.co.zw,,,,,,head_office,Unit 45 Industrial Park,,Mutare,Bulawayo Metro,88080,Zimbabwe
+CUST-0640,corporate,,Test Corporate 640 (Pvt) Ltd,,6256/2024,2007094073,,,+263726767912,,finance640@testcorp.co.zw,,,,,,physical,Unit 57 Industrial Park,,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0641,individual,Test Individual 641,,,,,91-177443A28,Test Employer 641,+263728458306,,indiv641@example.com,,,,,,registered,489 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0642,individual,Test Individual 642,,,,,78-814300A52,Test Employer 642,+263717802857,+263722966419,indiv642@example.com,indiv642.alt@example.com,,,,,postal,770 Test Road,,Harare,,,Zimbabwe
+CUST-0643,corporate,,Test Corporate 643 (Pvt) Ltd,Test Corp 643,8279/2011,2001357346,,,+263742006716,+263713511702,finance643@testcorp.co.zw,,,,,,registered,Unit 61 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0644,individual,Test Individual 644,,,,,83-816251A88,Test Employer 644,+263794014284,,indiv644@example.com,,,,,,mailing,965 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0645,corporate,,Test Corporate 645 (Pvt) Ltd,Test Corp 645,4817/2015,2007788688,,,+263771625631,,finance645@testcorp.co.zw,accounts645@testcorp.co.zw,,,,,head_office,Unit 31 Industrial Park,,Chitungwiza,,26088,Zimbabwe
+CUST-0646,individual,Test Individual 646,,,,,47-824476A71,Test Employer 646,+263797689469,,indiv646@example.com,,,,,,mailing,626 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0647,corporate,,Test Corporate 647 (Pvt) Ltd,Test Corp 647,5843/2023,2005582185,,,+263766137493,,finance647@testcorp.co.zw,,,,,,postal,Unit 48 Industrial Park,Building D,Marondera,Bulawayo Metro,85325,Zimbabwe
+CUST-0648,individual,Test Individual 648,,,,,57-142387A53,Test Employer 648,+263745301983,,indiv648@example.com,,,,,,physical,703 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0649,individual,Test Individual 649,,,,,32-417766A39,Test Employer 649,+263764842486,,indiv649@example.com,,,,,,postal,449 Test Road,Flat 27,Harare,Manicaland,PO Box 7176,Zimbabwe
+CUST-0650,corporate,,Test Corporate 650 (Pvt) Ltd,,1279/2012,2006878263,,,+263793451671,+263796788102,finance650@testcorp.co.zw,,,,,,registered,Unit 97 Industrial Park,Building E,Masvingo,,,Zimbabwe
+CUST-0651,individual,Test Individual 651,,,,,67-235291A71,Test Employer 651,+263747983494,,indiv651@example.com,,,,,,postal,797 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0652,individual,Test Individual 652,,,,,96-835189A42,Test Employer 652,+263762048801,,indiv652@example.com,,,,,,physical,104 Test Road,,Mutare,Mashonaland,,Zimbabwe
+CUST-0653,individual,Test Individual 653,,,,,18-718962A30,Test Employer 653,+263757244408,,indiv653@example.com,,,,,,registered,691 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0654,individual,Test Individual 654,,,,,24-611156A77,Test Employer 654,+263777608231,+263720609771,indiv654@example.com,indiv654.alt@example.com,,,,,registered,236 Test Road,,Chitungwiza,Matabeleland,,Zimbabwe
+CUST-0655,individual,Test Individual 655,,,,,28-575531A38,,+263713643789,,indiv655@example.com,,,,,,mailing,607 Test Road,Flat 30,Bulawayo,Midlands,,Zimbabwe
+CUST-0656,corporate,,Test Corporate 656 (Pvt) Ltd,,1397/2016,2009084342,,,+263784318442,+263715664152,finance656@testcorp.co.zw,,,,,,head_office,Unit 38 Industrial Park,,Bulawayo,Harare Province,89300,Zimbabwe
+CUST-0657,corporate,,Test Corporate 657 (Pvt) Ltd,Test Corp 657,9101/2022,2001599646,,,+263719516329,+263711663619,finance657@testcorp.co.zw,,,,,,head_office,Unit 61 Industrial Park,,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0658,corporate,,Test Corporate 658 (Pvt) Ltd,Test Corp 658,5978/2022,2006986503,,,+263753416434,,finance658@testcorp.co.zw,,,,,,postal,Unit 53 Industrial Park,Building B,Chitungwiza,Bulawayo Metro,89829,Zimbabwe
+CUST-0659,corporate,,Test Corporate 659 (Pvt) Ltd,Test Corp 659,9307/2018,2004789940,,,+263775334300,,finance659@testcorp.co.zw,,,,,,postal,Unit 49 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0660,corporate,,Test Corporate 660 (Pvt) Ltd,Test Corp 660,7803/2010,2005824490,,,+263773030277,,finance660@testcorp.co.zw,,,,,,postal,Unit 86 Industrial Park,Building B,Marondera,Harare Province,,Zimbabwe
+CUST-0661,individual,Test Individual 661,,,,,13-427748A28,Test Employer 661,+263741643383,,indiv661@example.com,,,,,,mailing,237 Test Road,,Mutare,Matabeleland,,Zimbabwe
+CUST-0662,individual,Test Individual 662,,,,,57-900312A59,Test Employer 662,+263798758902,,indiv662@example.com,,,,,,mailing,163 Test Road,Flat 20,Harare,Midlands,PO Box 3350,Zimbabwe
+CUST-0663,individual,Test Individual 663,,,,,65-698303A16,Test Employer 663,+263757874024,+263733600839,indiv663@example.com,indiv663.alt@example.com,,,,,physical,943 Test Road,,Kwekwe,Mashonaland,,Zimbabwe
+CUST-0664,corporate,,Test Corporate 664 (Pvt) Ltd,Test Corp 664,4126/2023,2004752059,,,+263764778248,+263776579385,finance664@testcorp.co.zw,,,,,,physical,Unit 16 Industrial Park,Building B,Mutare,Harare Province,,Zimbabwe
+CUST-0665,corporate,,Test Corporate 665 (Pvt) Ltd,Test Corp 665,6051/2012,2005005928,,,+263773423501,+263728258038,finance665@testcorp.co.zw,,,,,,physical,Unit 30 Industrial Park,,Mutare,,26952,Zimbabwe
+CUST-0666,corporate,,Test Corporate 666 (Pvt) Ltd,Test Corp 666,3151/2021,2009313153,,,+263794605043,+263796398240,finance666@testcorp.co.zw,,,,,,head_office,Unit 15 Industrial Park,,Marondera,,8690,Zimbabwe
+CUST-0667,corporate,,Test Corporate 667 (Pvt) Ltd,Test Corp 667,4899/2020,2007009406,,,+263772334635,+263737517295,finance667@testcorp.co.zw,,,,,,head_office,Unit 56 Industrial Park,,Marondera,Bulawayo Metro,19126,Zimbabwe
+CUST-0668,corporate,,Test Corporate 668 (Pvt) Ltd,,2970/2020,2002370394,,,+263749808319,+263788091195,finance668@testcorp.co.zw,,,,,,postal,Unit 75 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0669,corporate,,Test Corporate 669 (Pvt) Ltd,Test Corp 669,3644/2019,2009216487,,,+263798787191,,finance669@testcorp.co.zw,,,,,,physical,Unit 32 Industrial Park,,Harare,,,Zimbabwe
+CUST-0670,individual,Test Individual 670,,,,,54-810711A41,Test Employer 670,+263785745696,,indiv670@example.com,,,,,,postal,366 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0671,corporate,,Test Corporate 671 (Pvt) Ltd,Test Corp 671,6096/2021,2002926395,,,+263727550798,,finance671@testcorp.co.zw,,,,,,physical,Unit 65 Industrial Park,,Bulawayo,Harare Province,,Zimbabwe
+CUST-0672,individual,Test Individual 672,,,,,24-105101A90,Test Employer 672,+263713032178,,indiv672@example.com,,,,,,physical,448 Test Road,Flat 11,Marondera,Manicaland,,Zimbabwe
+CUST-0673,individual,Test Individual 673,,,,,26-889167A73,Test Employer 673,+263718066108,,indiv673@example.com,,,,,,physical,154 Test Road,,Bulawayo,Midlands,,Zimbabwe
+CUST-0674,corporate,,Test Corporate 674 (Pvt) Ltd,Test Corp 674,6716/2011,2009045638,,,+263717654896,,finance674@testcorp.co.zw,,,,,,physical,Unit 96 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0675,individual,Test Individual 675,,,,,34-234518A69,Test Employer 675,+263724890259,,indiv675@example.com,,,,,,mailing,671 Test Road,,Bulawayo,Manicaland,,Zimbabwe
+CUST-0676,individual,Test Individual 676,,,,,57-144705A23,Test Employer 676,+263730761431,,indiv676@example.com,,,,,,physical,63 Test Road,,Masvingo,Mashonaland,,Zimbabwe
+CUST-0677,individual,Test Individual 677,,,,,50-376435A53,Test Employer 677,+263748482235,,indiv677@example.com,,,,,,physical,446 Test Road,,Chitungwiza,Mashonaland,PO Box 6777,Zimbabwe
+CUST-0678,corporate,,Test Corporate 678 (Pvt) Ltd,,5877/2018,2006805423,,,+263783392759,,finance678@testcorp.co.zw,accounts678@testcorp.co.zw,,,,,head_office,Unit 15 Industrial Park,,Masvingo,Harare Province,,Zimbabwe
+CUST-0679,corporate,,Test Corporate 679 (Pvt) Ltd,Test Corp 679,6656/2011,2007910266,,,+263774072381,,finance679@testcorp.co.zw,,,,,,head_office,Unit 77 Industrial Park,Building D,Mutare,Harare Province,,Zimbabwe
+CUST-0680,individual,Test Individual 680,,,,,61-245206A54,Test Employer 680,+263785185778,+263792309082,indiv680@example.com,indiv680.alt@example.com,,,,,registered,207 Test Road,Flat 31,Mutare,Midlands,PO Box 9704,Zimbabwe
+CUST-0681,individual,Test Individual 681,,,,,33-620966A15,Test Employer 681,+263768278411,+263747488760,indiv681@example.com,indiv681.alt@example.com,,,,,postal,466 Test Road,Flat 5,Harare,,,Zimbabwe
+CUST-0682,individual,Test Individual 682,,,,,54-716535A81,Test Employer 682,+263749279501,+263771388549,indiv682@example.com,indiv682.alt@example.com,,,,,physical,280 Test Road,,Bulawayo,Midlands,,Zimbabwe
+CUST-0683,corporate,,Test Corporate 683 (Pvt) Ltd,Test Corp 683,4995/2011,2004884383,,,+263719706112,,finance683@testcorp.co.zw,,,,,,physical,Unit 71 Industrial Park,,Marondera,Harare Province,,Zimbabwe
+CUST-0684,individual,Test Individual 684,,,,,91-895095A88,Test Employer 684,+263790578866,+263796803278,indiv684@example.com,indiv684.alt@example.com,,,,,mailing,456 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0685,corporate,,Test Corporate 685 (Pvt) Ltd,,1141/2018,2004958881,,,+263725267011,+263794213027,finance685@testcorp.co.zw,accounts685@testcorp.co.zw,,,,,registered,Unit 64 Industrial Park,Building C,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0686,individual,Test Individual 686,,,,,58-105513A65,Test Employer 686,+263736418027,+263776868467,indiv686@example.com,indiv686.alt@example.com,,,,,postal,41 Test Road,Flat 31,Marondera,,PO Box 2850,Zimbabwe
+CUST-0687,corporate,,Test Corporate 687 (Pvt) Ltd,Test Corp 687,9427/2024,2005975917,,,+263774412023,+263719007824,finance687@testcorp.co.zw,,,,,,postal,Unit 5 Industrial Park,Building B,Chitungwiza,,66348,Zimbabwe
+CUST-0688,individual,Test Individual 688,,,,,69-326281A71,Test Employer 688,+263778644404,,indiv688@example.com,,,,,,postal,102 Test Road,,Chitungwiza,Midlands,PO Box 5292,Zimbabwe
+CUST-0689,individual,Test Individual 689,,,,,98-297259A80,Test Employer 689,+263793912431,+263739133010,indiv689@example.com,indiv689.alt@example.com,,,,,registered,829 Test Road,,Mutare,Matabeleland,,Zimbabwe
+CUST-0690,corporate,,Test Corporate 690 (Pvt) Ltd,Test Corp 690,2172/2022,2005839936,,,+263794885351,+263716828376,finance690@testcorp.co.zw,,,,,,head_office,Unit 73 Industrial Park,Building D,Marondera,Bulawayo Metro,,Zimbabwe
+CUST-0691,corporate,,Test Corporate 691 (Pvt) Ltd,Test Corp 691,3310/2021,2005380954,,,+263794279368,,finance691@testcorp.co.zw,,,,,,postal,Unit 75 Industrial Park,,Chitungwiza,Harare Province,32768,Zimbabwe
+CUST-0692,corporate,,Test Corporate 692 (Pvt) Ltd,Test Corp 692,7154/2012,2001266523,,,+263773454981,,finance692@testcorp.co.zw,,,,,,head_office,Unit 94 Industrial Park,,Marondera,Bulawayo Metro,,Zimbabwe
+CUST-0693,corporate,,Test Corporate 693 (Pvt) Ltd,Test Corp 693,8035/2018,2005764275,,,+263778852730,,finance693@testcorp.co.zw,,,,,,registered,Unit 95 Industrial Park,,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0694,individual,Test Individual 694,,,,,41-783855A74,Test Employer 694,+263729701658,,indiv694@example.com,,,,,,registered,105 Test Road,Flat 24,Marondera,Midlands,,Zimbabwe
+CUST-0695,individual,Test Individual 695,,,,,57-487772A46,Test Employer 695,+263745478858,+263723533286,indiv695@example.com,indiv695.alt@example.com,,,,,physical,129 Test Road,Flat 6,Masvingo,Mashonaland,,Zimbabwe
+CUST-0696,individual,Test Individual 696,,,,,50-852890A83,Test Employer 696,+263774841441,+263711413302,indiv696@example.com,indiv696.alt@example.com,,,,,physical,236 Test Road,,Marondera,Matabeleland,,Zimbabwe
+CUST-0697,corporate,,Test Corporate 697 (Pvt) Ltd,Test Corp 697,4490/2011,2005062932,,,+263742336920,,finance697@testcorp.co.zw,,,,,,head_office,Unit 6 Industrial Park,,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0698,individual,Test Individual 698,,,,,94-173551A80,Test Employer 698,+263734849582,+263758171048,indiv698@example.com,indiv698.alt@example.com,,,,,physical,782 Test Road,,Gweru,Manicaland,,Zimbabwe
+CUST-0699,corporate,,Test Corporate 699 (Pvt) Ltd,Test Corp 699,4255/2014,2001641073,,,+263768249525,+263779045205,finance699@testcorp.co.zw,,,,,,head_office,Unit 78 Industrial Park,,Masvingo,Harare Province,,Zimbabwe
+CUST-0700,corporate,,Test Corporate 700 (Pvt) Ltd,Test Corp 700,5490/2010,2009615177,,,+263729308472,,finance700@testcorp.co.zw,,,,,,physical,Unit 4 Industrial Park,Building E,Bulawayo,Harare Province,,Zimbabwe
+CUST-0701,individual,Test Individual 701,,,,,36-966669A85,Test Employer 701,+263740656503,+263714205133,indiv701@example.com,indiv701.alt@example.com,,,,,postal,975 Test Road,Flat 3,Harare,Midlands,,Zimbabwe
+CUST-0702,corporate,,Test Corporate 702 (Pvt) Ltd,Test Corp 702,2353/2014,2008649908,,,+263783999309,+263763135099,finance702@testcorp.co.zw,,,,,,postal,Unit 67 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0703,corporate,,Test Corporate 703 (Pvt) Ltd,Test Corp 703,6828/2021,2001420726,,,+263765335934,,finance703@testcorp.co.zw,,,,,,physical,Unit 72 Industrial Park,,Harare,,,Zimbabwe
+CUST-0704,corporate,,Test Corporate 704 (Pvt) Ltd,Test Corp 704,7998/2015,2008205959,,,+263743870643,+263758514088,finance704@testcorp.co.zw,accounts704@testcorp.co.zw,,,,,physical,Unit 49 Industrial Park,Building D,Bulawayo,,36229,Zimbabwe
+CUST-0705,individual,Test Individual 705,,,,,24-832811A88,Test Employer 705,+263774274520,,indiv705@example.com,,,,,,mailing,269 Test Road,,Masvingo,,,Zimbabwe
+CUST-0706,individual,Test Individual 706,,,,,93-529569A67,Test Employer 706,+263728706664,+263752178059,indiv706@example.com,indiv706.alt@example.com,,,,,registered,874 Test Road,,Marondera,,,Zimbabwe
+CUST-0707,individual,Test Individual 707,,,,,20-564957A72,Test Employer 707,+263744350358,+263717944765,indiv707@example.com,indiv707.alt@example.com,,,,,mailing,256 Test Road,Flat 32,Marondera,,,Zimbabwe
+CUST-0708,individual,Test Individual 708,,,,,72-238052A13,Test Employer 708,+263714743258,,indiv708@example.com,,,,,,registered,877 Test Road,,Masvingo,Manicaland,,Zimbabwe
+CUST-0709,individual,Test Individual 709,,,,,48-167292A80,Test Employer 709,+263711602056,+263770094553,indiv709@example.com,indiv709.alt@example.com,,,,,mailing,245 Test Road,,Mutare,Mashonaland,,Zimbabwe
+CUST-0710,individual,Test Individual 710,,,,,81-603853A24,Test Employer 710,+263724307357,+263780949132,indiv710@example.com,indiv710.alt@example.com,,,,,registered,798 Test Road,,Mutare,Manicaland,PO Box 4997,Zimbabwe
+CUST-0711,corporate,,Test Corporate 711 (Pvt) Ltd,Test Corp 711,1402/2018,2008242439,,,+263777114974,,finance711@testcorp.co.zw,accounts711@testcorp.co.zw,,,,,postal,Unit 69 Industrial Park,,Kwekwe,,,Zimbabwe
+CUST-0712,individual,Test Individual 712,,,,,33-619817A80,Test Employer 712,+263755307584,+263764563772,indiv712@example.com,indiv712.alt@example.com,,,,,registered,564 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0713,individual,Test Individual 713,,,,,67-637536A68,Test Employer 713,+263732455901,+263756355466,indiv713@example.com,indiv713.alt@example.com,,,,,registered,148 Test Road,,Bulawayo,Manicaland,,Zimbabwe
+CUST-0714,corporate,,Test Corporate 714 (Pvt) Ltd,Test Corp 714,4087/2021,2009938963,,,+263758090406,,finance714@testcorp.co.zw,,,,,,postal,Unit 11 Industrial Park,,Kwekwe,,,Zimbabwe
+CUST-0715,individual,Test Individual 715,,,,,50-514250A72,,+263760683973,+263741403552,indiv715@example.com,indiv715.alt@example.com,,,,,mailing,412 Test Road,,Marondera,Midlands,,Zimbabwe
+CUST-0716,corporate,,Test Corporate 716 (Pvt) Ltd,Test Corp 716,7951/2017,2005641431,,,+263740122891,,finance716@testcorp.co.zw,,,,,,postal,Unit 42 Industrial Park,,Bulawayo,Harare Province,,Zimbabwe
+CUST-0717,individual,Test Individual 717,,,,,57-680157A15,Test Employer 717,+263731757335,,indiv717@example.com,,,,,,postal,770 Test Road,Flat 35,Gweru,Mashonaland,,Zimbabwe
+CUST-0718,corporate,,Test Corporate 718 (Pvt) Ltd,Test Corp 718,2233/2011,2008068234,,,+263713659384,+263726648210,finance718@testcorp.co.zw,,,,,,head_office,Unit 26 Industrial Park,,Mutare,Harare Province,12512,Zimbabwe
+CUST-0719,individual,Test Individual 719,,,,,70-678331A30,Test Employer 719,+263758967861,,indiv719@example.com,,,,,,postal,255 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0720,individual,Test Individual 720,,,,,59-235259A42,Test Employer 720,+263760321219,,indiv720@example.com,,,,,,postal,278 Test Road,Flat 6,Bulawayo,Midlands,PO Box 5057,Zimbabwe
+CUST-0721,corporate,,Test Corporate 721 (Pvt) Ltd,Test Corp 721,9137/2014,2005494858,,,+263737505945,,finance721@testcorp.co.zw,,,,,,registered,Unit 91 Industrial Park,,Masvingo,Harare Province,,Zimbabwe
+CUST-0722,corporate,,Test Corporate 722 (Pvt) Ltd,Test Corp 722,7378/2022,2002537685,,,+263769849589,,finance722@testcorp.co.zw,,,,,,head_office,Unit 21 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0723,individual,Test Individual 723,,,,,24-492342A55,Test Employer 723,+263797040945,,indiv723@example.com,,,,,,registered,403 Test Road,Flat 39,Masvingo,,,Zimbabwe
+CUST-0724,corporate,,Test Corporate 724 (Pvt) Ltd,Test Corp 724,5725/2014,2009884792,,,+263749149168,+263722106306,finance724@testcorp.co.zw,,,,,,postal,Unit 42 Industrial Park,,Bulawayo,Harare Province,,Zimbabwe
+CUST-0725,individual,Test Individual 725,,,,,42-364652A13,Test Employer 725,+263717340636,+263795834677,indiv725@example.com,indiv725.alt@example.com,,,,,mailing,191 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0726,individual,Test Individual 726,,,,,85-170299A69,Test Employer 726,+263759522339,,indiv726@example.com,,,,,,physical,378 Test Road,,Bulawayo,Midlands,,Zimbabwe
+CUST-0727,individual,Test Individual 727,,,,,54-292135A32,Test Employer 727,+263788241473,+263734217046,indiv727@example.com,indiv727.alt@example.com,,,,,postal,936 Test Road,,Masvingo,Midlands,,Zimbabwe
+CUST-0728,corporate,,Test Corporate 728 (Pvt) Ltd,Test Corp 728,2828/2016,2007939039,,,+263789337682,,finance728@testcorp.co.zw,,,,,,postal,Unit 60 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0729,corporate,,Test Corporate 729 (Pvt) Ltd,Test Corp 729,9698/2012,2008388617,,,+263716282527,+263750292765,finance729@testcorp.co.zw,,,,,,registered,Unit 98 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0730,individual,Test Individual 730,,,,,74-894164A71,Test Employer 730,+263738470886,,indiv730@example.com,,,,,,registered,673 Test Road,,Masvingo,Mashonaland,,Zimbabwe
+CUST-0731,corporate,,Test Corporate 731 (Pvt) Ltd,Test Corp 731,8570/2012,2006443897,,,+263756614500,,finance731@testcorp.co.zw,,,,,,registered,Unit 10 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0732,individual,Test Individual 732,,,,,77-107455A67,Test Employer 732,+263741105672,,indiv732@example.com,,,,,,physical,848 Test Road,Flat 11,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0733,corporate,,Test Corporate 733 (Pvt) Ltd,Test Corp 733,4666/2024,2008193486,,,+263769584594,,finance733@testcorp.co.zw,,,,,,postal,Unit 28 Industrial Park,,Kwekwe,Bulawayo Metro,35266,Zimbabwe
+CUST-0734,individual,Test Individual 734,,,,,76-807627A77,Test Employer 734,+263725980253,,indiv734@example.com,,,,,,mailing,502 Test Road,Flat 34,Mutare,Mashonaland,,Zimbabwe
+CUST-0735,individual,Test Individual 735,,,,,51-201202A55,Test Employer 735,+263785838025,,indiv735@example.com,,,,,,physical,716 Test Road,Flat 32,Gweru,Matabeleland,,Zimbabwe
+CUST-0736,corporate,,Test Corporate 736 (Pvt) Ltd,,6740/2018,2003746955,,,+263761224972,,finance736@testcorp.co.zw,,,,,,postal,Unit 7 Industrial Park,,Harare,,,Zimbabwe
+CUST-0737,individual,Test Individual 737,,,,,72-354380A56,Test Employer 737,+263717551983,,indiv737@example.com,,,,,,postal,834 Test Road,,Gweru,Manicaland,PO Box 750,Zimbabwe
+CUST-0738,individual,Test Individual 738,,,,,70-777882A34,Test Employer 738,+263726679748,,indiv738@example.com,,,,,,postal,20 Test Road,,Marondera,Manicaland,PO Box 7841,Zimbabwe
+CUST-0739,corporate,,Test Corporate 739 (Pvt) Ltd,Test Corp 739,3792/2023,2007527272,,,+263776927729,,finance739@testcorp.co.zw,,,,,,registered,Unit 55 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0740,corporate,,Test Corporate 740 (Pvt) Ltd,Test Corp 740,4354/2020,2001024154,,,+263767549344,,finance740@testcorp.co.zw,,,,,,postal,Unit 55 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0741,individual,Test Individual 741,,,,,94-553990A77,Test Employer 741,+263720833751,,indiv741@example.com,,,,,,physical,772 Test Road,Flat 38,Mutare,Mashonaland,,Zimbabwe
+CUST-0742,individual,Test Individual 742,,,,,25-442825A97,Test Employer 742,+263792713027,,indiv742@example.com,,,,,,registered,623 Test Road,,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0743,individual,Test Individual 743,,,,,31-496448A44,Test Employer 743,+263714482918,,indiv743@example.com,,,,,,postal,629 Test Road,,Mutare,Midlands,PO Box 2203,Zimbabwe
+CUST-0744,individual,Test Individual 744,,,,,41-706721A48,,+263770467554,+263725602081,indiv744@example.com,indiv744.alt@example.com,,,,,registered,642 Test Road,,Chitungwiza,,,Zimbabwe
+CUST-0745,individual,Test Individual 745,,,,,40-849317A44,Test Employer 745,+263764745499,,indiv745@example.com,,,,,,registered,546 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0746,individual,Test Individual 746,,,,,91-667558A92,Test Employer 746,+263743047030,,indiv746@example.com,,,,,,postal,163 Test Road,Flat 30,Mutare,Manicaland,,Zimbabwe
+CUST-0747,individual,Test Individual 747,,,,,14-311713A93,Test Employer 747,+263737411052,,indiv747@example.com,,,,,,physical,162 Test Road,,Kwekwe,,,Zimbabwe
+CUST-0748,individual,Test Individual 748,,,,,41-757059A83,Test Employer 748,+263732910752,,indiv748@example.com,,,,,,physical,878 Test Road,,Marondera,,,Zimbabwe
+CUST-0749,individual,Test Individual 749,,,,,24-923852A78,Test Employer 749,+263767943238,+263789836045,indiv749@example.com,indiv749.alt@example.com,,,,,postal,989 Test Road,Flat 40,Kwekwe,Mashonaland,,Zimbabwe
+CUST-0750,individual,Test Individual 750,,,,,37-762218A51,Test Employer 750,+263738891745,,indiv750@example.com,,,,,,postal,389 Test Road,,Masvingo,Midlands,PO Box 6184,Zimbabwe
+CUST-0751,individual,Test Individual 751,,,,,19-218289A81,,+263718996067,+263711291153,indiv751@example.com,indiv751.alt@example.com,,,,,registered,287 Test Road,,Kwekwe,,,Zimbabwe
+CUST-0752,corporate,,Test Corporate 752 (Pvt) Ltd,Test Corp 752,5142/2015,2008264253,,,+263738012775,,finance752@testcorp.co.zw,,,,,,physical,Unit 75 Industrial Park,Building C,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0753,individual,Test Individual 753,,,,,67-387023A39,Test Employer 753,+263780514881,,indiv753@example.com,,,,,,postal,838 Test Road,Flat 20,Marondera,Mashonaland,PO Box 4547,Zimbabwe
+CUST-0754,corporate,,Test Corporate 754 (Pvt) Ltd,Test Corp 754,3909/2011,2004961924,,,+263762295811,+263783740992,finance754@testcorp.co.zw,,,,,,physical,Unit 22 Industrial Park,,Masvingo,Harare Province,,Zimbabwe
+CUST-0755,individual,Test Individual 755,,,,,48-417772A61,Test Employer 755,+263721255276,,indiv755@example.com,,,,,,physical,995 Test Road,,Marondera,Matabeleland,,Zimbabwe
+CUST-0756,corporate,,Test Corporate 756 (Pvt) Ltd,Test Corp 756,1243/2011,2002081289,,,+263736560535,,finance756@testcorp.co.zw,,,,,,physical,Unit 4 Industrial Park,Building C,Masvingo,,,Zimbabwe
+CUST-0757,corporate,,Test Corporate 757 (Pvt) Ltd,Test Corp 757,6886/2015,2003187641,,,+263749332080,,finance757@testcorp.co.zw,,,,,,postal,Unit 58 Industrial Park,Building E,Bulawayo,Harare Province,,Zimbabwe
+CUST-0758,corporate,,Test Corporate 758 (Pvt) Ltd,Test Corp 758,9852/2023,2007688405,,,+263722635882,+263792875090,finance758@testcorp.co.zw,,,,,,head_office,Unit 84 Industrial Park,,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0759,individual,Test Individual 759,,,,,78-356063A39,Test Employer 759,+263744757609,,indiv759@example.com,,,,,,registered,152 Test Road,,Masvingo,Mashonaland,,Zimbabwe
+CUST-0760,individual,Test Individual 760,,,,,69-133367A69,,+263775799113,,indiv760@example.com,,,,,,physical,111 Test Road,Flat 35,Mutare,,,Zimbabwe
+CUST-0761,individual,Test Individual 761,,,,,86-791598A99,Test Employer 761,+263751579303,+263738112251,indiv761@example.com,indiv761.alt@example.com,,,,,physical,269 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0762,individual,Test Individual 762,,,,,32-825944A72,Test Employer 762,+263768499495,,indiv762@example.com,,,,,,registered,317 Test Road,Flat 20,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0763,corporate,,Test Corporate 763 (Pvt) Ltd,,3671/2019,2002284585,,,+263748054624,,finance763@testcorp.co.zw,,,,,,postal,Unit 32 Industrial Park,,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0764,individual,Test Individual 764,,,,,27-443604A22,Test Employer 764,+263788404938,+263710245006,indiv764@example.com,indiv764.alt@example.com,,,,,postal,655 Test Road,,Masvingo,Manicaland,,Zimbabwe
+CUST-0765,individual,Test Individual 765,,,,,10-807211A59,Test Employer 765,+263780700932,+263743505480,indiv765@example.com,indiv765.alt@example.com,,,,,registered,976 Test Road,,Chitungwiza,Matabeleland,,Zimbabwe
+CUST-0766,corporate,,Test Corporate 766 (Pvt) Ltd,Test Corp 766,9545/2011,2006480982,,,+263768305879,,finance766@testcorp.co.zw,,,,,,postal,Unit 28 Industrial Park,,Masvingo,Bulawayo Metro,97557,Zimbabwe
+CUST-0767,individual,Test Individual 767,,,,,97-619016A24,Test Employer 767,+263768720500,,indiv767@example.com,,,,,,registered,962 Test Road,,Bulawayo,Midlands,,Zimbabwe
+CUST-0768,individual,Test Individual 768,,,,,52-629539A73,Test Employer 768,+263730517828,+263793409932,indiv768@example.com,indiv768.alt@example.com,,,,,physical,72 Test Road,Flat 37,Marondera,,,Zimbabwe
+CUST-0769,corporate,,Test Corporate 769 (Pvt) Ltd,Test Corp 769,2155/2014,2009504734,,,+263745717294,+263787019231,finance769@testcorp.co.zw,accounts769@testcorp.co.zw,,,,,postal,Unit 80 Industrial Park,Building E,Chitungwiza,Bulawayo Metro,29644,Zimbabwe
+CUST-0770,individual,Test Individual 770,,,,,78-580673A31,Test Employer 770,+263788963802,,indiv770@example.com,,,,,,mailing,733 Test Road,,Bulawayo,Matabeleland,,Zimbabwe
+CUST-0771,corporate,,Test Corporate 771 (Pvt) Ltd,Test Corp 771,8499/2019,2001077338,,,+263784159487,,finance771@testcorp.co.zw,,,,,,postal,Unit 11 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0772,corporate,,Test Corporate 772 (Pvt) Ltd,Test Corp 772,5528/2017,2002528199,,,+263713119507,,finance772@testcorp.co.zw,,,,,,postal,Unit 94 Industrial Park,Building A,Gweru,,,Zimbabwe
+CUST-0773,individual,Test Individual 773,,,,,72-816112A51,Test Employer 773,+263790741580,+263727425342,indiv773@example.com,indiv773.alt@example.com,,,,,registered,905 Test Road,,Kwekwe,Manicaland,,Zimbabwe
+CUST-0774,corporate,,Test Corporate 774 (Pvt) Ltd,Test Corp 774,6286/2011,2003814737,,,+263757630850,,finance774@testcorp.co.zw,,,,,,registered,Unit 71 Industrial Park,,Marondera,,,Zimbabwe
+CUST-0775,corporate,,Test Corporate 775 (Pvt) Ltd,,6426/2011,2007291774,,,+263796971873,,finance775@testcorp.co.zw,,,,,,registered,Unit 79 Industrial Park,,Masvingo,,,Zimbabwe
+CUST-0776,corporate,,Test Corporate 776 (Pvt) Ltd,Test Corp 776,8243/2015,2006969247,,,+263741100701,,finance776@testcorp.co.zw,,,,,,physical,Unit 78 Industrial Park,Building B,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0777,individual,Test Individual 777,,,,,26-615518A68,Test Employer 777,+263788593358,+263727622318,indiv777@example.com,indiv777.alt@example.com,,,,,registered,84 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0778,individual,Test Individual 778,,,,,20-564543A12,Test Employer 778,+263750294136,+263742454507,indiv778@example.com,indiv778.alt@example.com,,,,,registered,894 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0779,individual,Test Individual 779,,,,,33-287329A53,Test Employer 779,+263723811699,,indiv779@example.com,,,,,,registered,569 Test Road,Flat 31,Gweru,Manicaland,,Zimbabwe
+CUST-0780,individual,Test Individual 780,,,,,98-499432A53,Test Employer 780,+263734992456,,indiv780@example.com,,,,,,postal,586 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0781,corporate,,Test Corporate 781 (Pvt) Ltd,Test Corp 781,9133/2013,2006856772,,,+263760629616,,finance781@testcorp.co.zw,,,,,,head_office,Unit 41 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0782,individual,Test Individual 782,,,,,91-755898A66,Test Employer 782,+263742517286,,indiv782@example.com,,,,,,physical,16 Test Road,,Gweru,Mashonaland,,Zimbabwe
+CUST-0783,corporate,,Test Corporate 783 (Pvt) Ltd,Test Corp 783,3455/2024,2007159149,,,+263785601584,,finance783@testcorp.co.zw,,,,,,postal,Unit 55 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0784,corporate,,Test Corporate 784 (Pvt) Ltd,Test Corp 784,7304/2018,2001443845,,,+263791386672,,finance784@testcorp.co.zw,,,,,,physical,Unit 15 Industrial Park,,Bulawayo,Bulawayo Metro,15191,Zimbabwe
+CUST-0785,corporate,,Test Corporate 785 (Pvt) Ltd,Test Corp 785,2225/2019,2002990157,,,+263765646043,+263776496035,finance785@testcorp.co.zw,,,,,,postal,Unit 35 Industrial Park,,Kwekwe,Harare Province,,Zimbabwe
+CUST-0786,corporate,,Test Corporate 786 (Pvt) Ltd,Test Corp 786,5551/2021,2004082559,,,+263733544576,+263723863683,finance786@testcorp.co.zw,,,,,,registered,Unit 9 Industrial Park,,Harare,Harare Province,,Zimbabwe
+CUST-0787,individual,Test Individual 787,,,,,15-326816A18,,+263776087271,,indiv787@example.com,,,,,,postal,500 Test Road,,Masvingo,Midlands,PO Box 6020,Zimbabwe
+CUST-0788,individual,Test Individual 788,,,,,12-198802A37,Test Employer 788,+263746188423,,indiv788@example.com,,,,,,postal,806 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0789,corporate,,Test Corporate 789 (Pvt) Ltd,Test Corp 789,8460/2013,2005440696,,,+263729793729,+263712825990,finance789@testcorp.co.zw,accounts789@testcorp.co.zw,,,,,physical,Unit 1 Industrial Park,Building C,Bulawayo,Harare Province,,Zimbabwe
+CUST-0790,individual,Test Individual 790,,,,,77-245678A44,Test Employer 790,+263798480327,,indiv790@example.com,,,,,,mailing,544 Test Road,,Marondera,Midlands,PO Box 9337,Zimbabwe
+CUST-0791,individual,Test Individual 791,,,,,19-354113A42,Test Employer 791,+263793042734,+263715129568,indiv791@example.com,indiv791.alt@example.com,,,,,postal,122 Test Road,,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0792,corporate,,Test Corporate 792 (Pvt) Ltd,Test Corp 792,5651/2010,2009487326,,,+263781084911,+263735235319,finance792@testcorp.co.zw,accounts792@testcorp.co.zw,,,,,physical,Unit 54 Industrial Park,,Masvingo,,,Zimbabwe
+CUST-0793,individual,Test Individual 793,,,,,13-513808A69,Test Employer 793,+263739190204,,indiv793@example.com,,,,,,registered,64 Test Road,Flat 36,Marondera,,,Zimbabwe
+CUST-0794,individual,Test Individual 794,,,,,81-120144A47,Test Employer 794,+263750051123,,indiv794@example.com,,,,,,physical,38 Test Road,,Gweru,Manicaland,,Zimbabwe
+CUST-0795,individual,Test Individual 795,,,,,33-197628A41,Test Employer 795,+263737382669,,indiv795@example.com,,,,,,postal,400 Test Road,,Marondera,Matabeleland,,Zimbabwe
+CUST-0796,individual,Test Individual 796,,,,,88-173780A91,Test Employer 796,+263732257547,+263741083108,indiv796@example.com,indiv796.alt@example.com,,,,,physical,420 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0797,individual,Test Individual 797,,,,,38-337459A28,Test Employer 797,+263726751784,+263714278101,indiv797@example.com,indiv797.alt@example.com,,,,,physical,453 Test Road,Flat 4,Mutare,Mashonaland,,Zimbabwe
+CUST-0798,individual,Test Individual 798,,,,,22-652523A48,,+263737794657,,indiv798@example.com,,,,,,postal,477 Test Road,,Harare,Mashonaland,,Zimbabwe
+CUST-0799,corporate,,Test Corporate 799 (Pvt) Ltd,,6142/2010,2005505245,,,+263757852528,,finance799@testcorp.co.zw,,,,,,registered,Unit 64 Industrial Park,Building A,Gweru,,94148,Zimbabwe
+CUST-0800,corporate,,Test Corporate 800 (Pvt) Ltd,Test Corp 800,1595/2015,2008151253,,,+263723702932,,finance800@testcorp.co.zw,,,,,,head_office,Unit 29 Industrial Park,,Gweru,Harare Province,70403,Zimbabwe
+CUST-0801,individual,Test Individual 801,,,,,50-428181A30,Test Employer 801,+263752599240,,indiv801@example.com,,,,,,physical,515 Test Road,Flat 9,Masvingo,,,Zimbabwe
+CUST-0802,corporate,,Test Corporate 802 (Pvt) Ltd,Test Corp 802,4653/2012,2004744270,,,+263738665968,,finance802@testcorp.co.zw,,,,,,head_office,Unit 25 Industrial Park,Building A,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0803,individual,Test Individual 803,,,,,63-180875A55,Test Employer 803,+263716170978,,indiv803@example.com,,,,,,registered,20 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0804,individual,Test Individual 804,,,,,40-631071A79,Test Employer 804,+263796763568,+263727229565,indiv804@example.com,indiv804.alt@example.com,,,,,postal,460 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0805,corporate,,Test Corporate 805 (Pvt) Ltd,,7991/2015,2005041046,,,+263768842988,,finance805@testcorp.co.zw,,,,,,physical,Unit 9 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0806,corporate,,Test Corporate 806 (Pvt) Ltd,Test Corp 806,7909/2024,2005480270,,,+263763119970,,finance806@testcorp.co.zw,,,,,,postal,Unit 6 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0807,corporate,,Test Corporate 807 (Pvt) Ltd,,4046/2014,2006486989,,,+263711596373,+263767801433,finance807@testcorp.co.zw,accounts807@testcorp.co.zw,,,,,head_office,Unit 68 Industrial Park,,Kwekwe,Harare Province,,Zimbabwe
+CUST-0808,individual,Test Individual 808,,,,,57-667617A64,Test Employer 808,+263779189560,,indiv808@example.com,,,,,,registered,574 Test Road,,Gweru,Mashonaland,,Zimbabwe
+CUST-0809,individual,Test Individual 809,,,,,38-483201A98,Test Employer 809,+263798881883,,indiv809@example.com,,,,,,postal,262 Test Road,,Harare,Matabeleland,PO Box 8405,Zimbabwe
+CUST-0810,individual,Test Individual 810,,,,,45-481091A61,Test Employer 810,+263740532193,,indiv810@example.com,,,,,,registered,890 Test Road,,Mutare,Midlands,,Zimbabwe
+CUST-0811,corporate,,Test Corporate 811 (Pvt) Ltd,Test Corp 811,5466/2023,2007416262,,,+263773252385,,finance811@testcorp.co.zw,accounts811@testcorp.co.zw,,,,,postal,Unit 52 Industrial Park,,Gweru,Bulawayo Metro,,Zimbabwe
+CUST-0812,corporate,,Test Corporate 812 (Pvt) Ltd,Test Corp 812,4725/2019,2007708328,,,+263795507833,,finance812@testcorp.co.zw,,,,,,physical,Unit 93 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0813,individual,Test Individual 813,,,,,91-748903A11,Test Employer 813,+263763517670,,indiv813@example.com,,,,,,registered,876 Test Road,,Chitungwiza,,PO Box 2454,Zimbabwe
+CUST-0814,individual,Test Individual 814,,,,,98-951677A46,Test Employer 814,+263799151931,,indiv814@example.com,,,,,,mailing,881 Test Road,,Chitungwiza,Matabeleland,,Zimbabwe
+CUST-0815,individual,Test Individual 815,,,,,24-573878A14,Test Employer 815,+263723019328,,indiv815@example.com,,,,,,mailing,804 Test Road,Flat 4,Masvingo,Mashonaland,,Zimbabwe
+CUST-0816,corporate,,Test Corporate 816 (Pvt) Ltd,,7743/2013,2007643904,,,+263788867224,,finance816@testcorp.co.zw,,,,,,postal,Unit 37 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0817,corporate,,Test Corporate 817 (Pvt) Ltd,Test Corp 817,8832/2022,2004712004,,,+263795034989,,finance817@testcorp.co.zw,,,,,,head_office,Unit 66 Industrial Park,Building C,Bulawayo,Harare Province,11586,Zimbabwe
+CUST-0818,corporate,,Test Corporate 818 (Pvt) Ltd,Test Corp 818,4777/2012,2002764319,,,+263772052924,,finance818@testcorp.co.zw,,,,,,postal,Unit 63 Industrial Park,Building B,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0819,corporate,,Test Corporate 819 (Pvt) Ltd,Test Corp 819,9471/2013,2006425761,,,+263767623308,+263784902812,finance819@testcorp.co.zw,accounts819@testcorp.co.zw,,,,,head_office,Unit 72 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0820,individual,Test Individual 820,,,,,49-392754A83,Test Employer 820,+263722327774,+263724538137,indiv820@example.com,indiv820.alt@example.com,,,,,postal,741 Test Road,Flat 30,Kwekwe,Mashonaland,,Zimbabwe
+CUST-0821,corporate,,Test Corporate 821 (Pvt) Ltd,Test Corp 821,8046/2012,2003653976,,,+263779835702,,finance821@testcorp.co.zw,accounts821@testcorp.co.zw,,,,,physical,Unit 37 Industrial Park,,Mutare,,39386,Zimbabwe
+CUST-0822,individual,Test Individual 822,,,,,91-309374A77,Test Employer 822,+263726370575,,indiv822@example.com,,,,,,registered,928 Test Road,Flat 29,Kwekwe,,,Zimbabwe
+CUST-0823,corporate,,Test Corporate 823 (Pvt) Ltd,Test Corp 823,9099/2019,2005660877,,,+263726619124,,finance823@testcorp.co.zw,accounts823@testcorp.co.zw,,,,,head_office,Unit 38 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0824,corporate,,Test Corporate 824 (Pvt) Ltd,Test Corp 824,4192/2024,2003285846,,,+263779192234,,finance824@testcorp.co.zw,,,,,,physical,Unit 62 Industrial Park,,Mutare,Harare Province,96948,Zimbabwe
+CUST-0825,corporate,,Test Corporate 825 (Pvt) Ltd,,1698/2024,2001176136,,,+263793040965,,finance825@testcorp.co.zw,,,,,,head_office,Unit 51 Industrial Park,,Kwekwe,,,Zimbabwe
+CUST-0826,individual,Test Individual 826,,,,,50-646448A12,Test Employer 826,+263727391674,,indiv826@example.com,,,,,,postal,842 Test Road,,Masvingo,Manicaland,,Zimbabwe
+CUST-0827,individual,Test Individual 827,,,,,70-878398A56,Test Employer 827,+263739612888,+263761962722,indiv827@example.com,indiv827.alt@example.com,,,,,mailing,803 Test Road,,Kwekwe,,,Zimbabwe
+CUST-0828,individual,Test Individual 828,,,,,91-720195A64,Test Employer 828,+263773351986,+263737241149,indiv828@example.com,indiv828.alt@example.com,,,,,postal,197 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0829,corporate,,Test Corporate 829 (Pvt) Ltd,Test Corp 829,4995/2015,2001070383,,,+263794325739,,finance829@testcorp.co.zw,,,,,,postal,Unit 8 Industrial Park,,Masvingo,Harare Province,55952,Zimbabwe
+CUST-0830,individual,Test Individual 830,,,,,74-666033A93,Test Employer 830,+263725620509,+263710226316,indiv830@example.com,indiv830.alt@example.com,,,,,physical,74 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0831,corporate,,Test Corporate 831 (Pvt) Ltd,Test Corp 831,5287/2022,2004622650,,,+263786505994,+263714298369,finance831@testcorp.co.zw,,,,,,physical,Unit 26 Industrial Park,,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0832,individual,Test Individual 832,,,,,84-583677A64,Test Employer 832,+263742940114,,indiv832@example.com,,,,,,registered,563 Test Road,,Harare,,,Zimbabwe
+CUST-0833,individual,Test Individual 833,,,,,81-493435A44,Test Employer 833,+263770073277,+263716280469,indiv833@example.com,indiv833.alt@example.com,,,,,postal,697 Test Road,Flat 19,Kwekwe,Manicaland,,Zimbabwe
+CUST-0834,corporate,,Test Corporate 834 (Pvt) Ltd,Test Corp 834,7072/2015,2005298003,,,+263733200574,,finance834@testcorp.co.zw,,,,,,postal,Unit 54 Industrial Park,Building A,Bulawayo,Harare Province,77550,Zimbabwe
+CUST-0835,corporate,,Test Corporate 835 (Pvt) Ltd,Test Corp 835,4448/2016,2009564481,,,+263734568897,,finance835@testcorp.co.zw,,,,,,postal,Unit 9 Industrial Park,,Harare,Bulawayo Metro,37059,Zimbabwe
+CUST-0836,individual,Test Individual 836,,,,,71-320026A24,,+263737894890,,indiv836@example.com,,,,,,mailing,230 Test Road,Flat 30,Kwekwe,Mashonaland,PO Box 2252,Zimbabwe
+CUST-0837,corporate,,Test Corporate 837 (Pvt) Ltd,Test Corp 837,7263/2019,2005117568,,,+263761725655,+263782948903,finance837@testcorp.co.zw,,,,,,physical,Unit 1 Industrial Park,,Marondera,Bulawayo Metro,4643,Zimbabwe
+CUST-0838,individual,Test Individual 838,,,,,99-658254A81,Test Employer 838,+263798146062,,indiv838@example.com,,,,,,mailing,414 Test Road,,Masvingo,Manicaland,,Zimbabwe
+CUST-0839,corporate,,Test Corporate 839 (Pvt) Ltd,Test Corp 839,1680/2012,2002090789,,,+263756144500,,finance839@testcorp.co.zw,,,,,,physical,Unit 40 Industrial Park,Building A,Bulawayo,,,Zimbabwe
+CUST-0840,corporate,,Test Corporate 840 (Pvt) Ltd,Test Corp 840,2450/2019,2002045290,,,+263770079904,,finance840@testcorp.co.zw,,,,,,physical,Unit 87 Industrial Park,,Marondera,,88266,Zimbabwe
+CUST-0841,corporate,,Test Corporate 841 (Pvt) Ltd,,8667/2012,2006665221,,,+263786725904,,finance841@testcorp.co.zw,,,,,,postal,Unit 81 Industrial Park,,Masvingo,Harare Province,,Zimbabwe
+CUST-0842,corporate,,Test Corporate 842 (Pvt) Ltd,Test Corp 842,9216/2020,2003710901,,,+263739454298,,finance842@testcorp.co.zw,accounts842@testcorp.co.zw,,,,,physical,Unit 9 Industrial Park,,Harare,Bulawayo Metro,89226,Zimbabwe
+CUST-0843,individual,Test Individual 843,,,,,43-773546A33,Test Employer 843,+263784616263,,indiv843@example.com,,,,,,postal,754 Test Road,,Marondera,Matabeleland,PO Box 7229,Zimbabwe
+CUST-0844,corporate,,Test Corporate 844 (Pvt) Ltd,,8850/2015,2003670871,,,+263722451410,+263773468145,finance844@testcorp.co.zw,,,,,,head_office,Unit 29 Industrial Park,Building D,Mutare,Harare Province,,Zimbabwe
+CUST-0845,corporate,,Test Corporate 845 (Pvt) Ltd,Test Corp 845,4806/2021,2007160479,,,+263746171963,+263719386387,finance845@testcorp.co.zw,,,,,,head_office,Unit 76 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0846,corporate,,Test Corporate 846 (Pvt) Ltd,Test Corp 846,2466/2014,2003717418,,,+263745162031,,finance846@testcorp.co.zw,accounts846@testcorp.co.zw,,,,,physical,Unit 45 Industrial Park,,Masvingo,,,Zimbabwe
+CUST-0847,corporate,,Test Corporate 847 (Pvt) Ltd,Test Corp 847,5074/2016,2009816108,,,+263737009141,+263740039001,finance847@testcorp.co.zw,,,,,,head_office,Unit 40 Industrial Park,Building E,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0848,corporate,,Test Corporate 848 (Pvt) Ltd,Test Corp 848,8782/2019,2001837980,,,+263734439687,+263796822761,finance848@testcorp.co.zw,,,,,,head_office,Unit 86 Industrial Park,,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0849,individual,Test Individual 849,,,,,32-188204A88,Test Employer 849,+263719506399,+263725901410,indiv849@example.com,indiv849.alt@example.com,,,,,physical,553 Test Road,Flat 30,Bulawayo,Midlands,,Zimbabwe
+CUST-0850,individual,Test Individual 850,,,,,74-759399A59,Test Employer 850,+263721265253,,indiv850@example.com,,,,,,physical,740 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0851,corporate,,Test Corporate 851 (Pvt) Ltd,Test Corp 851,1929/2015,2006713315,,,+263732096795,,finance851@testcorp.co.zw,,,,,,head_office,Unit 68 Industrial Park,Building B,Gweru,Harare Province,,Zimbabwe
+CUST-0852,corporate,,Test Corporate 852 (Pvt) Ltd,Test Corp 852,6389/2011,2004491725,,,+263759499173,,finance852@testcorp.co.zw,,,,,,registered,Unit 16 Industrial Park,,Mutare,Bulawayo Metro,42192,Zimbabwe
+CUST-0853,individual,Test Individual 853,,,,,51-297027A97,Test Employer 853,+263711967112,,indiv853@example.com,,,,,,registered,163 Test Road,,Marondera,Mashonaland,,Zimbabwe
+CUST-0854,individual,Test Individual 854,,,,,63-926775A73,Test Employer 854,+263714760261,+263713184609,indiv854@example.com,indiv854.alt@example.com,,,,,postal,339 Test Road,Flat 11,Masvingo,Mashonaland,,Zimbabwe
+CUST-0855,individual,Test Individual 855,,,,,99-969488A76,Test Employer 855,+263741246997,,indiv855@example.com,,,,,,registered,386 Test Road,,Kwekwe,Mashonaland,PO Box 9662,Zimbabwe
+CUST-0856,individual,Test Individual 856,,,,,68-148511A12,Test Employer 856,+263751243815,+263742515023,indiv856@example.com,indiv856.alt@example.com,,,,,postal,462 Test Road,Flat 24,Chitungwiza,Midlands,,Zimbabwe
+CUST-0857,individual,Test Individual 857,,,,,84-289105A95,Test Employer 857,+263753160624,,indiv857@example.com,,,,,,physical,482 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0858,corporate,,Test Corporate 858 (Pvt) Ltd,Test Corp 858,7398/2020,2002901744,,,+263755560083,,finance858@testcorp.co.zw,,,,,,registered,Unit 61 Industrial Park,,Masvingo,Harare Province,,Zimbabwe
+CUST-0859,individual,Test Individual 859,,,,,48-744677A33,,+263712057975,+263796815502,indiv859@example.com,indiv859.alt@example.com,,,,,postal,138 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0860,corporate,,Test Corporate 860 (Pvt) Ltd,Test Corp 860,5354/2023,2009246688,,,+263798446229,,finance860@testcorp.co.zw,,,,,,head_office,Unit 87 Industrial Park,Building A,Masvingo,Harare Province,,Zimbabwe
+CUST-0861,individual,Test Individual 861,,,,,10-780506A53,Test Employer 861,+263743231468,+263781646223,indiv861@example.com,indiv861.alt@example.com,,,,,registered,480 Test Road,Flat 16,Kwekwe,Manicaland,,Zimbabwe
+CUST-0862,corporate,,Test Corporate 862 (Pvt) Ltd,,6304/2010,2003523198,,,+263790301620,,finance862@testcorp.co.zw,accounts862@testcorp.co.zw,,,,,head_office,Unit 8 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0863,individual,Test Individual 863,,,,,45-979955A74,,+263725589355,,indiv863@example.com,,,,,,mailing,942 Test Road,,Masvingo,Matabeleland,,Zimbabwe
+CUST-0864,individual,Test Individual 864,,,,,38-305736A80,Test Employer 864,+263790624766,+263754459594,indiv864@example.com,indiv864.alt@example.com,,,,,mailing,272 Test Road,,Gweru,,,Zimbabwe
+CUST-0865,individual,Test Individual 865,,,,,99-854948A42,,+263795013761,+263771327607,indiv865@example.com,indiv865.alt@example.com,,,,,postal,831 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0866,corporate,,Test Corporate 866 (Pvt) Ltd,Test Corp 866,2163/2015,2003275756,,,+263785332871,,finance866@testcorp.co.zw,,,,,,head_office,Unit 71 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0867,individual,Test Individual 867,,,,,10-632803A91,Test Employer 867,+263721123692,+263746097362,indiv867@example.com,indiv867.alt@example.com,,,,,mailing,353 Test Road,,Marondera,Manicaland,PO Box 1923,Zimbabwe
+CUST-0868,individual,Test Individual 868,,,,,87-405531A14,Test Employer 868,+263722197670,+263769205068,indiv868@example.com,indiv868.alt@example.com,,,,,registered,190 Test Road,Flat 18,Masvingo,Manicaland,,Zimbabwe
+CUST-0869,individual,Test Individual 869,,,,,62-725883A94,Test Employer 869,+263773227587,+263736925189,indiv869@example.com,indiv869.alt@example.com,,,,,registered,697 Test Road,Flat 11,Marondera,Midlands,,Zimbabwe
+CUST-0870,corporate,,Test Corporate 870 (Pvt) Ltd,Test Corp 870,8797/2024,2002991416,,,+263777442675,+263798291803,finance870@testcorp.co.zw,,,,,,postal,Unit 29 Industrial Park,,Harare,,,Zimbabwe
+CUST-0871,individual,Test Individual 871,,,,,44-546088A32,Test Employer 871,+263791659628,,indiv871@example.com,,,,,,registered,254 Test Road,Flat 30,Harare,Matabeleland,,Zimbabwe
+CUST-0872,individual,Test Individual 872,,,,,70-749658A25,Test Employer 872,+263798418361,,indiv872@example.com,,,,,,postal,343 Test Road,,Bulawayo,,PO Box 5280,Zimbabwe
+CUST-0873,individual,Test Individual 873,,,,,59-401427A63,Test Employer 873,+263747820273,+263721938268,indiv873@example.com,indiv873.alt@example.com,,,,,mailing,570 Test Road,Flat 36,Harare,Mashonaland,PO Box 568,Zimbabwe
+CUST-0874,corporate,,Test Corporate 874 (Pvt) Ltd,Test Corp 874,1631/2023,2001833598,,,+263756262805,,finance874@testcorp.co.zw,,,,,,postal,Unit 22 Industrial Park,Building A,Marondera,Harare Province,,Zimbabwe
+CUST-0875,individual,Test Individual 875,,,,,20-751261A42,Test Employer 875,+263787961918,,indiv875@example.com,,,,,,registered,789 Test Road,,Masvingo,Mashonaland,,Zimbabwe
+CUST-0876,corporate,,Test Corporate 876 (Pvt) Ltd,Test Corp 876,9600/2023,2001791664,,,+263742087046,,finance876@testcorp.co.zw,,,,,,postal,Unit 65 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0877,corporate,,Test Corporate 877 (Pvt) Ltd,Test Corp 877,3935/2012,2003520148,,,+263741403850,,finance877@testcorp.co.zw,,,,,,physical,Unit 98 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0878,corporate,,Test Corporate 878 (Pvt) Ltd,,9845/2018,2005718539,,,+263720294190,,finance878@testcorp.co.zw,,,,,,postal,Unit 33 Industrial Park,Building A,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0879,individual,Test Individual 879,,,,,15-262482A40,,+263741071719,+263787890830,indiv879@example.com,indiv879.alt@example.com,,,,,postal,765 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0880,corporate,,Test Corporate 880 (Pvt) Ltd,Test Corp 880,1463/2017,2002064538,,,+263760564396,,finance880@testcorp.co.zw,accounts880@testcorp.co.zw,,,,,postal,Unit 84 Industrial Park,Building C,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0881,individual,Test Individual 881,,,,,28-720015A68,Test Employer 881,+263772066564,,indiv881@example.com,,,,,,mailing,325 Test Road,,Marondera,Manicaland,,Zimbabwe
+CUST-0882,individual,Test Individual 882,,,,,46-479858A80,Test Employer 882,+263777122409,,indiv882@example.com,,,,,,registered,52 Test Road,,Masvingo,Mashonaland,,Zimbabwe
+CUST-0883,individual,Test Individual 883,,,,,51-214502A85,Test Employer 883,+263726530990,+263738357241,indiv883@example.com,indiv883.alt@example.com,,,,,registered,631 Test Road,,Chitungwiza,Midlands,,Zimbabwe
+CUST-0884,individual,Test Individual 884,,,,,85-129661A92,Test Employer 884,+263735265326,,indiv884@example.com,,,,,,physical,402 Test Road,,Masvingo,Mashonaland,PO Box 3526,Zimbabwe
+CUST-0885,individual,Test Individual 885,,,,,21-679830A93,,+263792975526,,indiv885@example.com,,,,,,physical,213 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0886,corporate,,Test Corporate 886 (Pvt) Ltd,Test Corp 886,7372/2023,2009267560,,,+263712037727,,finance886@testcorp.co.zw,accounts886@testcorp.co.zw,,,,,physical,Unit 49 Industrial Park,,Masvingo,,,Zimbabwe
+CUST-0887,corporate,,Test Corporate 887 (Pvt) Ltd,Test Corp 887,8554/2015,2001088476,,,+263779415125,+263714853319,finance887@testcorp.co.zw,,,,,,physical,Unit 11 Industrial Park,,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0888,individual,Test Individual 888,,,,,63-213618A15,Test Employer 888,+263782078526,+263781568068,indiv888@example.com,indiv888.alt@example.com,,,,,postal,910 Test Road,Flat 32,Gweru,Manicaland,,Zimbabwe
+CUST-0889,corporate,,Test Corporate 889 (Pvt) Ltd,Test Corp 889,7219/2015,2007962223,,,+263756155435,,finance889@testcorp.co.zw,,,,,,head_office,Unit 45 Industrial Park,Building E,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0890,corporate,,Test Corporate 890 (Pvt) Ltd,Test Corp 890,7934/2012,2007862048,,,+263758970143,,finance890@testcorp.co.zw,,,,,,registered,Unit 65 Industrial Park,,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0891,individual,Test Individual 891,,,,,46-184113A56,,+263765298293,,indiv891@example.com,,,,,,mailing,327 Test Road,Flat 7,Bulawayo,Midlands,,Zimbabwe
+CUST-0892,individual,Test Individual 892,,,,,70-131183A66,Test Employer 892,+263754410689,,indiv892@example.com,,,,,,registered,194 Test Road,,Harare,,,Zimbabwe
+CUST-0893,corporate,,Test Corporate 893 (Pvt) Ltd,,2464/2019,2004367310,,,+263725071364,,finance893@testcorp.co.zw,,,,,,head_office,Unit 9 Industrial Park,Building A,Bulawayo,,80586,Zimbabwe
+CUST-0894,corporate,,Test Corporate 894 (Pvt) Ltd,Test Corp 894,3915/2012,2004393298,,,+263719077046,+263720792820,finance894@testcorp.co.zw,,,,,,head_office,Unit 25 Industrial Park,Building D,Bulawayo,Bulawayo Metro,,Zimbabwe
+CUST-0895,individual,Test Individual 895,,,,,60-279664A68,Test Employer 895,+263732769608,+263794785647,indiv895@example.com,indiv895.alt@example.com,,,,,postal,716 Test Road,,Harare,Mashonaland,,Zimbabwe
+CUST-0896,individual,Test Individual 896,,,,,91-375666A35,Test Employer 896,+263738050076,,indiv896@example.com,,,,,,mailing,826 Test Road,,Chitungwiza,,,Zimbabwe
+CUST-0897,corporate,,Test Corporate 897 (Pvt) Ltd,,7835/2024,2001983986,,,+263731887201,,finance897@testcorp.co.zw,,,,,,head_office,Unit 77 Industrial Park,,Harare,Harare Province,,Zimbabwe
+CUST-0898,corporate,,Test Corporate 898 (Pvt) Ltd,,8224/2018,2003496662,,,+263782937846,,finance898@testcorp.co.zw,,,,,,postal,Unit 75 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0899,corporate,,Test Corporate 899 (Pvt) Ltd,Test Corp 899,8340/2022,2002425342,,,+263754244423,+263779429476,finance899@testcorp.co.zw,,,,,,postal,Unit 1 Industrial Park,,Masvingo,,,Zimbabwe
+CUST-0900,corporate,,Test Corporate 900 (Pvt) Ltd,Test Corp 900,6187/2024,2004374279,,,+263715160159,,finance900@testcorp.co.zw,,,,,,physical,Unit 72 Industrial Park,,Marondera,Bulawayo Metro,,Zimbabwe
+CUST-0901,individual,Test Individual 901,,,,,49-698766A44,Test Employer 901,+263790472033,,indiv901@example.com,,,,,,registered,362 Test Road,,Bulawayo,Mashonaland,,Zimbabwe
+CUST-0902,individual,Test Individual 902,,,,,72-742054A97,Test Employer 902,+263775790044,,indiv902@example.com,,,,,,physical,74 Test Road,,Marondera,Midlands,,Zimbabwe
+CUST-0903,individual,Test Individual 903,,,,,83-567194A15,Test Employer 903,+263746102436,,indiv903@example.com,,,,,,mailing,372 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0904,corporate,,Test Corporate 904 (Pvt) Ltd,,6827/2014,2002357086,,,+263762424490,,finance904@testcorp.co.zw,,,,,,head_office,Unit 19 Industrial Park,Building E,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0905,corporate,,Test Corporate 905 (Pvt) Ltd,Test Corp 905,9632/2020,2009289168,,,+263758303184,+263793889598,finance905@testcorp.co.zw,,,,,,head_office,Unit 46 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0906,individual,Test Individual 906,,,,,32-492192A63,Test Employer 906,+263726489872,,indiv906@example.com,,,,,,postal,699 Test Road,,Bulawayo,,,Zimbabwe
+CUST-0907,individual,Test Individual 907,,,,,40-617187A33,Test Employer 907,+263716976701,+263792937414,indiv907@example.com,indiv907.alt@example.com,,,,,physical,813 Test Road,,Marondera,Manicaland,,Zimbabwe
+CUST-0908,individual,Test Individual 908,,,,,64-857987A95,Test Employer 908,+263740761550,,indiv908@example.com,,,,,,registered,307 Test Road,,Chitungwiza,Matabeleland,,Zimbabwe
+CUST-0909,individual,Test Individual 909,,,,,62-825252A49,Test Employer 909,+263792823768,+263759211192,indiv909@example.com,indiv909.alt@example.com,,,,,postal,962 Test Road,,Harare,,PO Box 3720,Zimbabwe
+CUST-0910,corporate,,Test Corporate 910 (Pvt) Ltd,,5646/2023,2009317088,,,+263735452793,+263787699733,finance910@testcorp.co.zw,accounts910@testcorp.co.zw,,,,,physical,Unit 35 Industrial Park,,Marondera,Harare Province,40556,Zimbabwe
+CUST-0911,corporate,,Test Corporate 911 (Pvt) Ltd,Test Corp 911,3336/2018,2008875905,,,+263764442032,,finance911@testcorp.co.zw,,,,,,registered,Unit 25 Industrial Park,,Chitungwiza,,,Zimbabwe
+CUST-0912,corporate,,Test Corporate 912 (Pvt) Ltd,Test Corp 912,8722/2014,2004437920,,,+263798985404,+263741697664,finance912@testcorp.co.zw,,,,,,registered,Unit 67 Industrial Park,,Marondera,,5461,Zimbabwe
+CUST-0913,corporate,,Test Corporate 913 (Pvt) Ltd,Test Corp 913,7741/2015,2004934756,,,+263736951339,+263750645163,finance913@testcorp.co.zw,accounts913@testcorp.co.zw,,,,,postal,Unit 21 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0914,corporate,,Test Corporate 914 (Pvt) Ltd,Test Corp 914,7139/2011,2003457431,,,+263724863201,+263782401768,finance914@testcorp.co.zw,accounts914@testcorp.co.zw,,,,,registered,Unit 72 Industrial Park,,Mutare,Harare Province,,Zimbabwe
+CUST-0915,corporate,,Test Corporate 915 (Pvt) Ltd,Test Corp 915,2523/2021,2002163431,,,+263745587800,,finance915@testcorp.co.zw,accounts915@testcorp.co.zw,,,,,postal,Unit 5 Industrial Park,,Kwekwe,,8366,Zimbabwe
+CUST-0916,corporate,,Test Corporate 916 (Pvt) Ltd,Test Corp 916,8174/2020,2006408572,,,+263748865812,+263788209556,finance916@testcorp.co.zw,,,,,,head_office,Unit 48 Industrial Park,,Gweru,Bulawayo Metro,52400,Zimbabwe
+CUST-0917,corporate,,Test Corporate 917 (Pvt) Ltd,Test Corp 917,3388/2022,2008913930,,,+263718830997,+263720425026,finance917@testcorp.co.zw,,,,,,postal,Unit 62 Industrial Park,Building C,Harare,Harare Province,,Zimbabwe
+CUST-0918,individual,Test Individual 918,,,,,44-590320A14,Test Employer 918,+263775971814,+263790864056,indiv918@example.com,indiv918.alt@example.com,,,,,physical,812 Test Road,,Masvingo,Manicaland,,Zimbabwe
+CUST-0919,corporate,,Test Corporate 919 (Pvt) Ltd,Test Corp 919,7870/2016,2007183622,,,+263759987678,,finance919@testcorp.co.zw,,,,,,registered,Unit 32 Industrial Park,,Kwekwe,Harare Province,33732,Zimbabwe
+CUST-0920,individual,Test Individual 920,,,,,73-981420A26,Test Employer 920,+263728384821,+263785042035,indiv920@example.com,indiv920.alt@example.com,,,,,mailing,907 Test Road,,Masvingo,,PO Box 3375,Zimbabwe
+CUST-0921,individual,Test Individual 921,,,,,61-993119A87,Test Employer 921,+263761744121,+263797281662,indiv921@example.com,indiv921.alt@example.com,,,,,postal,744 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0922,individual,Test Individual 922,,,,,10-208070A55,Test Employer 922,+263788152923,+263791761265,indiv922@example.com,indiv922.alt@example.com,,,,,mailing,201 Test Road,,Mutare,Manicaland,,Zimbabwe
+CUST-0923,individual,Test Individual 923,,,,,91-313067A92,,+263788435294,+263743559413,indiv923@example.com,indiv923.alt@example.com,,,,,physical,100 Test Road,Flat 28,Masvingo,Mashonaland,,Zimbabwe
+CUST-0924,individual,Test Individual 924,,,,,76-904217A26,Test Employer 924,+263782214149,,indiv924@example.com,,,,,,registered,756 Test Road,Flat 40,Bulawayo,Manicaland,,Zimbabwe
+CUST-0925,individual,Test Individual 925,,,,,75-150288A55,Test Employer 925,+263777615114,,indiv925@example.com,,,,,,physical,278 Test Road,Flat 1,Gweru,Matabeleland,,Zimbabwe
+CUST-0926,individual,Test Individual 926,,,,,50-981177A80,Test Employer 926,+263724276849,+263745693226,indiv926@example.com,indiv926.alt@example.com,,,,,registered,689 Test Road,,Harare,Matabeleland,,Zimbabwe
+CUST-0927,individual,Test Individual 927,,,,,88-922838A71,,+263797550434,+263733084922,indiv927@example.com,indiv927.alt@example.com,,,,,physical,233 Test Road,,Kwekwe,Midlands,,Zimbabwe
+CUST-0928,individual,Test Individual 928,,,,,24-761300A28,Test Employer 928,+263746275904,,indiv928@example.com,,,,,,postal,554 Test Road,,Bulawayo,Manicaland,,Zimbabwe
+CUST-0929,individual,Test Individual 929,,,,,36-186297A68,Test Employer 929,+263730289237,,indiv929@example.com,,,,,,mailing,853 Test Road,Flat 25,Kwekwe,Manicaland,,Zimbabwe
+CUST-0930,corporate,,Test Corporate 930 (Pvt) Ltd,Test Corp 930,8292/2019,2005576819,,,+263712968020,,finance930@testcorp.co.zw,,,,,,registered,Unit 83 Industrial Park,,Harare,Harare Province,,Zimbabwe
+CUST-0931,corporate,,Test Corporate 931 (Pvt) Ltd,Test Corp 931,8314/2020,2003868609,,,+263714291353,,finance931@testcorp.co.zw,,,,,,postal,Unit 79 Industrial Park,,Marondera,,,Zimbabwe
+CUST-0932,individual,Test Individual 932,,,,,55-974709A55,,+263736368995,,indiv932@example.com,,,,,,postal,655 Test Road,,Kwekwe,Matabeleland,PO Box 2606,Zimbabwe
+CUST-0933,individual,Test Individual 933,,,,,52-565266A12,Test Employer 933,+263741992708,,indiv933@example.com,,,,,,physical,848 Test Road,Flat 31,Marondera,,,Zimbabwe
+CUST-0934,corporate,,Test Corporate 934 (Pvt) Ltd,Test Corp 934,2593/2018,2005953673,,,+263734692558,,finance934@testcorp.co.zw,accounts934@testcorp.co.zw,,,,,registered,Unit 59 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0935,corporate,,Test Corporate 935 (Pvt) Ltd,Test Corp 935,6754/2018,2006483909,,,+263740939801,+263713624744,finance935@testcorp.co.zw,accounts935@testcorp.co.zw,,,,,head_office,Unit 29 Industrial Park,Building E,Bulawayo,Bulawayo Metro,72043,Zimbabwe
+CUST-0936,individual,Test Individual 936,,,,,40-413475A96,Test Employer 936,+263744555519,+263733409137,indiv936@example.com,indiv936.alt@example.com,,,,,physical,647 Test Road,,Masvingo,,PO Box 1216,Zimbabwe
+CUST-0937,individual,Test Individual 937,,,,,69-681197A72,Test Employer 937,+263710072899,+263725470068,indiv937@example.com,indiv937.alt@example.com,,,,,postal,968 Test Road,,Mutare,Mashonaland,,Zimbabwe
+CUST-0938,corporate,,Test Corporate 938 (Pvt) Ltd,Test Corp 938,8198/2011,2001932740,,,+263742951176,+263727524307,finance938@testcorp.co.zw,,,,,,physical,Unit 94 Industrial Park,,Chitungwiza,Bulawayo Metro,,Zimbabwe
+CUST-0939,individual,Test Individual 939,,,,,10-279731A95,Test Employer 939,+263721647030,+263797442749,indiv939@example.com,indiv939.alt@example.com,,,,,postal,790 Test Road,Flat 38,Chitungwiza,Matabeleland,,Zimbabwe
+CUST-0940,individual,Test Individual 940,,,,,46-671319A86,Test Employer 940,+263773367229,,indiv940@example.com,,,,,,registered,552 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0941,corporate,,Test Corporate 941 (Pvt) Ltd,Test Corp 941,6337/2017,2007339695,,,+263766994955,+263749470277,finance941@testcorp.co.zw,,,,,,postal,Unit 17 Industrial Park,,Gweru,Harare Province,,Zimbabwe
+CUST-0942,individual,Test Individual 942,,,,,85-249548A42,Test Employer 942,+263766257971,+263739163726,indiv942@example.com,indiv942.alt@example.com,,,,,mailing,204 Test Road,Flat 11,Masvingo,,,Zimbabwe
+CUST-0943,corporate,,Test Corporate 943 (Pvt) Ltd,Test Corp 943,8499/2010,2008202889,,,+263740745537,+263717792166,finance943@testcorp.co.zw,,,,,,head_office,Unit 26 Industrial Park,Building E,Masvingo,Harare Province,,Zimbabwe
+CUST-0944,corporate,,Test Corporate 944 (Pvt) Ltd,Test Corp 944,9925/2020,2007908238,,,+263748096126,,finance944@testcorp.co.zw,,,,,,head_office,Unit 15 Industrial Park,Building C,Harare,,90216,Zimbabwe
+CUST-0945,corporate,,Test Corporate 945 (Pvt) Ltd,Test Corp 945,7569/2015,2008797032,,,+263769473743,,finance945@testcorp.co.zw,,,,,,physical,Unit 23 Industrial Park,,Harare,,64703,Zimbabwe
+CUST-0946,individual,Test Individual 946,,,,,19-755515A86,Test Employer 946,+263727834244,,indiv946@example.com,,,,,,mailing,969 Test Road,,Marondera,,,Zimbabwe
+CUST-0947,individual,Test Individual 947,,,,,22-270273A17,Test Employer 947,+263793013685,,indiv947@example.com,,,,,,registered,635 Test Road,,Chitungwiza,Mashonaland,,Zimbabwe
+CUST-0948,individual,Test Individual 948,,,,,59-249104A75,Test Employer 948,+263780885351,,indiv948@example.com,,,,,,postal,50 Test Road,,Marondera,,,Zimbabwe
+CUST-0949,individual,Test Individual 949,,,,,99-294803A42,Test Employer 949,+263779333845,+263784780636,indiv949@example.com,indiv949.alt@example.com,,,,,postal,511 Test Road,,Mutare,Mashonaland,PO Box 873,Zimbabwe
+CUST-0950,corporate,,Test Corporate 950 (Pvt) Ltd,Test Corp 950,7083/2022,2008070176,,,+263768180824,+263723485892,finance950@testcorp.co.zw,,,,,,physical,Unit 35 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0951,individual,Test Individual 951,,,,,46-599836A61,Test Employer 951,+263786993757,+263711150005,indiv951@example.com,indiv951.alt@example.com,,,,,registered,316 Test Road,,Marondera,,,Zimbabwe
+CUST-0952,corporate,,Test Corporate 952 (Pvt) Ltd,Test Corp 952,6034/2024,2007778529,,,+263777920773,,finance952@testcorp.co.zw,,,,,,head_office,Unit 16 Industrial Park,Building D,Gweru,Bulawayo Metro,86639,Zimbabwe
+CUST-0953,individual,Test Individual 953,,,,,66-664563A39,Test Employer 953,+263785475973,,indiv953@example.com,,,,,,registered,658 Test Road,,Harare,,,Zimbabwe
+CUST-0954,corporate,,Test Corporate 954 (Pvt) Ltd,Test Corp 954,4150/2016,2006786425,,,+263766662842,,finance954@testcorp.co.zw,,,,,,physical,Unit 96 Industrial Park,Building E,Mutare,Bulawayo Metro,,Zimbabwe
+CUST-0955,corporate,,Test Corporate 955 (Pvt) Ltd,Test Corp 955,9702/2019,2002480062,,,+263734071578,+263736253692,finance955@testcorp.co.zw,accounts955@testcorp.co.zw,,,,,registered,Unit 66 Industrial Park,,Mutare,,,Zimbabwe
+CUST-0956,corporate,,Test Corporate 956 (Pvt) Ltd,Test Corp 956,3706/2020,2008455380,,,+263782623978,,finance956@testcorp.co.zw,,,,,,registered,Unit 84 Industrial Park,Building A,Harare,,,Zimbabwe
+CUST-0957,individual,Test Individual 957,,,,,90-576266A86,Test Employer 957,+263742545680,+263791069838,indiv957@example.com,indiv957.alt@example.com,,,,,physical,473 Test Road,,Gweru,Matabeleland,,Zimbabwe
+CUST-0958,individual,Test Individual 958,,,,,13-479520A62,Test Employer 958,+263744641738,+263738022951,indiv958@example.com,indiv958.alt@example.com,,,,,postal,465 Test Road,,Kwekwe,,,Zimbabwe
+CUST-0959,corporate,,Test Corporate 959 (Pvt) Ltd,,1128/2018,2006862990,,,+263733113889,+263712809951,finance959@testcorp.co.zw,accounts959@testcorp.co.zw,,,,,physical,Unit 66 Industrial Park,,Mutare,,,Zimbabwe
+CUST-0960,individual,Test Individual 960,,,,,69-378386A68,Test Employer 960,+263744287094,,indiv960@example.com,,,,,,registered,599 Test Road,,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0961,individual,Test Individual 961,,,,,68-757312A18,Test Employer 961,+263758325323,,indiv961@example.com,,,,,,physical,216 Test Road,,Mutare,,,Zimbabwe
+CUST-0962,individual,Test Individual 962,,,,,81-847638A65,Test Employer 962,+263765878389,,indiv962@example.com,,,,,,registered,842 Test Road,Flat 2,Chitungwiza,,,Zimbabwe
+CUST-0963,corporate,,Test Corporate 963 (Pvt) Ltd,Test Corp 963,5797/2022,2005329673,,,+263785262634,,finance963@testcorp.co.zw,,,,,,head_office,Unit 51 Industrial Park,Building C,Marondera,,,Zimbabwe
+CUST-0964,corporate,,Test Corporate 964 (Pvt) Ltd,Test Corp 964,4156/2012,2002549751,,,+263727397008,,finance964@testcorp.co.zw,accounts964@testcorp.co.zw,,,,,registered,Unit 46 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0965,corporate,,Test Corporate 965 (Pvt) Ltd,Test Corp 965,6179/2013,2009608665,,,+263734446580,,finance965@testcorp.co.zw,,,,,,registered,Unit 46 Industrial Park,,Gweru,,,Zimbabwe
+CUST-0966,individual,Test Individual 966,,,,,76-904827A49,Test Employer 966,+263777360079,,indiv966@example.com,,,,,,mailing,721 Test Road,Flat 7,Marondera,Midlands,,Zimbabwe
+CUST-0967,individual,Test Individual 967,,,,,43-391557A43,Test Employer 967,+263759704503,,indiv967@example.com,,,,,,physical,744 Test Road,Flat 3,Masvingo,Matabeleland,,Zimbabwe
+CUST-0968,individual,Test Individual 968,,,,,56-532969A57,Test Employer 968,+263775484576,,indiv968@example.com,,,,,,physical,930 Test Road,,Harare,Manicaland,,Zimbabwe
+CUST-0969,individual,Test Individual 969,,,,,12-275867A72,Test Employer 969,+263799274895,,indiv969@example.com,,,,,,registered,344 Test Road,,Marondera,,PO Box 5246,Zimbabwe
+CUST-0970,individual,Test Individual 970,,,,,78-784026A59,Test Employer 970,+263786041926,+263737339839,indiv970@example.com,indiv970.alt@example.com,,,,,registered,438 Test Road,,Chitungwiza,,,Zimbabwe
+CUST-0971,corporate,,Test Corporate 971 (Pvt) Ltd,,3598/2020,2005668397,,,+263799197149,,finance971@testcorp.co.zw,accounts971@testcorp.co.zw,,,,,postal,Unit 64 Industrial Park,,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0972,corporate,,Test Corporate 972 (Pvt) Ltd,Test Corp 972,9790/2012,2004815013,,,+263773938400,+263769235555,finance972@testcorp.co.zw,,,,,,physical,Unit 82 Industrial Park,,Masvingo,Harare Province,50179,Zimbabwe
+CUST-0973,individual,Test Individual 973,,,,,72-898038A77,Test Employer 973,+263767031076,+263768776779,indiv973@example.com,indiv973.alt@example.com,,,,,mailing,161 Test Road,,Harare,Midlands,,Zimbabwe
+CUST-0974,corporate,,Test Corporate 974 (Pvt) Ltd,,4577/2021,2004925592,,,+263753407162,,finance974@testcorp.co.zw,,,,,,physical,Unit 28 Industrial Park,,Harare,Harare Province,,Zimbabwe
+CUST-0975,individual,Test Individual 975,,,,,16-444139A46,Test Employer 975,+263733733281,+263771012395,indiv975@example.com,indiv975.alt@example.com,,,,,registered,986 Test Road,Flat 3,Chitungwiza,Manicaland,PO Box 4957,Zimbabwe
+CUST-0976,corporate,,Test Corporate 976 (Pvt) Ltd,Test Corp 976,1768/2016,2006455299,,,+263770574153,,finance976@testcorp.co.zw,accounts976@testcorp.co.zw,,,,,head_office,Unit 66 Industrial Park,,Bulawayo,,,Zimbabwe
+CUST-0977,corporate,,Test Corporate 977 (Pvt) Ltd,Test Corp 977,8376/2018,2002871851,,,+263735619880,+263765171563,finance977@testcorp.co.zw,accounts977@testcorp.co.zw,,,,,postal,Unit 2 Industrial Park,,Kwekwe,Bulawayo Metro,,Zimbabwe
+CUST-0978,individual,Test Individual 978,,,,,17-188128A99,Test Employer 978,+263717525400,,indiv978@example.com,,,,,,mailing,827 Test Road,,Harare,Mashonaland,,Zimbabwe
+CUST-0979,individual,Test Individual 979,,,,,55-418414A40,Test Employer 979,+263771602046,,indiv979@example.com,,,,,,physical,588 Test Road,,Gweru,Mashonaland,,Zimbabwe
+CUST-0980,corporate,,Test Corporate 980 (Pvt) Ltd,Test Corp 980,9747/2012,2004530035,,,+263757873083,,finance980@testcorp.co.zw,,,,,,postal,Unit 72 Industrial Park,,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0981,individual,Test Individual 981,,,,,41-118467A47,Test Employer 981,+263783922558,,indiv981@example.com,,,,,,mailing,857 Test Road,,Harare,Manicaland,,Zimbabwe
+CUST-0982,corporate,,Test Corporate 982 (Pvt) Ltd,Test Corp 982,8480/2023,2007012882,,,+263711198457,,finance982@testcorp.co.zw,,,,,,physical,Unit 67 Industrial Park,Building E,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0983,individual,Test Individual 983,,,,,52-684019A11,Test Employer 983,+263744788767,,indiv983@example.com,,,,,,postal,472 Test Road,,Bulawayo,Manicaland,,Zimbabwe
+CUST-0984,corporate,,Test Corporate 984 (Pvt) Ltd,Test Corp 984,2063/2014,2009248952,,,+263716120285,+263748335596,finance984@testcorp.co.zw,,,,,,head_office,Unit 17 Industrial Park,,Chitungwiza,Harare Province,,Zimbabwe
+CUST-0985,individual,Test Individual 985,,,,,88-688700A25,Test Employer 985,+263748983442,+263778950065,indiv985@example.com,indiv985.alt@example.com,,,,,registered,403 Test Road,,Marondera,Mashonaland,,Zimbabwe
+CUST-0986,individual,Test Individual 986,,,,,45-325245A17,,+263718948570,,indiv986@example.com,,,,,,registered,816 Test Road,,Harare,Mashonaland,PO Box 5183,Zimbabwe
+CUST-0987,individual,Test Individual 987,,,,,42-707015A50,,+263788625186,,indiv987@example.com,,,,,,registered,894 Test Road,,Bulawayo,Midlands,,Zimbabwe
+CUST-0988,individual,Test Individual 988,,,,,12-950526A57,Test Employer 988,+263795434963,+263776828640,indiv988@example.com,indiv988.alt@example.com,,,,,registered,925 Test Road,Flat 11,Harare,,,Zimbabwe
+CUST-0989,corporate,,Test Corporate 989 (Pvt) Ltd,Test Corp 989,5921/2024,2008437427,,,+263711170733,,finance989@testcorp.co.zw,,,,,,postal,Unit 55 Industrial Park,Building A,Masvingo,Bulawayo Metro,,Zimbabwe
+CUST-0990,corporate,,Test Corporate 990 (Pvt) Ltd,Test Corp 990,7500/2016,2008674627,,,+263791641976,,finance990@testcorp.co.zw,,,,,,postal,Unit 60 Industrial Park,,Mutare,Bulawayo Metro,99906,Zimbabwe
+CUST-0991,corporate,,Test Corporate 991 (Pvt) Ltd,Test Corp 991,7552/2010,2005249499,,,+263790303817,+263778957693,finance991@testcorp.co.zw,,,,,,physical,Unit 36 Industrial Park,Building E,Chitungwiza,,91630,Zimbabwe
+CUST-0992,individual,Test Individual 992,,,,,23-922745A83,,+263766249356,+263776539313,indiv992@example.com,indiv992.alt@example.com,,,,,registered,840 Test Road,Flat 35,Gweru,Mashonaland,,Zimbabwe
+CUST-0993,corporate,,Test Corporate 993 (Pvt) Ltd,Test Corp 993,9589/2021,2004369394,,,+263747174451,,finance993@testcorp.co.zw,,,,,,registered,Unit 86 Industrial Park,Building A,Harare,Bulawayo Metro,,Zimbabwe
+CUST-0994,individual,Test Individual 994,,,,,66-641219A42,Test Employer 994,+263774467811,,indiv994@example.com,,,,,,physical,883 Test Road,,Kwekwe,Matabeleland,,Zimbabwe
+CUST-0995,corporate,,Test Corporate 995 (Pvt) Ltd,,4931/2017,2006831427,,,+263785060137,,finance995@testcorp.co.zw,,,,,,head_office,Unit 44 Industrial Park,Building B,Marondera,,,Zimbabwe
+CUST-0996,individual,Test Individual 996,,,,,56-480130A72,Test Employer 996,+263715293841,+263793384160,indiv996@example.com,indiv996.alt@example.com,,,,,postal,59 Test Road,Flat 24,Chitungwiza,Manicaland,PO Box 8478,Zimbabwe
+CUST-0997,individual,Test Individual 997,,,,,25-122946A14,Test Employer 997,+263736892979,,indiv997@example.com,,,,,,postal,500 Test Road,,Chitungwiza,Manicaland,,Zimbabwe
+CUST-0998,corporate,,Test Corporate 998 (Pvt) Ltd,,8070/2021,2007816503,,,+263739038694,+263767604372,finance998@testcorp.co.zw,accounts998@testcorp.co.zw,,,,,physical,Unit 61 Industrial Park,,Bulawayo,,17253,Zimbabwe
+CUST-0999,individual,Test Individual 999,,,,,59-792383A79,Test Employer 999,+263743494205,+263735676353,indiv999@example.com,indiv999.alt@example.com,,,,,physical,599 Test Road,,Mutare,Matabeleland,,Zimbabwe
+CUST-1000,corporate,,Test Corporate 1000 (Pvt) Ltd,Test Corp 1000,2501/2023,2004353629,,,+263766608659,+263750415740,finance1000@testcorp.co.zw,,,,,,registered,Unit 76 Industrial Park,,Marondera,,,Zimbabwe

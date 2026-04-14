@@ -63,13 +63,21 @@ def render_system_configurations_ui(
         "generate_statements": False,
         "snapshot_financial_statements": True,
         "send_notifications": False,
-        "incremental_loan_engine": False,
+        "incremental_loan_engine": True,
     }
     existing_tasks = eod_cfg.get("tasks") or {}
-    eod_tasks: dict[str, bool] = {
+    eod_tasks: dict = {
         k: bool(existing_tasks.get(k, default))
         for k, default in eod_task_defaults.items()
     }
+    try:
+        _bsz = int(existing_tasks.get("loan_engine_commit_batch_size", 250))
+    except (TypeError, ValueError):
+        _bsz = 250
+    eod_tasks["loan_engine_commit_batch_size"] = max(1, min(10000, _bsz))
+    eod_tasks["loan_engine_log_timing"] = bool(
+        existing_tasks.get("loan_engine_log_timing", False)
+    )
     policy_cfg = eod_cfg.get("stage_policy", {}) or {}
     policy_mode = str(policy_cfg.get("mode") or "hybrid")
     blocking_stage_default = [
@@ -232,7 +240,11 @@ def render_system_configurations_ui(
                     "snapshot_financial_statements", True
                 ),
                 "send_notifications": eod_tasks.get("send_notifications", False),
-                "incremental_loan_engine": eod_tasks.get("incremental_loan_engine", False),
+                "incremental_loan_engine": eod_tasks.get("incremental_loan_engine", True),
+                "loan_engine_commit_batch_size": int(
+                    eod_tasks.get("loan_engine_commit_batch_size", 250)
+                ),
+                "loan_engine_log_timing": bool(eod_tasks.get("loan_engine_log_timing", False)),
             },
             "stage_policy": {
                 "mode": policy_mode,

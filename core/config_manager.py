@@ -123,7 +123,9 @@ def get_system_config(*, key: str = "system_config") -> dict:
                 "generate_statements": False,
                 "snapshot_financial_statements": True,
                 "send_notifications": False,
-                "incremental_loan_engine": False,
+                "incremental_loan_engine": True,
+                "loan_engine_commit_batch_size": 250,
+                "loan_engine_log_timing": False,
             },
             "stage_policy": {
                 "mode": "hybrid",  # strict | hybrid | best_effort

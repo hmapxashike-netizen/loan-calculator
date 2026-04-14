@@ -27,3 +27,6 @@ lms_exports/
 # Local PostgreSQL dumps (full DB — sensitive; never commit)
 dump/*
 !dump/.gitkeep
+
+# Local debug traces (large; GitHub rejects blobs > 100 MiB)
+debug*.log

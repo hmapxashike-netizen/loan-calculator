@@ -664,7 +664,8 @@ def render_capture_loan_ui(
                     _load_staged_draft_by_id(sid)
 
     # -------- Loan capture: flat panel (details → schedule → review → actions) --------
-    with st.container(border=True):
+    # Keep this unbordered so the "Details" heading does not appear as a blocking bar.
+    with st.container():
         render_sub_sub_header("Details")
         customers_list = list_customers(status="active") or []
         if not customers_list:

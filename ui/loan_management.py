@@ -546,6 +546,7 @@ def render_batch_loan_capture_ui(
                         "term": term,
                         "annual_rate": _opt_float(row.get("annual_rate")),
                         "monthly_rate": _opt_float(row.get("monthly_rate")),
+                        "penalty_rate_pct": _opt_float(row.get("penalty_rate_pct")),
                         "drawdown_fee_amount": _opt_float(row.get("drawdown_fee_amount")),
                         "arrangement_fee_amount": _opt_float(row.get("arrangement_fee_amount")),
                         "admin_fee_amount": _opt_float(row.get("admin_fee_amount")),

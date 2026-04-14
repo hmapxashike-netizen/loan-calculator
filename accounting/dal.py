@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
@@ -6,6 +7,11 @@ from decimal import Decimal
 import psycopg2
 from psycopg2 import errors as pg_errors
 from psycopg2.extras import RealDictCursor
+try:
+    # Optional: used for bulk journal inserts (significant speedup at scale).
+    from psycopg2.extras import execute_values  # type: ignore
+except Exception:  # pragma: no cover
+    execute_values = None  # type: ignore[assignment]
 
 from config import get_database_url
 from decimal_utils import amounts_equal_at_2dp, as_10dp, as_2dp
@@ -17,6 +23,30 @@ from .core import (
 )
 
 _FISCAL_CLOSE_EVENT_TAGS = {"MONTH_END_PNL", "YEAR_END_EQUITY"}
+
+_logger = logging.getLogger(__name__)
+
+
+def _dedupe_journal_bulk_entries(entries: list[dict]) -> list[dict]:
+    """
+    One row per (event_id, event_tag). Duplicate dicts in the same batch would insert
+    two active headers and violate uq_journal_entries_event_id_event_tag (partial unique
+    on is_active). Last occurrence wins.
+    """
+    by_key: dict[tuple[str, str], dict] = {}
+    for e in entries:
+        k = (str(e["event_id"]), str(e["event_tag"]))
+        by_key[k] = e
+    out = list(by_key.values())
+    if len(out) < len(entries):
+        _logger.warning(
+            "bulk_save_journal_entries: collapsed %s duplicate(s) with same (event_id, event_tag) "
+            "(batch had %s rows, %s unique).",
+            len(entries) - len(out),
+            len(entries),
+            len(out),
+        )
+    return out
 
 
 def journal_lines_balance_totals(lines: list[dict]) -> tuple[Decimal, Decimal]:
@@ -1443,6 +1473,7 @@ class AccountingRepository:
         *,
         posting_policy: str = "standard",
         gl_anchor_date: date | datetime | None = None,
+        do_commit: bool = True,
     ):
         if lines:
             assert_journal_lines_balanced(
@@ -1480,20 +1511,26 @@ class AccountingRepository:
                     ),
                 )
                 new_id = cur.fetchone()["id"]
-                for line in journal_lines:
-                    cur.execute(
-                        """
+                if journal_lines:
+                    sql = """
                         INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
                         VALUES (%s, %s, %s, %s, %s)
-                        """,
+                        """
+                    params = [
                         (
                             new_id,
                             line["account_id"],
                             line.get("debit", 0.0),
                             line.get("credit", 0.0),
                             line.get("memo"),
-                        ),
-                    )
+                        )
+                        for line in journal_lines
+                    ]
+                    if hasattr(cur, "executemany"):
+                        cur.executemany(sql, params)
+                    else:
+                        for p in params:
+                            cur.execute(sql, p)
                 return new_id
 
             def _replace_lines_for_entry(entry_id, journal_lines):
@@ -1501,20 +1538,26 @@ class AccountingRepository:
                     "DELETE FROM journal_items WHERE entry_id = %s",
                     (entry_id,),
                 )
-                for line in journal_lines:
-                    cur.execute(
-                        """
+                if journal_lines:
+                    sql = """
                         INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
                         VALUES (%s, %s, %s, %s, %s)
-                        """,
+                        """
+                    params = [
                         (
                             entry_id,
                             line["account_id"],
                             line.get("debit", 0.0),
                             line.get("credit", 0.0),
                             line.get("memo"),
-                        ),
-                    )
+                        )
+                        for line in journal_lines
+                    ]
+                    if hasattr(cur, "executemany"):
+                        cur.executemany(sql, params)
+                    else:
+                        for p in params:
+                            cur.execute(sql, p)
 
             def _active_entry_for_event(eid, etag):
                 if eid is None or etag is None:
@@ -1698,7 +1741,8 @@ class AccountingRepository:
                             """,
                             (adj_entry_id, existing_adj["id"]),
                         )
-                self.conn.commit()
+                if do_commit:
+                    self.conn.commit()
                 return
 
             period_key = original_entry_date.strftime("%Y-%m")
@@ -1823,7 +1867,8 @@ class AccountingRepository:
                             """,
                             (adj_entry_id, existing_adj["id"]),
                         )
-        self.conn.commit()
+        if do_commit:
+            self.conn.commit()
 
     def list_unbalanced_journal_entries(self):
         """
@@ -2231,6 +2276,220 @@ class AccountingRepository:
         with self.conn.cursor() as cur:
             cur.execute("SELECT convert_to_parent(%s)", (account_id,))
         self.conn.commit()
+
+    def bulk_save_journal_entries(
+        self,
+        entries: list[dict],
+        *,
+        posting_policy: str = "standard",
+        gl_anchor_date: date | datetime | None = None,
+        do_commit: bool = True,
+    ) -> None:
+        """
+        Save many journal entries in one DB transaction.
+
+        This is an optimization for high-volume EOD posting. It preserves the same event_id/event_tag
+        idempotency semantics (existing active rows are superseded), but only supports the common
+        EOD-safe path:
+
+        - posting_policy is respected for calendar-month / closed-period adjustments; when a batch
+          contains any row that would trigger those branches, we fall back to per-entry save.
+
+        Each entry dict must include:
+          entry_date, reference, description, event_id, event_tag, created_by, lines
+        """
+        if not entries:
+            return
+        entries = _dedupe_journal_bulk_entries(entries)
+        if execute_values is None:
+            for e in entries:
+                self.save_journal_entry(
+                    e["entry_date"],
+                    e["reference"],
+                    e["description"],
+                    e["event_id"],
+                    e["event_tag"],
+                    e.get("created_by") or "system",
+                    e.get("lines") or [],
+                    posting_policy=posting_policy,
+                    gl_anchor_date=gl_anchor_date,
+                    do_commit=False,
+                )
+            if do_commit:
+                self.conn.commit()
+            return
+
+        with self.conn.cursor() as cur:
+            # If any entry needs calendar-month adjustment / closed-period logic, fall back
+            # to the canonical (slower) per-entry function so policy remains unchanged.
+            if posting_policy == "standard":
+                anchor = gl_anchor_date
+                if isinstance(anchor, datetime):
+                    anchor = anchor.date()
+                if anchor is None:
+                    raise ValueError("gl_anchor_date is required for bulk_save_journal_entries when posting_policy='standard'")
+
+                def _is_prior_calendar_month(target: date, a: date) -> bool:
+                    return (int(target.year), int(target.month)) < (int(a.year), int(a.month))
+
+                for e in entries:
+                    etag = str(e.get("event_tag") or "")
+                    if etag not in _FISCAL_CLOSE_EVENT_TAGS and _is_prior_calendar_month(e["entry_date"], anchor):
+                        # Prior-month posting requires calendar adjustment branch.
+                        for ee in entries:
+                            self.save_journal_entry(
+                                ee["entry_date"],
+                                ee["reference"],
+                                ee["description"],
+                                ee["event_id"],
+                                ee["event_tag"],
+                                ee.get("created_by") or "system",
+                                ee.get("lines") or [],
+                                posting_policy=posting_policy,
+                                gl_anchor_date=gl_anchor_date,
+                                do_commit=False,
+                            )
+                        if do_commit:
+                            self.conn.commit()
+                        return
+
+            # Preload existing active entries (same execute_values pagination rule as INSERT
+            # RETURNING: without fetch=True, cur.fetchall() only sees the last page, so most
+            # active rows would not be superseded and INSERT hits uq_journal_entries_event_id_event_tag).
+            keys = [(str(e["event_id"]), str(e["event_tag"])) for e in entries]
+            existing = execute_values(
+                cur,
+                """
+                WITH keys(event_id, event_tag) AS (VALUES %s)
+                SELECT je.event_id, je.event_tag, je.id
+                FROM journal_entries je
+                INNER JOIN keys k
+                        ON k.event_id = je.event_id
+                       AND k.event_tag = je.event_tag
+                WHERE COALESCE(je.is_active, TRUE) = TRUE
+                """,
+                keys,
+                template="(%s, %s)",
+                fetch=True,
+                page_size=2000,
+            ) or []
+            existing_ids = [r["id"] for r in existing] if existing else []
+            if existing_ids:
+                try:
+                    cur.execute(
+                        """
+                        UPDATE journal_entries
+                        SET is_active = FALSE,
+                            superseded_at = NOW(),
+                            superseded_by_id = NULL
+                        WHERE id = ANY(%s::uuid[])
+                        """,
+                        (existing_ids,),
+                    )
+                except psycopg2.errors.UndefinedColumn:
+                    cur.execute(
+                        "UPDATE journal_entries SET is_active = FALSE WHERE id = ANY(%s::uuid[])",
+                        (existing_ids,),
+                    )
+
+            # Insert headers in bulk and return new ids.
+            header_rows = [
+                (
+                    e["entry_date"],
+                    e["reference"],
+                    e["description"],
+                    str(e["event_id"]),
+                    str(e["event_tag"]),
+                    "EVENT",
+                    e.get("created_by") or "system",
+                    True,
+                )
+                for e in entries
+            ]
+            # execute_values paginates (default page_size=100). Without fetch=True it does not
+            # aggregate RETURNING rows; cur.fetchall() would only see the last page, so most
+            # headers would be inserted with no journal_items (id_by_key incomplete).
+            inserted = execute_values(
+                cur,
+                """
+                INSERT INTO journal_entries (
+                    entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active
+                )
+                VALUES %s
+                RETURNING id, event_id, event_tag
+                """,
+                header_rows,
+                fetch=True,
+                page_size=2000,
+            )
+            id_by_key = {(str(r["event_id"]), str(r["event_tag"])): r["id"] for r in inserted}
+
+            # Back-fill superseded_by_id to point to the new headers (best effort if columns exist).
+            # If this UPDATE fails, Postgres aborts the transaction; swallowing without rollback
+            # would leave the txn dead and the next statement raises InFailedSqlTransaction.
+            if existing and inserted:
+                cur.execute("SAVEPOINT bulk_je_superseded_by")
+                try:
+                    pairs = []
+                    for r in existing:
+                        nk = (str(r["event_id"]), str(r["event_tag"]))
+                        nid = id_by_key.get(nk)
+                        if nid is not None:
+                            pairs.append((nid, r["id"]))
+                    if pairs:
+                        execute_values(
+                            cur,
+                            """
+                            UPDATE journal_entries AS je
+                            SET superseded_by_id = v.new_id
+                            FROM (VALUES %s) AS v(new_id, old_id)
+                            WHERE je.id = v.old_id
+                            """,
+                            pairs,
+                            template="(%s::uuid, %s::uuid)",
+                            page_size=2000,
+                        )
+                    cur.execute("RELEASE SAVEPOINT bulk_je_superseded_by")
+                except Exception as ex:
+                    cur.execute("ROLLBACK TO SAVEPOINT bulk_je_superseded_by")
+                    _logger.warning(
+                        "bulk_save_journal_entries: superseded_by_id back-fill skipped (%s); "
+                        "posting continues without linkage on old headers.",
+                        ex,
+                    )
+
+            # Insert all journal items in bulk.
+            item_rows: list[tuple] = []
+            for e in entries:
+                eid = str(e["event_id"])
+                etag = str(e["event_tag"])
+                entry_id = id_by_key.get((eid, etag))
+                if entry_id is None:
+                    continue
+                for line in (e.get("lines") or []):
+                    item_rows.append(
+                        (
+                            entry_id,
+                            line["account_id"],
+                            line.get("debit", 0.0),
+                            line.get("credit", 0.0),
+                            line.get("memo"),
+                        )
+                    )
+            if item_rows:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO journal_items (entry_id, account_id, debit, credit, memo)
+                    VALUES %s
+                    """,
+                    item_rows,
+                    template="(%s, %s, %s, %s, %s)",
+                    page_size=5000,
+                )
+
+        if do_commit:
+            self.conn.commit()
 
     def create_statement_snapshot(
         self,

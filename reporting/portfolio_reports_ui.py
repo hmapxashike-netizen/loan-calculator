@@ -5,6 +5,7 @@ Debtor maturity + bucketed arrears ageing: see portfolio_reporting.py (read-only
 """
 from __future__ import annotations
 
+import os
 from datetime import date
 from decimal import Decimal
 from io import StringIO
@@ -45,6 +46,11 @@ _REPORT_KEYS_WITH_RESTRUCTURE_FILTER = frozenset(
     {"mat_11", "reg_mat", "r21", "r22", "r31", "r32", "r42", "r51", "r52", "r53"}
 )
 
+def _project_root_for_export() -> str:
+    """Project root (parent of ``reporting/``) so subprocess can run ``scripts/export_loan_tables.py``."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 _RESTRUCTURE_TAG_LABELS: tuple[tuple[str, str], ...] = (
     ("Remodified in place (same loan)", RESTRUCTURE_SCOPE_REMODIFIED),
     ("Originated from split", RESTRUCTURE_SCOPE_SPLIT),
@@ -52,6 +58,11 @@ _RESTRUCTURE_TAG_LABELS: tuple[tuple[str, str], ...] = (
 )
 # Reset selectbox on next run (cannot set portfolio_report_pick after the widget is created).
 _PORTFOLIO_CLOSE_NEXT_RUN_KEY = "_portfolio_close_report_next_run"
+# After export success, bump nonce so Loan ID gets a new widget key (form + clear_on_submit=False
+# otherwise keeps the submitted value; cannot assign the same key after the widget exists).
+_PORTFOLIO_CLEAR_EXPORT_LOAN_ID_NEXT_RUN = "_portfolio_clear_export_loan_id_next_run"
+_EXPORT_LOAN_ID_INPUT_NONCE_KEY = "_export_loan_id_input_nonce"
+_EXPORT_OUTPUT_DIR_WIDGET_KEY = "portfolio_export_output_dir"
 
 try:
     from eod.system_business_date import get_effective_date
@@ -1059,39 +1070,167 @@ def render_portfolio_reports_ui() -> None:
     if not report_open and st.session_state.get("portfolio_exports_visible", False):
         st.divider()
         render_sub_sub_header("Data Export")
-        st.caption("Export low-level database tables to CSV for external analysis or auditing.")
+        if st.session_state.pop(_PORTFOLIO_CLEAR_EXPORT_LOAN_ID_NEXT_RUN, False):
+            prev = int(st.session_state.get(_EXPORT_LOAN_ID_INPUT_NONCE_KEY, 0))
+            st.session_state[_EXPORT_LOAN_ID_INPUT_NONCE_KEY] = prev + 1
+            st.session_state.pop(f"export_loan_id_text_{prev}", None)
+        _loan_id_nonce = int(st.session_state.get(_EXPORT_LOAN_ID_INPUT_NONCE_KEY, 0))
+        _loan_id_widget_key = f"export_loan_id_text_{_loan_id_nonce}"
+        _export_ok_msg = st.session_state.pop("portfolio_export_success_detail", None)
+        if _export_ok_msg:
+            st.success(_export_ok_msg)
+            _log = st.session_state.get("portfolio_export_last_stdout")
+            if _log is not None:
+                with st.expander("View export log"):
+                    st.code(_log or "(no stdout)")
+        st.caption(
+            "Export low-level database tables to CSV in the folder you set below (default: project farndacred_exports/). "
+            "Optional filters narrow rows at the database (product and/or loan). "
+            "Large exports auto-create a ZIP when total CSV size exceeds the threshold "
+            "(FARNDACRED_EXPORT_ZIP_MIN_BYTES, default 12 MiB). "
+            "Streamlit has no folder picker — paste a full path from Explorer."
+        )
 
-        ex_c1, ex_c2, ex_c3 = st.columns([1, 1, 2], vertical_alignment="bottom")
+        product_labels: list[str] = ["All"]
+        product_codes: list[str | None] = [None]
+        try:
+            from loan_management.product_catalog import list_products
+
+            for p in list_products(active_only=False):
+                code = (p.get("code") or "").strip()
+                if not code:
+                    continue
+                name = (p.get("name") or "").strip() or code
+                product_labels.append(f"{code} — {name}")
+                product_codes.append(code)
+        except Exception:
+            pass
+
+        # Plain widgets + button (not st.form): form submit + Enter can make inputs look cleared
+        # while a long export runs; Loan ID only resets after a successful export (nonce bump).
+        ex_c1, ex_c2, ex_c3, ex_c4 = st.columns([1, 1, 1.1, 1.1], vertical_alignment="bottom")
         with ex_c1:
-            exp_start = st.date_input("Start Date", value=date(date.today().year, 1, 1), key="export_start")
+            exp_start = st.date_input(
+                "Start Date", value=date(date.today().year, 1, 1), key="export_start"
+            )
         with ex_c2:
             exp_end = st.date_input("End Date", value=date.today(), key="export_end")
         with ex_c3:
-            if st.button("Run Data Export Script", type="primary", key="btn_run_export"):
-                import subprocess
-                import sys
+            pick_i = st.selectbox(
+                "Product",
+                options=list(range(len(product_labels))),
+                format_func=lambda i: product_labels[i],
+                key="export_product_idx",
+            )
+        with ex_c4:
+            loan_id_raw = st.text_input(
+                "Loan ID",
+                value="",
+                placeholder="All loans",
+                key=_loan_id_widget_key,
+                help="Leave empty for all loans, or enter a numeric loan id.",
+            )
+        if _EXPORT_OUTPUT_DIR_WIDGET_KEY not in st.session_state:
+            st.session_state[_EXPORT_OUTPUT_DIR_WIDGET_KEY] = os.path.abspath(
+                os.path.join(_project_root_for_export(), "farndacred_exports")
+            )
+        out_col, btn_col = st.columns([3.2, 0.9], vertical_alignment="bottom")
+        with out_col:
+            export_out_raw = st.text_input(
+                "Output folder",
+                key=_EXPORT_OUTPUT_DIR_WIDGET_KEY,
+                help="Absolute path or ~ ; created if missing. Override with env FARNDACRED_EXPORT_DIR when using CLI only.",
+            )
+        with btn_col:
+            run_export = st.button("Run Data Export", type="primary", key="portfolio_run_data_export")
 
-                with st.spinner("Running export script..."):
+        if run_export:
+            import subprocess
+            import sys
+
+            exp_product = product_codes[int(pick_i)] if pick_i < len(product_codes) else None
+            loan_id_arg: int | None = None
+            lid_s = (loan_id_raw or "").strip()
+            loan_id_invalid = False
+            if lid_s:
+                try:
+                    loan_id_arg = int(lid_s)
+                    if loan_id_arg <= 0:
+                        st.error("Loan ID must be a positive integer.")
+                        loan_id_invalid = True
+                except ValueError:
+                    st.error("Loan ID must be a whole number.")
+                    loan_id_invalid = True
+
+            out_s = (export_out_raw or "").strip()
+            out_bad = False
+            if "\n" in out_s or "\r" in out_s:
+                st.error("Output folder must be a single-line path.")
+                out_bad = True
+            elif not out_s:
+                st.error("Output folder cannot be empty.")
+                out_bad = True
+            else:
+                export_output_abs = os.path.abspath(os.path.expandvars(os.path.expanduser(out_s)))
+
+            if loan_id_invalid:
+                pass
+            elif out_bad:
+                pass
+            elif exp_start > exp_end:
+                st.error("Start Date must be on or before End Date.")
+            else:
+                cmd = [
+                    sys.executable,
+                    "scripts/export_loan_tables.py",
+                    "--start-date",
+                    exp_start.strftime("%Y-%m-%d"),
+                    "--end-date",
+                    exp_end.strftime("%Y-%m-%d"),
+                    "--output-dir",
+                    export_output_abs,
+                ]
+                if exp_product:
+                    cmd.extend(["--product-code", exp_product])
+                if loan_id_arg is not None:
+                    cmd.extend(["--loan-id", str(loan_id_arg)])
+
+                with st.spinner("Running export script…"):
                     try:
                         result = subprocess.run(
-                            [
-                                sys.executable,
-                                "scripts/export_loan_tables.py",
-                                "--start-date",
-                                exp_start.strftime("%Y-%m-%d"),
-                                "--end-date",
-                                exp_end.strftime("%Y-%m-%d"),
-                            ],
+                            cmd,
                             capture_output=True,
                             text=True,
+                            cwd=_project_root_for_export(),
                             check=True,
                         )
-                        st.success("Export successful!")
-                        with st.expander("View Output"):
-                            st.code(result.stdout)
+                        scope_bits: list[str] = []
+                        if loan_id_arg is not None:
+                            scope_bits.append(f"loan **{loan_id_arg}**")
+                        if exp_product:
+                            scope_bits.append(f"product **{exp_product}**")
+                        scope_txt = (
+                            "Confirmed: export completed for " + ", ".join(scope_bits)
+                            if scope_bits
+                            else "Confirmed: export completed (all loans, all products)"
+                        )
+                        detail = (
+                            f"{scope_txt} for **{exp_start}** – **{exp_end}**. "
+                            f"Output folder: `{export_output_abs}` (see script log in expander below)."
+                        )
+                        st.session_state["portfolio_export_success_detail"] = detail
+                        st.session_state[_PORTFOLIO_CLEAR_EXPORT_LOAN_ID_NEXT_RUN] = True
+                        st.session_state["portfolio_export_last_stdout"] = result.stdout or ""
+                        st.rerun()
                     except subprocess.CalledProcessError as e:
-                        st.error("Export failed!")
-                        with st.expander("View Error"):
-                            st.code(e.stderr or e.stdout)
+                        st.error("Export failed.")
+                        _err_txt = (e.stderr or e.stdout or "").lower()
+                        if "disk full" in _err_txt or "no space" in _err_txt:
+                            st.warning(
+                                "Output disk may be full. Free space on the drive for your **Output folder**, "
+                                "delete old exports/ZIPs there, choose another folder, or narrow dates and filters."
+                            )
+                        with st.expander("View error"):
+                            st.code(e.stderr or e.stdout or str(e))
                     except Exception as e:
                         st.error(f"Error executing script: {e}")

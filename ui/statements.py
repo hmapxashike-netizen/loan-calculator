@@ -327,8 +327,26 @@ def render_statements_ui(
             nm_s = str(nm or "").strip()
             return nm_s if nm_s else f"Customer #{cid_n}"
     
+        _stmt_sections = ["Customer loan statement", "General Ledger"]
+        st.session_state.setdefault("statements_subnav", _stmt_sections[0])
+        if st.session_state["statements_subnav"] not in _stmt_sections:
+            st.session_state["statements_subnav"] = _stmt_sections[0]
         st.markdown(
-            """
+            '<p class="farnda-statements-section-nav" aria-hidden="true"></p>',
+            unsafe_allow_html=True,
+        )
+        st.radio(
+            "Statements section",
+            _stmt_sections,
+            key="statements_subnav",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        _stmt_active = st.session_state["statements_subnav"]
+
+        if _stmt_active == "Customer loan statement":
+            st.markdown(
+                """
 <style>
 button[aria-label="Generate statement"],
 button[aria-label="Generate"]{
@@ -340,11 +358,8 @@ button[aria-label="Generate"]{
 }
 </style>
 """,
-            unsafe_allow_html=True,
-        )
-
-        tab_loan, tab_gl = st.tabs(["Customer loan statement", "General Ledger"])
-        with tab_loan:
+                unsafe_allow_html=True,
+            )
             st.markdown("##### Customer loan statement")
 
             customers = list_customers() if customers_available else []
@@ -820,7 +835,7 @@ button[aria-label="Generate"]{
                             st.error(str(ex))
                             st.exception(ex)
     
-        with tab_gl:
+        elif _stmt_active == "General Ledger":
             from decimal import Decimal
     
             from decimal_utils import as_10dp

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Iterable
 
 from .db import RealDictCursor, _connection
 
@@ -127,6 +128,50 @@ def get_product_config_from_db(code: str) -> dict | None:
     except Exception:
         pass
     return None
+
+
+def batch_get_product_configs_from_db(codes: Iterable[str]) -> dict[str, dict | None]:
+    """
+    Load product config JSON for many product codes in one round-trip.
+
+    Used by EOD to avoid one DB connection per active loan when merging product
+    settings into system config. Missing or invalid JSON values map to None.
+    """
+    seen_codes: set[str] = set()
+    key_to_code: dict[str, str] = {}
+    for raw in codes:
+        c = str(raw or "").strip()
+        if not c or c in seen_codes:
+            continue
+        seen_codes.add(c)
+        key = CONFIG_KEY_PRODUCT_PREFIX + c
+        key_to_code[key] = c
+    if not key_to_code:
+        return {}
+    keys = list(key_to_code.keys())
+    out: dict[str, dict | None] = {code: None for code in seen_codes}
+    try:
+        with _connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT key, value FROM config WHERE key = ANY(%s)",
+                    (keys,),
+                )
+                for row in cur.fetchall():
+                    k, v = row[0], row[1]
+                    code = key_to_code.get(str(k))
+                    if code is None:
+                        continue
+                    if not v:
+                        out[code] = None
+                        continue
+                    try:
+                        out[code] = json.loads(v)
+                    except Exception:
+                        out[code] = None
+    except Exception:
+        pass
+    return out
 
 
 def save_product_config_to_db(code: str, config: dict) -> bool:

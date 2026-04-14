@@ -13,6 +13,7 @@ from .allocation_queries import (
     get_unallocated_for_loan_date,
 )
 from .cash_gl import _post_event_for_loan
+from .loan_approval_gl_guard import require_loan_approval_gl_before_repayment
 from .daily_state import save_loan_daily_state
 from .db import RealDictCursor, _connection
 from .product_catalog import load_system_config_from_db
@@ -82,6 +83,7 @@ def allocate_repayment_waterfall(
                 return
 
             loan_id = int(row["loan_id"])
+            require_loan_approval_gl_before_repayment(loan_id)
             eff_date = row["eff_date"] or as_of
             if hasattr(eff_date, "date"):
                 eff_date = eff_date.date()

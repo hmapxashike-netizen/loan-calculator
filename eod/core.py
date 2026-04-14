@@ -25,6 +25,8 @@ Security and scalability notes
 
 import json
 import logging
+import os
+import time
 import uuid
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -36,6 +38,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from config import get_database_url
+from loan_management.loan_approval_gl_guard import post_deferred_loan_approval_journals_for_eod
+from loan_management.product_catalog import batch_get_product_configs_from_db
 from decimal_utils import as_10dp
 from eod.engine_resume import (
     apply_engine_resume,
@@ -118,14 +122,29 @@ def _persist_accrual_blocked_for_as_of(
     return bool(system_date is not None and as_of_date >= system_date)
 
 
-def _effective_config_for_loan(loan_row: Dict[str, Any], sys_cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _effective_config_for_loan(
+    loan_row: Dict[str, Any],
+    sys_cfg: Dict[str, Any],
+    *,
+    product_cfg_by_code: Dict[str, dict | None] | None = None,
+) -> Dict[str, Any]:
     """Merge product config over system config for this loan so balance/quotation/default penalty % come from product."""
     effective_cfg = dict(sys_cfg)
     product_code = loan_row.get("product_code")
-    if product_code:
-        p_cfg = get_product_config_from_db(product_code)
-        if p_cfg:
-            effective_cfg = {**sys_cfg, **p_cfg}
+    if not product_code:
+        return effective_cfg
+    code = str(product_code).strip()
+    if not code:
+        return effective_cfg
+    if product_cfg_by_code is not None:
+        if code in product_cfg_by_code:
+            p_cfg = product_cfg_by_code[code]
+        else:
+            p_cfg = get_product_config_from_db(code)
+    else:
+        p_cfg = get_product_config_from_db(code)
+    if p_cfg:
+        effective_cfg = {**sys_cfg, **p_cfg}
     return effective_cfg
 
 
@@ -341,32 +360,58 @@ def _batch_fetch_yesterday_states(
     if not loan_ids:
         return result
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        # LATERAL + LIMIT 1 per loan: index-friendly on (loan_id, as_of_date DESC) vs scanning
+        # all history rows before DISTINCT ON collapses.
         cur.execute(
             """
-            SELECT DISTINCT ON (loan_id)
-                loan_id,
-                principal_not_due, principal_arrears,
-                interest_accrued_balance, interest_arrears_balance,
-                default_interest_balance, penalty_interest_balance,
-                fees_charges_balance, days_overdue, total_exposure,
-                COALESCE(regular_interest_daily, 0)           AS regular_interest_daily,
-                COALESCE(penalty_interest_daily, 0)           AS penalty_interest_daily,
-                COALESCE(default_interest_daily, 0)           AS default_interest_daily,
-                COALESCE(regular_interest_period_to_date, 0)  AS regular_interest_period_to_date,
-                COALESCE(penalty_interest_period_to_date, 0)  AS penalty_interest_period_to_date,
-                COALESCE(default_interest_period_to_date, 0)  AS default_interest_period_to_date,
-                COALESCE(regular_interest_in_suspense_balance, 0)   AS regular_interest_in_suspense_balance,
-                COALESCE(penalty_interest_in_suspense_balance, 0)   AS penalty_interest_in_suspense_balance,
-                COALESCE(default_interest_in_suspense_balance, 0)   AS default_interest_in_suspense_balance,
-                COALESCE(total_interest_in_suspense_balance, 0)     AS total_interest_in_suspense_balance
-            FROM loan_daily_state
-            WHERE loan_id = ANY(%s) AND as_of_date <= %s
-            ORDER BY loan_id, as_of_date DESC
+            SELECT
+                x.loan_id AS loan_id,
+                lds.principal_not_due,
+                lds.principal_arrears,
+                lds.interest_accrued_balance,
+                lds.interest_arrears_balance,
+                lds.default_interest_balance,
+                lds.penalty_interest_balance,
+                lds.fees_charges_balance,
+                lds.days_overdue,
+                lds.total_exposure,
+                COALESCE(lds.regular_interest_daily, 0) AS regular_interest_daily,
+                COALESCE(lds.penalty_interest_daily, 0) AS penalty_interest_daily,
+                COALESCE(lds.default_interest_daily, 0) AS default_interest_daily,
+                COALESCE(lds.regular_interest_period_to_date, 0) AS regular_interest_period_to_date,
+                COALESCE(lds.penalty_interest_period_to_date, 0) AS penalty_interest_period_to_date,
+                COALESCE(lds.default_interest_period_to_date, 0) AS default_interest_period_to_date,
+                COALESCE(lds.regular_interest_in_suspense_balance, 0) AS regular_interest_in_suspense_balance,
+                COALESCE(lds.penalty_interest_in_suspense_balance, 0) AS penalty_interest_in_suspense_balance,
+                COALESCE(lds.default_interest_in_suspense_balance, 0) AS default_interest_in_suspense_balance,
+                COALESCE(lds.total_interest_in_suspense_balance, 0) AS total_interest_in_suspense_balance
+            FROM unnest(%s::int[]) AS x(loan_id)
+            LEFT JOIN LATERAL (
+                SELECT
+                    principal_not_due, principal_arrears,
+                    interest_accrued_balance, interest_arrears_balance,
+                    default_interest_balance, penalty_interest_balance,
+                    fees_charges_balance, days_overdue, total_exposure,
+                    regular_interest_daily, penalty_interest_daily, default_interest_daily,
+                    regular_interest_period_to_date, penalty_interest_period_to_date,
+                    default_interest_period_to_date,
+                    regular_interest_in_suspense_balance, penalty_interest_in_suspense_balance,
+                    default_interest_in_suspense_balance, total_interest_in_suspense_balance
+                FROM loan_daily_state
+                WHERE loan_daily_state.loan_id = x.loan_id
+                  AND loan_daily_state.as_of_date <= %s
+                ORDER BY loan_daily_state.as_of_date DESC
+                LIMIT 1
+            ) lds ON TRUE
             """,
             (loan_ids, yesterday),
         )
         for row in cur.fetchall():
-            result[int(row["loan_id"])] = {
+            lid = int(row["loan_id"])
+            if row.get("principal_not_due") is None and row.get("principal_arrears") is None:
+                result[lid] = None
+                continue
+            result[lid] = {
                 "principal_not_due":          float(row["principal_not_due"] or 0),
                 "principal_arrears":           float(row["principal_arrears"] or 0),
                 "interest_accrued_balance":    float(row["interest_accrued_balance"] or 0),
@@ -993,6 +1038,12 @@ def _run_loan_engine_for_date(
     replay_refresh_allocations forces a full accrual replay (no incremental engine resume).
 
     Returns the number of loans that were actually processed (i.e. with schedules).
+
+    All ``save_loan_daily_state`` calls share one connection (no per-loan connect overhead).
+
+    Commits are batched: ``eod_settings.tasks.loan_engine_commit_batch_size`` (default 250,
+    clamped 1..10000). Set to 1 for legacy per-loan commits. Any uncommitted work is
+    committed when the loop finishes.
     """
     block_accruals = _persist_accrual_blocked_for_as_of(
         as_of_date, allow_system_date_eod=allow_system_date_eod
@@ -1002,15 +1053,52 @@ def _run_loan_engine_for_date(
 
     eod_st = sys_cfg.get("eod_settings") or {}
     tasks_cfg = (eod_st.get("tasks") if isinstance(eod_st, dict) else None) or {}
-    incremental_enabled = bool(tasks_cfg.get("incremental_loan_engine", False)) and (
+    # Default True when unset: same outputs as full replay when resume is valid; replay mode forces full replay.
+    incremental_enabled = bool(tasks_cfg.get("incremental_loan_engine", True)) and (
         not replay_refresh_allocations
     )
 
+    commit_batch_raw = tasks_cfg.get("loan_engine_commit_batch_size", 250)
+    try:
+        commit_batch_size = int(commit_batch_raw)
+    except (TypeError, ValueError):
+        commit_batch_size = 250
+    commit_batch_size = max(1, min(10_000, commit_batch_size))
+
+    log_engine_timing = bool(tasks_cfg.get("loan_engine_log_timing", False)) or (
+        os.environ.get("FARNDACRED_EOD_LOG_ENGINE_TIMING", "").strip().lower()
+        in ("1", "true", "yes", "on")
+    )
+    t_engine_wall0 = time.perf_counter()
+    prefetch_s = 0.0
+    compute_s = 0.0
+    commit_s = 0.0
+    n_incremental_path = 0
+    n_full_replay_path = 0
+    loans_since_commit = 0
+
+    def _do_commit() -> None:
+        nonlocal loans_since_commit, commit_s
+        if loans_since_commit <= 0:
+            return
+        t_c0 = time.perf_counter()
+        conn.commit()
+        commit_s += time.perf_counter() - t_c0
+        loans_since_commit = 0
+
     with _get_conn() as conn:
+        t_pf0 = time.perf_counter()
         loans = _fetch_active_loans(conn, loan_ids_filter=loan_ids_filter)
         if not loans:
             return 0
         loan_ids = [int(r["id"]) for r in loans]
+
+        product_codes_unique = {
+            str(r.get("product_code") or "").strip()
+            for r in loans
+            if r.get("product_code") and str(r.get("product_code") or "").strip()
+        }
+        product_cfg_by_code = batch_get_product_configs_from_db(product_codes_unique)
 
         # Batch-load all auxiliary data: O(1) queries regardless of portfolio size.
         schedules_map          = _batch_fetch_schedules(conn, loan_ids)
@@ -1027,413 +1115,453 @@ def _run_loan_engine_for_date(
             reversed_since_resume = get_batch_loan_ids_with_reversed_receipts_in_range(
                 loan_ids, yesterday, as_of_date
             )
+        prefetch_s = time.perf_counter() - t_pf0
 
-    for loan_row in loans:
-        loan_id_int = int(loan_row["id"])
-        ver_rows = schedules_versions_map.get(loan_id_int, {})
-        if not ver_rows or not any(ver_rows.values()):
-            if not schedules_map.get(loan_id_int):
-                continue
-            _logger.warning(
-                "EOD loan_id=%s: latest schedule pointer exists but version map is empty; skipping.",
-                loan_id_int,
-            )
-            continue
-
-        effective_cfg = _effective_config_for_loan(loan_row, sys_cfg)
-        config = _loan_config_from_row(loan_row, effective_cfg)
-
-        # Opening principal for the engine is the total loan amount (principal column),
-        # not the disbursed amount. This ensures interest is charged on the full debt.
-        principal = Decimal(str(loan_row.get("principal") or loan_row.get("disbursed_amount") or 0))
-        disb_date = loan_row.get("disbursement_date") or loan_row.get("start_date")
-        if not isinstance(disb_date, date):
-            # Defensive fallback; real loans should always have a disbursement/start date.
-            disb_date = as_of_date
-
-        # Do not write daily state for dates before the loan existed.
-        if disb_date > as_of_date:
-            continue
-
-        bumps = bumps_by_loan.get(loan_id_int) or []
-        v0 = apply_schedule_version_bumps(disb_date, bumps)
-        rows0 = _schedule_rows_for_version(ver_rows, v0)
-        if not rows0:
-            _logger.warning("EOD skipped loan_id=%s: no schedule lines for version %s at disbursement.", loan_id_int, v0)
-            continue
-        try:
-            schedule_entries0 = _build_schedule_entries(loan_row, rows0)
-        except ValueError as e:
-            _logger.warning(
-                "EOD skipped loan_id=%s: invalid schedule v%s at disbursement (%s).",
-                loan_id_int,
-                v0,
-                e,
-            )
-            continue
-        if not schedule_entries0:
-            _logger.warning(
-                "EOD skipped loan_id=%s: %s",
-                loan_id_int,
-                _diagnose_empty_schedule_entries(dict(loan_row), rows0, v0),
-            )
-            continue
-
-        engine_loan = Loan(
-            loan_id=str(loan_id_int),
-            disbursement_date=disb_date,
-            original_principal=principal,
-            config=config,
-            schedule=schedule_entries0,
-        )
-        setattr(engine_loan, "_eod_schedule_version", v0)
-
-        resume_payload = parse_engine_resume_dict(engine_resume_raw.get(loan_id_int))
-        use_incremental = (
-            incremental_enabled
-            and resume_payload is not None
-            and engine_resume_is_valid_schema(resume_payload)
-            and product_code_matches_resume(resume_payload, dict(loan_row))
-            and loan_id_int not in reversed_since_resume
-            and not _bumps_invalidate_incremental_resume(bumps, yesterday, as_of_date)
-        )
-        if use_incremental:
-            try:
-                apply_engine_resume(engine_loan, resume_payload)
-            except Exception as ex:
-                _logger.debug(
-                    "EOD loan_id=%s: incremental resume hydrate failed (%s); full replay.",
+        for loan_row in loans:
+            loan_id_int = int(loan_row["id"])
+            ver_rows = schedules_versions_map.get(loan_id_int, {})
+            if not ver_rows or not any(ver_rows.values()):
+                if not schedules_map.get(loan_id_int):
+                    continue
+                _logger.warning(
+                    "EOD loan_id=%s: latest schedule pointer exists but version map is empty; skipping.",
                     loan_id_int,
-                    ex,
                 )
-                use_incremental = False
+                continue
 
-        # Run engine to yesterday: use schedule **version in force on each day** (recast/modification).
-        if use_incremental:
-            current = yesterday + timedelta(days=1)
-        else:
-            current = disb_date
-        while current <= yesterday:
-            _eod_sync_engine_schedule_for_date(engine_loan, loan_row, current, bumps, ver_rows)
-            engine_loan.process_day(current)
-            current += timedelta(days=1)
-
-        # Capture engine state at end of yesterday (accrual-only, no allocations)
-        engine_yesterday = {
-            "principal_not_due": float(engine_loan.principal_not_due),
-            "principal_arrears": float(engine_loan.principal_arrears),
-            "interest_accrued_balance": float(engine_loan.interest_accrued_balance),
-            "interest_arrears": float(engine_loan.interest_arrears),
-            "default_interest_balance": float(engine_loan.default_interest_balance),
-            "penalty_interest_balance": float(engine_loan.penalty_interest_balance),
-            "fees_charges_balance": float(engine_loan.fees_charges_balance),
-        }
-
-        # Run one more day to get engine state at end of today
-        if as_of_date > yesterday and not block_accruals:
-            _eod_sync_engine_schedule_for_date(engine_loan, loan_row, as_of_date, bumps, ver_rows)
-            engine_loan.process_day(as_of_date)
-        elif block_accruals:
-            # Force daily accrual metrics to zero since we blocked processing for today
-            engine_loan.last_regular_interest_daily = Decimal("0")
-            engine_loan.last_default_interest_daily = Decimal("0")
-            engine_loan.last_penalty_interest_daily = Decimal("0")
-
-        alloc = alloc_map.get(loan_id_int, dict(_EMPTY_ALLOC))
-        yesterday_saved = yesterday_map.get(loan_id_int) if yesterday >= disb_date else None
-
-        # Contractual due on as_of_date (needed before interest_accrued persistence rule).
-        v_asof = apply_schedule_version_bumps(as_of_date, bumps)
-        rows_asof = _schedule_rows_for_version(ver_rows, v_asof)
-        try:
-            entries_asof = _build_schedule_entries(loan_row, rows_asof)
-        except ValueError:
-            entries_asof = list(engine_loan.schedule)
-        due_today = any(e.due_date == as_of_date for e in entries_asof)
-
-        # Balance today = yesterday's balance + (engine today - engine yesterday) - allocations today.
-        # So: interest_arrears_balance = yesterday_balance + new_arrears_today - receipts allocated to interest arrears.
-        # Same for default interest, penalty interest, and all other buckets.
-        def _today_balance(
-            yesterday_key: str,
-            engine_today_val: float,
-            engine_yesterday_val: float,
-            alloc_key: str,
-        ) -> float:
-            delta = engine_today_val - engine_yesterday_val
-            if yesterday_saved is not None and yesterday_key in yesterday_saved:
-                return max(0.0, yesterday_saved[yesterday_key] + delta - alloc.get(alloc_key, 0.0))
-            return max(0.0, engine_today_val - alloc.get(alloc_key, 0.0))
-
-        principal_not_due = _today_balance("principal_not_due", float(engine_loan.principal_not_due), engine_yesterday["principal_not_due"], "alloc_principal_not_due")
-        principal_arrears = _today_balance("principal_arrears", float(engine_loan.principal_arrears), engine_yesterday["principal_arrears"], "alloc_principal_arrears")
-        # Interest accrued is not a waterfall receipt bucket: when nothing is allocated there,
-        # closing must follow persisted opening + today's scheduled daily accrual (matches
-        # ``regular_interest_daily`` / customer statement roll-ups). Engine delta can drift
-        # from saved state after receipts on other buckets; do not zero out accrual growth.
-        alloc_ia = float(alloc.get("alloc_interest_accrued", 0.0) or 0.0)
-        rd_add = float(engine_loan.last_regular_interest_daily or 0)
-        if (
-            not block_accruals
-            and yesterday_saved is not None
-            and "interest_accrued_balance" in yesterday_saved
-            and abs(alloc_ia) <= ARREARS_ZERO_TOLERANCE
-            and not due_today
-        ):
-            interest_accrued_balance = max(
-                0.0,
-                float(yesterday_saved.get("interest_accrued_balance", 0) or 0) + rd_add,
+            effective_cfg = _effective_config_for_loan(
+                loan_row, sys_cfg, product_cfg_by_code=product_cfg_by_code
             )
-        else:
-            interest_accrued_balance = _today_balance(
-                "interest_accrued_balance",
-                float(engine_loan.interest_accrued_balance),
-                engine_yesterday["interest_accrued_balance"],
-                "alloc_interest_accrued",
-            )
-        interest_arrears_balance = _today_balance("interest_arrears_balance", float(engine_loan.interest_arrears), engine_yesterday["interest_arrears"], "alloc_interest_arrears")
-        default_interest_balance = _today_balance("default_interest_balance", float(engine_loan.default_interest_balance), engine_yesterday["default_interest_balance"], "alloc_default_interest")
-        penalty_interest_balance = _today_balance("penalty_interest_balance", float(engine_loan.penalty_interest_balance), engine_yesterday["penalty_interest_balance"], "alloc_penalty_interest")
-        fees_charges_balance = _today_balance("fees_charges_balance", float(engine_loan.fees_charges_balance), engine_yesterday["fees_charges_balance"], "alloc_fees_charges")
+            config = _loan_config_from_row(loan_row, effective_cfg)
 
-        # Non-due-date guard: arrears principal/interest must only move by persisted allocations.
-        # This prevents hidden drift from engine/session recomputation on dates without due transitions.
-        # Period-to-date resets: any contractual due on any saved version (not latest only).
-        due_yesterday = yesterday in all_schedule_due_dates_map.get(loan_id_int, frozenset())
-        if yesterday_saved is not None and not due_today:
-            principal_not_due = max(
-                0.0,
-                float(yesterday_saved.get("principal_not_due", 0) or 0) - alloc.get("alloc_principal_not_due", 0.0),
-            )
-            principal_arrears = max(
-                0.0,
-                float(yesterday_saved.get("principal_arrears", 0) or 0) - alloc.get("alloc_principal_arrears", 0.0),
-            )
-            interest_arrears_balance = max(
-                0.0,
-                float(yesterday_saved.get("interest_arrears_balance", 0) or 0) - alloc.get("alloc_interest_arrears", 0.0),
-            )
+            # Opening principal for the engine is the total loan amount (principal column),
+            # not the disbursed amount. This ensures interest is charged on the full debt.
+            principal = Decimal(str(loan_row.get("principal") or loan_row.get("disbursed_amount") or 0))
+            disb_date = loan_row.get("disbursement_date") or loan_row.get("start_date")
+            if not isinstance(disb_date, date):
+                # Defensive fallback; real loans should always have a disbursement/start date.
+                disb_date = as_of_date
 
-        # Post-allocation "no arrears": principal and interest arrears are zero (with tolerance).
-        no_arrears = (
-            principal_arrears <= ARREARS_ZERO_TOLERANCE
-            and interest_arrears_balance <= ARREARS_ZERO_TOLERANCE
-        )
+            # Do not write daily state for dates before the loan existed.
+            if disb_date > as_of_date:
+                continue
 
-        # Days overdue must be *consecutive* days in arrears from saved state, not the engine's
-        # internal counter (which keeps counting from a past due date and would "pop" to 32 when
-        # we stop forcing zero). So: when no arrears -> 0; when arrears -> yesterday_saved + 1 or 1.
-        if no_arrears:
-            days_overdue_save = 0
-        else:
-            if yesterday_saved is not None and "days_overdue" in yesterday_saved:
-                days_overdue_save = yesterday_saved["days_overdue"] + 1
-            else:
-                days_overdue_save = 1
-
-        # Auto-Suspense Logic
-        suspense_logic = effective_cfg.get("suspension_logic", "Manual")
-        suspense_days = int(effective_cfg.get("suspension_auto_days", 90))
-        is_in_suspense = loan_row.get("interest_in_suspense", False)
-        
-        if suspense_logic == "Automatic" and not is_in_suspense and days_overdue_save >= suspense_days:
-            # Auto-flag the loan (use a fresh connection; outer batch `conn` is already closed).
+            bumps = bumps_by_loan.get(loan_id_int) or []
+            v0 = apply_schedule_version_bumps(disb_date, bumps)
+            rows0 = _schedule_rows_for_version(ver_rows, v0)
+            if not rows0:
+                _logger.warning("EOD skipped loan_id=%s: no schedule lines for version %s at disbursement.", loan_id_int, v0)
+                continue
             try:
-                with _get_conn() as susp_conn:
-                    with susp_conn.cursor() as cur:
+                schedule_entries0 = _build_schedule_entries(loan_row, rows0)
+            except ValueError as e:
+                _logger.warning(
+                    "EOD skipped loan_id=%s: invalid schedule v%s at disbursement (%s).",
+                    loan_id_int,
+                    v0,
+                    e,
+                )
+                continue
+            if not schedule_entries0:
+                _logger.warning(
+                    "EOD skipped loan_id=%s: %s",
+                    loan_id_int,
+                    _diagnose_empty_schedule_entries(dict(loan_row), rows0, v0),
+                )
+                continue
+
+            t_loan0 = time.perf_counter()
+            engine_loan = Loan(
+                loan_id=str(loan_id_int),
+                disbursement_date=disb_date,
+                original_principal=principal,
+                config=config,
+                schedule=schedule_entries0,
+            )
+            setattr(engine_loan, "_eod_schedule_version", v0)
+
+            resume_payload = parse_engine_resume_dict(engine_resume_raw.get(loan_id_int))
+            use_incremental = (
+                incremental_enabled
+                and resume_payload is not None
+                and engine_resume_is_valid_schema(resume_payload)
+                and product_code_matches_resume(resume_payload, dict(loan_row))
+                and loan_id_int not in reversed_since_resume
+                and not _bumps_invalidate_incremental_resume(bumps, yesterday, as_of_date)
+            )
+            if use_incremental:
+                try:
+                    apply_engine_resume(engine_loan, resume_payload)
+                except Exception as ex:
+                    _logger.debug(
+                        "EOD loan_id=%s: incremental resume hydrate failed (%s); full replay.",
+                        loan_id_int,
+                        ex,
+                    )
+                    use_incremental = False
+
+            incremental_path_for_loan = use_incremental
+
+            # Run engine to yesterday: use schedule **version in force on each day** (recast/modification).
+            if use_incremental:
+                current = yesterday + timedelta(days=1)
+            else:
+                current = disb_date
+            while current <= yesterday:
+                _eod_sync_engine_schedule_for_date(engine_loan, loan_row, current, bumps, ver_rows)
+                engine_loan.process_day(current)
+                current += timedelta(days=1)
+
+            # Capture engine state at end of yesterday (accrual-only, no allocations)
+            engine_yesterday = {
+                "principal_not_due": float(engine_loan.principal_not_due),
+                "principal_arrears": float(engine_loan.principal_arrears),
+                "interest_accrued_balance": float(engine_loan.interest_accrued_balance),
+                "interest_arrears": float(engine_loan.interest_arrears),
+                "default_interest_balance": float(engine_loan.default_interest_balance),
+                "penalty_interest_balance": float(engine_loan.penalty_interest_balance),
+                "fees_charges_balance": float(engine_loan.fees_charges_balance),
+            }
+
+            # Run one more day to get engine state at end of today
+            if as_of_date > yesterday and not block_accruals:
+                _eod_sync_engine_schedule_for_date(engine_loan, loan_row, as_of_date, bumps, ver_rows)
+                engine_loan.process_day(as_of_date)
+            elif block_accruals:
+                # Force daily accrual metrics to zero since we blocked processing for today
+                engine_loan.last_regular_interest_daily = Decimal("0")
+                engine_loan.last_default_interest_daily = Decimal("0")
+                engine_loan.last_penalty_interest_daily = Decimal("0")
+
+            alloc = alloc_map.get(loan_id_int, dict(_EMPTY_ALLOC))
+            yesterday_saved = yesterday_map.get(loan_id_int) if yesterday >= disb_date else None
+
+            # Contractual due on as_of_date (needed before interest_accrued persistence rule).
+            v_asof = apply_schedule_version_bumps(as_of_date, bumps)
+            rows_asof = _schedule_rows_for_version(ver_rows, v_asof)
+            try:
+                entries_asof = _build_schedule_entries(loan_row, rows_asof)
+            except ValueError:
+                entries_asof = list(engine_loan.schedule)
+            due_today = any(e.due_date == as_of_date for e in entries_asof)
+
+            # Balance today = yesterday's balance + (engine today - engine yesterday) - allocations today.
+            # So: interest_arrears_balance = yesterday_balance + new_arrears_today - receipts allocated to interest arrears.
+            # Same for default interest, penalty interest, and all other buckets.
+            def _today_balance(
+                yesterday_key: str,
+                engine_today_val: float,
+                engine_yesterday_val: float,
+                alloc_key: str,
+            ) -> float:
+                delta = engine_today_val - engine_yesterday_val
+                if yesterday_saved is not None and yesterday_key in yesterday_saved:
+                    return max(0.0, yesterday_saved[yesterday_key] + delta - alloc.get(alloc_key, 0.0))
+                return max(0.0, engine_today_val - alloc.get(alloc_key, 0.0))
+
+            principal_not_due = _today_balance("principal_not_due", float(engine_loan.principal_not_due), engine_yesterday["principal_not_due"], "alloc_principal_not_due")
+            principal_arrears = _today_balance("principal_arrears", float(engine_loan.principal_arrears), engine_yesterday["principal_arrears"], "alloc_principal_arrears")
+            # Interest accrued is not a waterfall receipt bucket: when nothing is allocated there,
+            # closing must follow persisted opening + today's scheduled daily accrual (matches
+            # ``regular_interest_daily`` / customer statement roll-ups). Engine delta can drift
+            # from saved state after receipts on other buckets; do not zero out accrual growth.
+            alloc_ia = float(alloc.get("alloc_interest_accrued", 0.0) or 0.0)
+            rd_add = float(engine_loan.last_regular_interest_daily or 0)
+            if (
+                not block_accruals
+                and yesterday_saved is not None
+                and "interest_accrued_balance" in yesterday_saved
+                and abs(alloc_ia) <= ARREARS_ZERO_TOLERANCE
+                and not due_today
+            ):
+                interest_accrued_balance = max(
+                    0.0,
+                    float(yesterday_saved.get("interest_accrued_balance", 0) or 0) + rd_add,
+                )
+            else:
+                interest_accrued_balance = _today_balance(
+                    "interest_accrued_balance",
+                    float(engine_loan.interest_accrued_balance),
+                    engine_yesterday["interest_accrued_balance"],
+                    "alloc_interest_accrued",
+                )
+            interest_arrears_balance = _today_balance("interest_arrears_balance", float(engine_loan.interest_arrears), engine_yesterday["interest_arrears"], "alloc_interest_arrears")
+            default_interest_balance = _today_balance("default_interest_balance", float(engine_loan.default_interest_balance), engine_yesterday["default_interest_balance"], "alloc_default_interest")
+            penalty_interest_balance = _today_balance("penalty_interest_balance", float(engine_loan.penalty_interest_balance), engine_yesterday["penalty_interest_balance"], "alloc_penalty_interest")
+            fees_charges_balance = _today_balance("fees_charges_balance", float(engine_loan.fees_charges_balance), engine_yesterday["fees_charges_balance"], "alloc_fees_charges")
+
+            # Non-due-date guard: arrears principal/interest must only move by persisted allocations.
+            # This prevents hidden drift from engine/session recomputation on dates without due transitions.
+            # Period-to-date resets: any contractual due on any saved version (not latest only).
+            due_yesterday = yesterday in all_schedule_due_dates_map.get(loan_id_int, frozenset())
+            if yesterday_saved is not None and not due_today:
+                principal_not_due = max(
+                    0.0,
+                    float(yesterday_saved.get("principal_not_due", 0) or 0) - alloc.get("alloc_principal_not_due", 0.0),
+                )
+                principal_arrears = max(
+                    0.0,
+                    float(yesterday_saved.get("principal_arrears", 0) or 0) - alloc.get("alloc_principal_arrears", 0.0),
+                )
+                interest_arrears_balance = max(
+                    0.0,
+                    float(yesterday_saved.get("interest_arrears_balance", 0) or 0) - alloc.get("alloc_interest_arrears", 0.0),
+                )
+
+            # Post-allocation "no arrears": principal and interest arrears are zero (with tolerance).
+            no_arrears = (
+                principal_arrears <= ARREARS_ZERO_TOLERANCE
+                and interest_arrears_balance <= ARREARS_ZERO_TOLERANCE
+            )
+
+            # Days overdue must be *consecutive* days in arrears from saved state, not the engine's
+            # internal counter (which keeps counting from a past due date and would "pop" to 32 when
+            # we stop forcing zero). So: when no arrears -> 0; when arrears -> yesterday_saved + 1 or 1.
+            if no_arrears:
+                days_overdue_save = 0
+            else:
+                if yesterday_saved is not None and "days_overdue" in yesterday_saved:
+                    days_overdue_save = yesterday_saved["days_overdue"] + 1
+                else:
+                    days_overdue_save = 1
+
+            # Auto-Suspense Logic
+            suspense_logic = effective_cfg.get("suspension_logic", "Manual")
+            suspense_days = int(effective_cfg.get("suspension_auto_days", 90))
+            is_in_suspense = loan_row.get("interest_in_suspense", False)
+        
+            if suspense_logic == "Automatic" and not is_in_suspense and days_overdue_save >= suspense_days:
+                # Same DB transaction as batch `save_loan_daily_state` (one commit when the engine step exits).
+                try:
+                    with conn.cursor() as cur:
                         cur.execute(
                             "UPDATE loans SET interest_in_suspense = TRUE WHERE id = %s",
                             (loan_id_int,),
                         )
-                    susp_conn.commit()
-                is_in_suspense = True
-            except Exception as e:
-                print(f"Failed to auto-flag loan {loan_id_int} for suspense: {e}")
+                    is_in_suspense = True
+                except Exception as e:
+                    _logger.warning("Failed to auto-flag loan %s for suspense: %s", loan_id_int, e)
 
-        # Grace period: only accrue default/penalty when *saved* days_overdue > grace_period_days.
-        # When no arrears or within grace (or if accruals are blocked for the day), persist 0.
-        grace_days = config.grace_period_days
-        within_grace_or_current = no_arrears or (days_overdue_save <= grace_days)
+            # Grace period: only accrue default/penalty when *saved* days_overdue > grace_period_days.
+            # When no arrears or within grace (or if accruals are blocked for the day), persist 0.
+            grace_days = config.grace_period_days
+            within_grace_or_current = no_arrears or (days_overdue_save <= grace_days)
 
-        if within_grace_or_current or block_accruals:
-            default_interest_daily_save = 0.0
-            penalty_interest_daily_save = 0.0
-            default_interest_balance_save = 0.0
-            penalty_interest_balance_save = 0.0
+            if within_grace_or_current or block_accruals:
+                default_interest_daily_save = 0.0
+                penalty_interest_daily_save = 0.0
+                default_interest_balance_save = 0.0
+                penalty_interest_balance_save = 0.0
+                # Period-to-date: always table(yesterday) + today's daily. Never use engine (it has no allocations).
+                if due_yesterday:
+                    default_interest_period_to_date_save = default_interest_daily_save
+                    penalty_interest_period_to_date_save = penalty_interest_daily_save
+                elif yesterday_saved is not None:
+                    default_interest_period_to_date_save = float(
+                        yesterday_saved.get("default_interest_period_to_date", 0) or 0
+                    ) + default_interest_daily_save
+                    penalty_interest_period_to_date_save = float(
+                        yesterday_saved.get("penalty_interest_period_to_date", 0) or 0
+                    ) + penalty_interest_daily_save
+                else:
+                    default_interest_period_to_date_save = default_interest_daily_save
+                    penalty_interest_period_to_date_save = penalty_interest_daily_save
+            else:
+                # Daily accrual must be based on the OPENING balance at the start of the day
+                # (before any of today's allocations).  Using the post-alloc balance (which
+                # subtracts today's alloc from interest_arrears / principal_arrears) produces a
+                # lower daily on re-runs and breaks the bucket identity:
+                #   opening + daily - alloc = closing
+                # Re-add today's alloc to recover the true pre-alloc opening balance.
+                #
+                # Use Decimal arithmetic throughout so the 10dp NUMERIC column receives the
+                # full irrational fraction (e.g. 33.3333333333) rather than a float-rounded
+                # 33.33, eliminating the per-period ±0.10 residual that comes from 2dp truncation.
+                D = Decimal
+                rate        = D(str(config.default_interest_absolute_rate_per_month))
+                penalty_rate = D(str(config.penalty_interest_absolute_rate_per_month))
+                _30 = D("30")
+                int_arr_opening = max(
+                    D("0"),
+                    D(str(interest_arrears_balance)) + D(str(alloc.get("alloc_interest_arrears", 0.0))),
+                )
+                default_interest_daily_save = as_10dp(
+                    int_arr_opening * rate / _30
+                    if int_arr_opening > 0 and rate > 0
+                    else D("0")
+                )
+                prin_arr_opening = max(
+                    D("0"),
+                    D(str(principal_arrears)) + D(str(alloc.get("alloc_principal_arrears", 0.0))),
+                )
+                if config.penalty_on_principal_arrears_only:
+                    penalty_basis = prin_arr_opening
+                else:
+                    penalty_basis = prin_arr_opening + (
+                        D(str(principal_not_due)) + D(str(alloc.get("alloc_principal_not_due", 0.0)))
+                    )
+                penalty_interest_daily_save = as_10dp(
+                    penalty_basis * penalty_rate / _30
+                    if penalty_basis > 0 and penalty_rate > 0
+                    else D("0")
+                )
+                # Reconcile default/penalty balances using our daily amounts (not engine's)
+                if yesterday_saved is not None:
+                    default_interest_balance_save = max(
+                        D("0"),
+                        D(str(yesterday_saved.get("default_interest_balance", 0)))
+                        + default_interest_daily_save
+                        - D(str(alloc.get("alloc_default_interest", 0.0))),
+                    )
+                    penalty_interest_balance_save = max(
+                        D("0"),
+                        D(str(yesterday_saved.get("penalty_interest_balance", 0)))
+                        + penalty_interest_daily_save
+                        - D(str(alloc.get("alloc_penalty_interest", 0.0))),
+                    )
+                else:
+                    default_interest_balance_save = max(
+                        D("0"),
+                        default_interest_daily_save - D(str(alloc.get("alloc_default_interest", 0.0))),
+                    )
+                    penalty_interest_balance_save = max(
+                        D("0"),
+                        penalty_interest_daily_save - D(str(alloc.get("alloc_penalty_interest", 0.0))),
+                    )
+                # Period-to-date: accumulate daily amounts up to and including due date; reset day after due date
+                if due_yesterday:
+                    default_interest_period_to_date_save = default_interest_daily_save
+                    penalty_interest_period_to_date_save = penalty_interest_daily_save
+                elif yesterday_saved is not None:
+                    default_interest_period_to_date_save = (
+                        D(str(yesterday_saved.get("default_interest_period_to_date", 0)))
+                        + default_interest_daily_save
+                    )
+                    penalty_interest_period_to_date_save = (
+                        D(str(yesterday_saved.get("penalty_interest_period_to_date", 0)))
+                        + penalty_interest_daily_save
+                    )
+                else:
+                    default_interest_period_to_date_save = default_interest_daily_save
+                    penalty_interest_period_to_date_save = penalty_interest_daily_save
+
+            net_alloc = net_alloc_map.get(loan_id_int, 0.0)
+            unalloc   = unalloc_map.get(loan_id_int, 0.0)
+            # Balance columns are NUMERIC(22,10); quantize to 10dp.
+            default_interest_balance_save = float(default_interest_balance_save)
+            penalty_interest_balance_save = float(penalty_interest_balance_save)
+            total_exposure_save = (
+                principal_not_due
+                + principal_arrears
+                + interest_accrued_balance
+                + interest_arrears_balance
+                + default_interest_balance_save
+                + penalty_interest_balance_save
+                + fees_charges_balance
+            )
             # Period-to-date: always table(yesterday) + today's daily. Never use engine (it has no allocations).
+            # Use Decimal + as_10dp for 10dp precision (avoids float accumulation).
+            regular_daily = engine_loan.last_regular_interest_daily
             if due_yesterday:
-                default_interest_period_to_date_save = default_interest_daily_save
-                penalty_interest_period_to_date_save = penalty_interest_daily_save
+                regular_interest_period_to_date_save = as_10dp(regular_daily)
             elif yesterday_saved is not None:
-                default_interest_period_to_date_save = float(
-                    yesterday_saved.get("default_interest_period_to_date", 0) or 0
-                ) + default_interest_daily_save
-                penalty_interest_period_to_date_save = float(
-                    yesterday_saved.get("penalty_interest_period_to_date", 0) or 0
-                ) + penalty_interest_daily_save
+                prev = Decimal(str(yesterday_saved.get("regular_interest_period_to_date", 0) or 0))
+                regular_interest_period_to_date_save = as_10dp(prev + regular_daily)
             else:
-                default_interest_period_to_date_save = default_interest_daily_save
-                penalty_interest_period_to_date_save = penalty_interest_daily_save
-        else:
-            # Daily accrual must be based on the OPENING balance at the start of the day
-            # (before any of today's allocations).  Using the post-alloc balance (which
-            # subtracts today's alloc from interest_arrears / principal_arrears) produces a
-            # lower daily on re-runs and breaks the bucket identity:
-            #   opening + daily - alloc = closing
-            # Re-add today's alloc to recover the true pre-alloc opening balance.
-            #
-            # Use Decimal arithmetic throughout so the 10dp NUMERIC column receives the
-            # full irrational fraction (e.g. 33.3333333333) rather than a float-rounded
-            # 33.33, eliminating the per-period ±0.10 residual that comes from 2dp truncation.
+                regular_interest_period_to_date_save = as_10dp(regular_daily)
+
+            # Interest in suspense (provision reporting): regular rolls as prior + today's accrual
+            # (only when loan is in suspense and accruals run) − allocations to accrued interest;
+            # penalty/default suspense track the same closing balances as the economic buckets after EOD.
             D = Decimal
-            rate        = D(str(config.default_interest_absolute_rate_per_month))
-            penalty_rate = D(str(config.penalty_interest_absolute_rate_per_month))
-            _30 = D("30")
-            int_arr_opening = max(
-                D("0"),
-                D(str(interest_arrears_balance)) + D(str(alloc.get("alloc_interest_arrears", 0.0))),
-            )
-            default_interest_daily_save = as_10dp(
-                int_arr_opening * rate / _30
-                if int_arr_opening > 0 and rate > 0
+            y_reg_susp = (
+                D(str(yesterday_saved.get("regular_interest_in_suspense_balance", 0) or 0))
+                if yesterday_saved is not None
                 else D("0")
             )
-            prin_arr_opening = max(
-                D("0"),
-                D(str(principal_arrears)) + D(str(alloc.get("alloc_principal_arrears", 0.0))),
+            alloc_ia = D(str(alloc.get("alloc_interest_accrued", 0.0)))
+            rd_dec = regular_daily if isinstance(regular_daily, Decimal) else D(str(regular_daily))
+            if block_accruals:
+                acc_into_reg_susp = D("0")
+            else:
+                acc_into_reg_susp = rd_dec if is_in_suspense else D("0")
+            regular_interest_in_suspense_save = float(
+                as_10dp(max(D("0"), y_reg_susp + acc_into_reg_susp - alloc_ia))
             )
-            if config.penalty_on_principal_arrears_only:
-                penalty_basis = prin_arr_opening
-            else:
-                penalty_basis = prin_arr_opening + (
-                    D(str(principal_not_due)) + D(str(alloc.get("alloc_principal_not_due", 0.0)))
-                )
-            penalty_interest_daily_save = as_10dp(
-                penalty_basis * penalty_rate / _30
-                if penalty_basis > 0 and penalty_rate > 0
-                else D("0")
+            penalty_interest_in_suspense_save = float(
+                as_10dp(max(D("0"), D(str(penalty_interest_balance_save))))
             )
-            # Reconcile default/penalty balances using our daily amounts (not engine's)
-            if yesterday_saved is not None:
-                default_interest_balance_save = max(
-                    D("0"),
-                    D(str(yesterday_saved.get("default_interest_balance", 0)))
-                    + default_interest_daily_save
-                    - D(str(alloc.get("alloc_default_interest", 0.0))),
-                )
-                penalty_interest_balance_save = max(
-                    D("0"),
-                    D(str(yesterday_saved.get("penalty_interest_balance", 0)))
-                    + penalty_interest_daily_save
-                    - D(str(alloc.get("alloc_penalty_interest", 0.0))),
-                )
+            default_interest_in_suspense_save = float(
+                as_10dp(max(D("0"), D(str(default_interest_balance_save))))
+            )
+
+            pc_raw = loan_row.get("product_code")
+            resume_to_save = serialize_engine_resume(
+                engine_loan,
+                product_code=str(pc_raw).strip() if pc_raw else None,
+            )
+
+            save_loan_daily_state(
+                loan_id=loan_id_int,
+                as_of_date=as_of_date,
+                regular_interest_daily=engine_loan.last_regular_interest_daily,
+                principal_not_due=principal_not_due,
+                principal_arrears=principal_arrears,
+                interest_accrued_balance=interest_accrued_balance,
+                interest_arrears_balance=interest_arrears_balance,
+                default_interest_daily=default_interest_daily_save,
+                default_interest_balance=default_interest_balance_save,
+                penalty_interest_daily=penalty_interest_daily_save,
+                penalty_interest_balance=penalty_interest_balance_save,
+                fees_charges_balance=fees_charges_balance,
+                days_overdue=days_overdue_save,
+                regular_interest_period_to_date=regular_interest_period_to_date_save,
+                penalty_interest_period_to_date=penalty_interest_period_to_date_save,
+                default_interest_period_to_date=default_interest_period_to_date_save,
+                net_allocation=net_alloc,
+                unallocated=unalloc,
+                regular_interest_in_suspense_balance=regular_interest_in_suspense_save,
+                penalty_interest_in_suspense_balance=penalty_interest_in_suspense_save,
+                default_interest_in_suspense_balance=default_interest_in_suspense_save,
+                engine_resume=resume_to_save,
+                conn=conn,
+            )
+            processed += 1
+            if incremental_path_for_loan:
+                n_incremental_path += 1
             else:
-                default_interest_balance_save = max(
-                    D("0"),
-                    default_interest_daily_save - D(str(alloc.get("alloc_default_interest", 0.0))),
-                )
-                penalty_interest_balance_save = max(
-                    D("0"),
-                    penalty_interest_daily_save - D(str(alloc.get("alloc_penalty_interest", 0.0))),
-                )
-            # Period-to-date: accumulate daily amounts up to and including due date; reset day after due date
-            if due_yesterday:
-                default_interest_period_to_date_save = default_interest_daily_save
-                penalty_interest_period_to_date_save = penalty_interest_daily_save
-            elif yesterday_saved is not None:
-                default_interest_period_to_date_save = (
-                    D(str(yesterday_saved.get("default_interest_period_to_date", 0)))
-                    + default_interest_daily_save
-                )
-                penalty_interest_period_to_date_save = (
-                    D(str(yesterday_saved.get("penalty_interest_period_to_date", 0)))
-                    + penalty_interest_daily_save
-                )
-            else:
-                default_interest_period_to_date_save = default_interest_daily_save
-                penalty_interest_period_to_date_save = penalty_interest_daily_save
+                n_full_replay_path += 1
+            compute_s += time.perf_counter() - t_loan0
+            loans_since_commit += 1
+            if loans_since_commit >= commit_batch_size:
+                _do_commit()
 
-        net_alloc = net_alloc_map.get(loan_id_int, 0.0)
-        unalloc   = unalloc_map.get(loan_id_int, 0.0)
-        # Balance columns are NUMERIC(22,10); quantize to 10dp.
-        default_interest_balance_save = float(default_interest_balance_save)
-        penalty_interest_balance_save = float(penalty_interest_balance_save)
-        total_exposure_save = (
-            principal_not_due
-            + principal_arrears
-            + interest_accrued_balance
-            + interest_arrears_balance
-            + default_interest_balance_save
-            + penalty_interest_balance_save
-            + fees_charges_balance
-        )
-        # Period-to-date: always table(yesterday) + today's daily. Never use engine (it has no allocations).
-        # Use Decimal + as_10dp for 10dp precision (avoids float accumulation).
-        regular_daily = engine_loan.last_regular_interest_daily
-        if due_yesterday:
-            regular_interest_period_to_date_save = as_10dp(regular_daily)
-        elif yesterday_saved is not None:
-            prev = Decimal(str(yesterday_saved.get("regular_interest_period_to_date", 0) or 0))
-            regular_interest_period_to_date_save = as_10dp(prev + regular_daily)
-        else:
-            regular_interest_period_to_date_save = as_10dp(regular_daily)
+        _do_commit()
 
-        # Interest in suspense (provision reporting): regular rolls as prior + today's accrual
-        # (only when loan is in suspense and accruals run) − allocations to accrued interest;
-        # penalty/default suspense track the same closing balances as the economic buckets after EOD.
-        D = Decimal
-        y_reg_susp = (
-            D(str(yesterday_saved.get("regular_interest_in_suspense_balance", 0) or 0))
-            if yesterday_saved is not None
-            else D("0")
+    if processed > 0:
+        inc_pct = 100.0 * n_incremental_path / processed
+        _logger.info(
+            "EOD loan_engine as_of=%s processed=%s incremental=%s full_replay=%s "
+            "(incremental_pct=%.1f) commit_batch_size=%s",
+            as_of_date.isoformat(),
+            processed,
+            n_incremental_path,
+            n_full_replay_path,
+            inc_pct,
+            commit_batch_size,
         )
-        alloc_ia = D(str(alloc.get("alloc_interest_accrued", 0.0)))
-        rd_dec = regular_daily if isinstance(regular_daily, Decimal) else D(str(regular_daily))
-        if block_accruals:
-            acc_into_reg_susp = D("0")
-        else:
-            acc_into_reg_susp = rd_dec if is_in_suspense else D("0")
-        regular_interest_in_suspense_save = float(
-            as_10dp(max(D("0"), y_reg_susp + acc_into_reg_susp - alloc_ia))
+    if log_engine_timing:
+        _logger.info(
+            "EOD loan_engine timing detail as_of=%s processed=%s prefetch_s=%.3f compute_s=%.3f "
+            "commit_s=%.3f wall_s=%.3f commit_batch_size=%s",
+            as_of_date.isoformat(),
+            processed,
+            prefetch_s,
+            compute_s,
+            commit_s,
+            time.perf_counter() - t_engine_wall0,
+            commit_batch_size,
         )
-        penalty_interest_in_suspense_save = float(
-            as_10dp(max(D("0"), D(str(penalty_interest_balance_save))))
-        )
-        default_interest_in_suspense_save = float(
-            as_10dp(max(D("0"), D(str(default_interest_balance_save))))
-        )
-
-        pc_raw = loan_row.get("product_code")
-        resume_to_save = serialize_engine_resume(
-            engine_loan,
-            product_code=str(pc_raw).strip() if pc_raw else None,
-        )
-
-        save_loan_daily_state(
-            loan_id=loan_id_int,
-            as_of_date=as_of_date,
-            regular_interest_daily=engine_loan.last_regular_interest_daily,
-            principal_not_due=principal_not_due,
-            principal_arrears=principal_arrears,
-            interest_accrued_balance=interest_accrued_balance,
-            interest_arrears_balance=interest_arrears_balance,
-            default_interest_daily=default_interest_daily_save,
-            default_interest_balance=default_interest_balance_save,
-            penalty_interest_daily=penalty_interest_daily_save,
-            penalty_interest_balance=penalty_interest_balance_save,
-            fees_charges_balance=fees_charges_balance,
-            days_overdue=days_overdue_save,
-            regular_interest_period_to_date=regular_interest_period_to_date_save,
-            penalty_interest_period_to_date=penalty_interest_period_to_date_save,
-            default_interest_period_to_date=default_interest_period_to_date_save,
-            net_allocation=net_alloc,
-            unallocated=unalloc,
-            regular_interest_in_suspense_balance=regular_interest_in_suspense_save,
-            penalty_interest_in_suspense_balance=penalty_interest_in_suspense_save,
-            default_interest_in_suspense_balance=default_interest_in_suspense_save,
-            engine_resume=resume_to_save,
-        )
-        processed += 1
 
     return processed
 
@@ -1537,7 +1665,16 @@ def _clear_unapplied_liquidations_for_date(as_of_date: date) -> int:
                 """,
                 (as_of_date,),
             )
-            ids = [int(r[0]) for r in cur.fetchall()]
+            rows = cur.fetchall()
+            ids: list[int] = []
+            for r in rows:
+                if isinstance(r, dict):
+                    rid = r.get("id")
+                else:
+                    rid = r[0] if r else None
+                if rid is None:
+                    continue
+                ids.append(int(rid))
             if not ids:
                 return 0
             cur.execute(
@@ -1586,7 +1723,16 @@ def _repost_gl_after_replay_for_date(as_of_date: date) -> int:
                 """,
                 (as_of_date,),
             )
-            loan_ids = [int(r[0]) for r in cur.fetchall()]
+            rows = cur.fetchall()
+            loan_ids: list[int] = []
+            for r in rows:
+                if isinstance(r, dict):
+                    lid = r.get("loan_id")
+                else:
+                    lid = r[0] if r else None
+                if lid is None:
+                    continue
+                loan_ids.append(int(lid))
     if not loan_ids:
         return 0
 
@@ -1614,13 +1760,15 @@ def _run_eom_regular_interest_income_recognition(
     period_cfg: Any,
     events_to_run: set[str],
     svc: Any,
-) -> None:
+) -> int:
     """
     Accounting month-end: Dr regular_interest_income_holding / Cr regular_interest_income
     for SUM(regular_interest_daily) over the period (loans not in interest_in_suspense).
+
+    Returns the number of journals bulk-posted (0 if skipped or nothing to post).
     """
     if "EOM_REGULAR_INTEREST_INCOME_RECOGNITION" not in events_to_run:
-        return
+        return 0
     bounds = get_month_period_bounds(as_of_date, period_cfg)
     period_key = bounds.end_date.strftime("%Y-%m")
     with _get_conn() as conn:
@@ -1641,24 +1789,30 @@ def _run_eom_regular_interest_income_recognition(
             )
             m_rows = cur.fetchall()
 
+    bulk_items: List[Dict[str, Any]] = []
     for r in m_rows:
         loan_id = r["loan_id"]
         amt = Decimal(str(r["reg_mtd"] or 0))
         if amt <= 0:
             continue
         event_id = f"EOM-REGINT-{period_key}-LOAN-{loan_id}"
-        svc.post_event(
-            event_type="EOM_REGULAR_INTEREST_INCOME_RECOGNITION",
-            reference=f"EOM-{as_of_date}-LOAN-{loan_id}-REGINT",
-            description=(
-                f"EOM regular interest income recognition for Loan {loan_id} ({period_key})"
-            ),
-            event_id=event_id,
-            created_by="system",
-            entry_date=as_of_date,
-            amount=amt,
-            loan_id=int(loan_id),
+        bulk_items.append(
+            {
+                "event_type": "EOM_REGULAR_INTEREST_INCOME_RECOGNITION",
+                "reference": f"EOM-{as_of_date}-LOAN-{loan_id}-REGINT",
+                "description": (
+                    f"EOM regular interest income recognition for Loan {loan_id} ({period_key})"
+                ),
+                "event_id": event_id,
+                "created_by": "system",
+                "entry_date": as_of_date,
+                "amount": amt,
+                "loan_id": int(loan_id),
+            }
         )
+    if bulk_items:
+        svc.bulk_post_events(bulk_items)
+    return len(bulk_items)
 
 
 def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
@@ -1681,6 +1835,13 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
         
         svc = AccountingService()
         yesterday = as_of_date - timedelta(days=1)
+        t0 = time.perf_counter()
+        t_events = 0.0
+        t_fetch = 0.0
+        t_build = 0.0
+        t_post = 0.0
+        n_post_items = 0
+        by_event_type: Dict[str, int] = {}
         
         period_cfg = normalize_accounting_period_config(sys_cfg)
         is_month_end = is_eom(as_of_date, period_cfg)
@@ -1691,32 +1852,20 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                 triggers = ['EOD']
                 if is_month_end:
                     triggers.append('EOM')
+                t_events0 = time.perf_counter()
                 cur.execute("SELECT DISTINCT event_type FROM transaction_templates WHERE trigger_type = ANY(%s)", (triggers,))
                 events = cur.fetchall()
                 events_to_run = {row['event_type'] for row in events}
+                t_events = time.perf_counter() - t_events0
 
                 if not events_to_run:
-                    # #region agent log
-                    try:
-                        log = {
-                            "sessionId": "f80945",
-                            "runId": "pre-fix",
-                            "hypothesisId": "H2",
-                            "location": "eod.py:_run_accounting_events",
-                            "message": "No EOD/EOM events_to_run",
-                            "data": {"as_of_date": as_of_date.isoformat(), "triggers": triggers},
-                            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
-                        }
-                        with open("debug-f80945.log", "a", encoding="utf-8") as f:
-                            f.write(json.dumps(log) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion agent log
                     return # Nothing to run
                 
                 # 2. Query data needed for amounts
+                t_fetch0 = time.perf_counter()
                 cur.execute("""
-                    SELECT t.loan_id, t.regular_interest_daily, t.penalty_interest_daily, t.default_interest_daily,
+                    SELECT DISTINCT ON (t.loan_id)
+                           t.loan_id, t.regular_interest_daily, t.penalty_interest_daily, t.default_interest_daily,
                            t.principal_arrears as t_prin_arr, y.principal_arrears as y_prin_arr,
                            t.interest_arrears_balance as t_int_arr, y.interest_arrears_balance as y_int_arr,
                            COALESCE(a.alloc_principal_arrears, 0) as alloc_prin_arr,
@@ -1737,9 +1886,15 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                         GROUP BY lr.loan_id
                     ) a ON t.loan_id = a.loan_id
                     WHERE t.as_of_date = %s
+                    ORDER BY t.loan_id, t.id DESC
                 """, (yesterday, as_of_date, as_of_date))
                 
                 rows = cur.fetchall()
+                t_fetch = time.perf_counter() - t_fetch0
+        
+        # Build items and bulk post in a single transaction (huge speedup vs per-loan post_event connections).
+        bulk_items: List[Dict[str, Any]] = []
+        t_build0 = time.perf_counter()
         
         for row in rows:
             loan_id = row["loan_id"]
@@ -1773,104 +1928,101 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                 amounts_map["ACCRUAL_REGULAR_INTEREST_SUSPENSE"] = reg_daily
             else:
                 amounts_map["ACCRUAL_REGULAR_INTEREST"] = reg_daily
-            # #region agent log
-            try:
-                log = {
-                    "sessionId": "f80945",
-                    "runId": "pre-fix",
-                    "hypothesisId": "H1",
-                    "location": "eod.py:_run_accounting_events",
-                    "message": "Computed EOD accrual amounts for loan",
-                    "data": {
-                        "as_of_date": as_of_date.isoformat(),
-                        "loan_id": int(loan_id),
-                        "events_to_run": sorted(list(events_to_run)),
-                        "reg_daily": float(reg_daily),
-                        "pen_daily": float(pen_daily),
-                        "def_daily": float(def_daily),
-                        "billed_prin": float(billed_prin),
-                        "billed_int": float(billed_int),
-                    },
-                    "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
-                }
-                with open("debug-f80945.log", "a", encoding="utf-8") as f:
-                    f.write(json.dumps(log) + "\n")
-            except Exception:
-                pass
-            # #endregion agent log
             for event_type in events_to_run:
                 amt = amounts_map.get(event_type, Decimal('0'))
                 if amt > 0:
                     desc_parts = event_type.replace('_', ' ').title()
-                    # #region agent log
-                    try:
-                        log = {
-                            "sessionId": "f80945",
-                            "runId": "pre-fix",
-                            "hypothesisId": "H3",
-                            "location": "eod.py:_run_accounting_events",
-                            "message": "Posting EOD accounting event",
-                            "data": {
-                                "as_of_date": as_of_date.isoformat(),
-                                "loan_id": int(loan_id),
-                                "event_type": event_type,
-                                "amount": float(amt),
-                            },
-                            "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                    bulk_items.append(
+                        {
+                            "event_type": event_type,
+                            "reference": f"EOD-{as_of_date}-LOAN-{loan_id}",
+                            "description": f"{desc_parts} for Loan {loan_id}",
+                            "event_id": f"EOD-{as_of_date}-{loan_id}-{event_type}",
+                            "created_by": "system",
+                            "entry_date": as_of_date,
+                            "amount": amt,
+                            "loan_id": int(loan_id),
                         }
-                        with open("debug-f80945.log", "a", encoding="utf-8") as f:
-                            f.write(json.dumps(log) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion agent log
-                    svc.post_event(
-                        event_type=event_type,
-                        reference=f"EOD-{as_of_date}-LOAN-{loan_id}",
-                        description=f"{desc_parts} for Loan {loan_id}",
-                        event_id=f"EOD-{as_of_date}-{loan_id}-{event_type}",
-                        created_by="system",
-                        entry_date=as_of_date,
-                        amount=amt,
-                        loan_id=int(loan_id),
                     )
+                    by_event_type[event_type] = by_event_type.get(event_type, 0) + 1
 
+        t_build = time.perf_counter() - t_build0
+
+        t_post0 = time.perf_counter()
+        if bulk_items:
+            svc.bulk_post_events(bulk_items)
+            n_post_items = len(bulk_items)
+        t_post = time.perf_counter() - t_post0
+
+        n_eom_regint = 0
+        t_eom_regint_s = 0.0
         if is_month_end and svc is not None and events_to_run:
-            _run_eom_regular_interest_income_recognition(
+            t_eom0 = time.perf_counter()
+            n_eom_regint = _run_eom_regular_interest_income_recognition(
                 as_of_date, period_cfg, events_to_run, svc
             )
+            t_eom_regint_s = time.perf_counter() - t_eom0
+        _logger.info(
+            "EOD accounting_events detail as_of=%s is_month_end=%s events_to_run=%s rows=%s posted_items=%s "
+            "t_events_s=%.3f t_fetch_s=%.3f t_build_s=%.3f t_post_s=%.3f wall_s=%.3f",
+            as_of_date.isoformat(),
+            bool(is_month_end),
+            len(events_to_run),
+            len(rows) if 'rows' in locals() else 0,
+            n_post_items,
+            t_events,
+            t_fetch,
+            t_build,
+            t_post,
+            time.perf_counter() - t0,
+        )
+        if is_month_end:
+            _logger.info(
+                "EOD accounting_events eom_bulk as_of=%s eom_regint_items=%s t_eom_regint_s=%.3f",
+                as_of_date.isoformat(),
+                n_eom_regint,
+                t_eom_regint_s,
+            )
+        if by_event_type:
+            top = sorted(by_event_type.items(), key=lambda kv: kv[1], reverse=True)[:10]
+            _logger.info(
+                "EOD accounting_events top_event_counts as_of=%s %s",
+                as_of_date.isoformat(),
+                ", ".join(f"{k}={v}" for k, v in top),
+            )
 
-    except Exception as e:
-        import traceback
-        # #region agent log
-        try:
-            log = {
-                "sessionId": "f80945",
-                "runId": "pre-fix",
-                "hypothesisId": "H4",
-                "location": "eod.py:_run_accounting_events",
-                "message": "Exception in _run_accounting_events",
-                "data": {"as_of_date": as_of_date.isoformat(), "error": str(e)},
-                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
-            }
-            with open("debug-f80945.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps(log) + "\n")
-        except Exception:
-            pass
-        # #endregion agent log
-        print(f"Failed to post EOD accounting events for {as_of_date}: {e}")
-        traceback.print_exc()
+    except Exception:
+        # Must propagate: otherwise hybrid/strict treat this stage as OK and the system
+        # date can advance with incomplete GL (accounting_events is blocking by default).
+        _logger.exception("Failed to post EOD accounting events for %s", as_of_date)
+        raise
 
     # Month-end fee amortisation (loan origination fees).
     if is_month_end and svc is not None and events_to_run:
-        _run_fee_amortisation_month_end(as_of_date, events_to_run, svc)
-        _run_restructure_fee_amortisation_month_end(as_of_date, events_to_run, svc)
+        t_fee0 = time.perf_counter()
+        n_fee_amort = _run_fee_amortisation_month_end(as_of_date, events_to_run, svc)
+        t_fee_amort_s = time.perf_counter() - t_fee0
+        t_rest0 = time.perf_counter()
+        n_restructure = _run_restructure_fee_amortisation_month_end(
+            as_of_date, events_to_run, svc
+        )
+        t_restructure_s = time.perf_counter() - t_rest0
+        _logger.info(
+            "EOD accounting_events eom_fee_restructure as_of=%s fee_amort_items=%s t_fee_amort_s=%.3f "
+            "restructure_items=%s t_restructure_s=%.3f",
+            as_of_date.isoformat(),
+            n_fee_amort,
+            t_fee_amort_s,
+            n_restructure,
+            t_restructure_s,
+        )
 
 
 def _run_fee_amortisation_month_end(
     as_of_date: date,
     events_to_run: set[str],
     svc,
-) -> None:
+) -> int:
     """
     Straight-line month-end amortisation of origination fees
     (drawdown, arrangement, admin) using loan-level fee columns.
@@ -1888,7 +2040,7 @@ def _run_fee_amortisation_month_end(
     }
     active = needed_events.intersection(events_to_run)
     if not active:
-        return
+        return 0
 
     with _get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -1919,6 +2071,8 @@ def _run_fee_amortisation_month_end(
             )
             loans = cur.fetchall()
 
+    bulk_items: List[Dict[str, Any]] = []
+
     for row in loans:
         loan_id = int(row["id"])
         term = int(row.get("term") or 0)
@@ -1929,8 +2083,7 @@ def _run_fee_amortisation_month_end(
         arr_fee = float(as_10dp(row.get("arrangement_fee_amt") or 0))
         adm_fee = float(as_10dp(row.get("admin_fee_amt") or 0))
 
-        # Component-wise straight-line amortisation.
-        def _post_if_positive(event_type: str, component_fee: float, label: str) -> None:
+        def _append_if_positive(event_type: str, component_fee: float, label: str) -> None:
             if event_type not in active:
                 return
             if component_fee <= 0:
@@ -1938,30 +2091,36 @@ def _run_fee_amortisation_month_end(
             monthly_amt = float(as_10dp(component_fee / term))
             if monthly_amt <= 0:
                 return
-            svc.post_event(
-                event_type=event_type,
-                reference=f"LOAN-{loan_id}",
-                description=f"Monthly {label} amortisation for Loan {loan_id}",
-                event_id=f"EOM-{as_of_date}-LOAN-{loan_id}-{event_type}",
-                created_by="system",
-                entry_date=as_of_date,
-                amount=monthly_amt,
-                loan_id=int(loan_id),
+            bulk_items.append(
+                {
+                    "event_type": event_type,
+                    "reference": f"LOAN-{loan_id}",
+                    "description": f"Monthly {label} amortisation for Loan {loan_id}",
+                    "event_id": f"EOM-{as_of_date}-LOAN-{loan_id}-{event_type}",
+                    "created_by": "system",
+                    "entry_date": as_of_date,
+                    "amount": monthly_amt,
+                    "loan_id": int(loan_id),
+                }
             )
 
-        _post_if_positive("FEE_AMORTISATION_DRAWDOWN", draw_fee, "drawdown fee")
-        _post_if_positive("FEE_AMORTISATION_ARRANGEMENT", arr_fee, "arrangement fee")
-        _post_if_positive("FEE_AMORTISATION_ADMIN", adm_fee, "administration fee")
+        _append_if_positive("FEE_AMORTISATION_DRAWDOWN", draw_fee, "drawdown fee")
+        _append_if_positive("FEE_AMORTISATION_ARRANGEMENT", arr_fee, "arrangement fee")
+        _append_if_positive("FEE_AMORTISATION_ADMIN", adm_fee, "administration fee")
+
+    if bulk_items:
+        svc.bulk_post_events(bulk_items)
+    return len(bulk_items)
 
 
 def _run_restructure_fee_amortisation_month_end(
     as_of_date: date,
     events_to_run: set[str],
     svc,
-) -> None:
+) -> int:
     """Straight-line month-end amortisation for restructure fee charges."""
     if "RESTRUCTURE_FEE_AMORTISATION" not in events_to_run:
-        return
+        return 0
     with _get_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -1981,6 +2140,7 @@ def _run_restructure_fee_amortisation_month_end(
             )
             rows = cur.fetchall()
 
+    bulk_items: List[Dict[str, Any]] = []
     for row in rows:
         loan_id = int(row["loan_id"])
         fee_amt = float(as_10dp(row.get("restructure_fee_amount") or 0))
@@ -1998,16 +2158,21 @@ def _run_restructure_fee_amortisation_month_end(
         monthly_amt = float(as_10dp(fee_amt / term))
         if monthly_amt <= 0:
             continue
-        svc.post_event(
-            event_type="RESTRUCTURE_FEE_AMORTISATION",
-            reference=f"LOAN-{loan_id}",
-            description=f"Monthly restructure fee amortisation for Loan {loan_id}",
-            event_id=f"EOM-{as_of_date}-LOAN-{loan_id}-RESTRUCTURE_FEE_AMORTISATION-{int(row['id'])}",
-            created_by="system",
-            entry_date=as_of_date,
-            amount=monthly_amt,
-            loan_id=int(loan_id),
+        bulk_items.append(
+            {
+                "event_type": "RESTRUCTURE_FEE_AMORTISATION",
+                "reference": f"LOAN-{loan_id}",
+                "description": f"Monthly restructure fee amortisation for Loan {loan_id}",
+                "event_id": f"EOM-{as_of_date}-LOAN-{loan_id}-RESTRUCTURE_FEE_AMORTISATION-{int(row['id'])}",
+                "created_by": "system",
+                "entry_date": as_of_date,
+                "amount": monthly_amt,
+                "loan_id": int(loan_id),
+            }
         )
+    if bulk_items:
+        svc.bulk_post_events(bulk_items)
+    return len(bulk_items)
 
 
 def _run_equity_period_close(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
@@ -2180,7 +2345,13 @@ def run_eod_for_date(
                 pass
     
             try:
+                t_stage = time.perf_counter()
                 stage_result = fn()
+                _logger.info(
+                    "EOD stage %r finished in %.2fs",
+                    stage_name,
+                    time.perf_counter() - t_stage,
+                )
                 if stage_name == "loan_engine" and isinstance(stage_result, int):
                     loans_processed = stage_result
                 tasks_run.append(stage_name)
@@ -2215,6 +2386,17 @@ def run_eod_for_date(
                     raise StageExecutionError(stage_name, error_message)
                 run_status = "DEGRADED"
     
+        try:
+            n_deferred = post_deferred_loan_approval_journals_for_eod(as_of_date)
+            if n_deferred:
+                _logger.info(
+                    "EOD %s: posted %s deferred LOAN_APPROVAL journal(s) for loans now effective.",
+                    as_of_date,
+                    n_deferred,
+                )
+        except Exception as ex:
+            _logger.warning("EOD deferred LOAN_APPROVAL sweep failed (non-fatal): %s", ex)
+
         # Replay/backfill exemption: any GL posts triggered during this run use
         # eod_replay policy (calendar-month and closed-period restrictions bypassed).
         policy_scope = (

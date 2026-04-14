@@ -5,7 +5,8 @@ Run from project root:
   python scripts/export_loan_tables.py --start-date 2025-01-01 --end-date 2025-06-30
 
 Date range: pass --start-date and --end-date (YYYY-MM-DD), or edit DEFAULT_* below.
-Saves to ./farndacred_exports/ (at project root). If a file is open (e.g. Excel), writes to *_new.csv.
+Saves to ./farndacred_exports/ under the project root by default, or to --output-dir / FARNDACRED_EXPORT_DIR.
+If a file is open (e.g. Excel), writes to *_new.csv.
 
 Repayments/allocation: filtered by value_date (or payment_date) so receipts on END_DATE are included.
 Loan daily state: filtered by as_of_date; include END_DATE or later to see impact of receipts on state.
@@ -29,10 +30,12 @@ Rates captured at loan (loan parameters): stored on the loans table.
 
 import argparse
 import csv
+import errno
 import json
 import math
 import os
 import sys
+import zipfile
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
@@ -41,7 +44,73 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-EXPORT_DIR = os.path.join(_PROJECT_ROOT, "farndacred_exports")
+def default_export_directory() -> str:
+    """Default output folder when neither --output-dir nor FARNDACRED_EXPORT_DIR is set."""
+    return os.path.abspath(os.path.join(_PROJECT_ROOT, "farndacred_exports"))
+
+
+def resolve_export_directory(cli_value: str | None) -> str:
+    """
+    Resolve output path: non-empty --output-dir wins, else FARNDACRED_EXPORT_DIR, else project default.
+    Returns absolute path (directory may not exist yet).
+    """
+    raw = (cli_value or "").strip()
+    if not raw:
+        raw = (os.environ.get("FARNDACRED_EXPORT_DIR") or "").strip()
+    if not raw:
+        return default_export_directory()
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(raw)))
+
+
+def ensure_export_directory(path: str) -> str:
+    """Create directory if needed; verify it is writable. Returns normalized absolute path."""
+    path = os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
+    if os.path.exists(path) and not os.path.isdir(path):
+        print(f"Error: --output-dir exists but is not a directory: {path}", file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        print(f"Error: cannot create output directory {path}: {e}", file=sys.stderr)
+        raise SystemExit(2) from e
+    probe = os.path.join(path, ".farndacred_export_write_test")
+    try:
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.unlink(probe)
+    except OSError as e:
+        print(f"Error: output directory is not writable: {path} ({e})", file=sys.stderr)
+        raise SystemExit(2) from e
+    return path
+
+
+def _is_no_space_oserror(exc: OSError) -> bool:
+    if exc.errno == errno.ENOSPC:
+        return True
+    # Some Windows builds report 28; message is reliable fallback.
+    if exc.errno == 28:
+        return True
+    msg = str(exc).lower()
+    return "no space left" in msg or "not enough space" in msg
+
+
+def _unlink_if_exists(path: str) -> None:
+    try:
+        if os.path.isfile(path):
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def _exit_disk_full(path: str, cause: OSError, *, export_root: str) -> None:
+    _unlink_if_exists(path)
+    print(
+        "Error: Disk full — export cannot write CSV. Free space on the drive that holds "
+        f"{export_root}, or narrow the export (--loan-id, --product-code, shorter date range).",
+        file=sys.stderr,
+    )
+    print(f"  Failed while writing: {path}", file=sys.stderr)
+    raise SystemExit(1) from cause
 
 
 def _decimal_to_plain_string(d: Decimal) -> str:
@@ -113,22 +182,65 @@ DEFAULT_START_DATE = "2025-06-30"
 # Include at least the latest receipt value_date so allocation and state impact appear in export
 DEFAULT_END_DATE = "2026-03-08"
 
+# Total export size at or above this (bytes) triggers a single .zip alongside CSVs.
+_DEFAULT_ZIP_MIN_BYTES = 12 * 1024 * 1024
 
-def build_export_queries(start_date: str, end_date: str) -> list:
+
+def _zip_threshold_bytes() -> int:
+    raw = os.environ.get("FARNDACRED_EXPORT_ZIP_MIN_BYTES", "").strip()
+    if not raw:
+        return _DEFAULT_ZIP_MIN_BYTES
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_ZIP_MIN_BYTES
+
+
+def _loan_scope_sql_and_params(
+    loan_id: int | None,
+    product_code: str | None,
+) -> tuple[str, tuple]:
+    """Extra WHERE fragment (AND ...) on loans alias ``l``, and parameters tuple."""
+    parts: list[str] = []
+    params: list = []
+    if loan_id is not None:
+        parts.append("l.id = %s")
+        params.append(loan_id)
+    if product_code:
+        parts.append("l.product_code = %s")
+        params.append(str(product_code).strip())
+    if not parts:
+        return "", ()
+    return " AND " + " AND ".join(parts), tuple(params)
+
+
+def build_export_queries(
+    start_date: str,
+    end_date: str,
+    *,
+    loan_id: int | None = None,
+    product_code: str | None = None,
+) -> list:
     """Build (filename, sql, params) list for the given inclusive date range."""
+    sc_sql, sc_params = _loan_scope_sql_and_params(loan_id, product_code)
+
+    def P(*base_params):
+        return tuple(base_params) + sc_params
+
     return [
     (
         "loans.csv",
-        """
+        f"""
         SELECT
             l.*,
             COALESCE(i.name, c.trading_name, c.legal_name) AS customer_name
         FROM loans l
         LEFT JOIN individuals i ON i.customer_id = l.customer_id
         LEFT JOIN corporates c ON c.customer_id = l.customer_id
+        WHERE TRUE{{sc}}
         ORDER BY l.id
-        """,
-        (),
+        """.replace("{sc}", sc_sql),
+        sc_params,
     ),
     (
         "loan_daily_state.csv",
@@ -142,10 +254,10 @@ def build_export_queries(start_date: str, end_date: str) -> list:
         JOIN loans l ON l.id = lds.loan_id
         LEFT JOIN individuals i ON i.customer_id = l.customer_id
         LEFT JOIN corporates c ON c.customer_id = l.customer_id
-        WHERE lds.as_of_date BETWEEN %s AND %s
+        WHERE lds.as_of_date BETWEEN %s AND %s{sc}
         ORDER BY lds.loan_id, lds.as_of_date
-        """,
-        (start_date, end_date),
+        """.replace("{sc}", sc_sql),
+        P(start_date, end_date),
     ),
     (
         "loan_daily_state_range.csv",
@@ -158,10 +270,10 @@ def build_export_queries(start_date: str, end_date: str) -> list:
         JOIN loans l ON l.id = lds.loan_id
         LEFT JOIN individuals i ON i.customer_id = l.customer_id
         LEFT JOIN corporates c ON c.customer_id = l.customer_id
-        WHERE lds.as_of_date BETWEEN %s AND %s
+        WHERE lds.as_of_date BETWEEN %s AND %s{sc}
         ORDER BY lds.loan_id, lds.as_of_date
-        """,
-        (start_date, end_date),
+        """.replace("{sc}", sc_sql),
+        P(start_date, end_date),
     ),
     (
         "loan_repayments.csv",
@@ -187,10 +299,10 @@ def build_export_queries(start_date: str, end_date: str) -> list:
             COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
             OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
             OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
-          )
+          ){{sc}}
         ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lr.id DESC
-        """,
-        (start_date, end_date),
+        """.replace("{{sc}}", sc_sql),
+        P(start_date, end_date),
     ),
     (
         "loan_repayment_allocation.csv",
@@ -199,15 +311,16 @@ def build_export_queries(start_date: str, end_date: str) -> list:
                COALESCE(lr.value_date, lr.payment_date) AS value_date
         FROM loan_repayment_allocation lra
         JOIN loan_repayments lr ON lr.id = lra.repayment_id
+        JOIN loans l ON l.id = lr.loan_id
         WHERE COALESCE(lr.value_date, lr.payment_date) BETWEEN %s AND %s
           AND NOT (
             COALESCE(lr.reference, '') ILIKE '%%napplied funds allocation%%'
             OR COALESCE(lr.customer_reference, '') ILIKE '%%napplied funds allocation%%'
             OR COALESCE(lr.company_reference, '') ILIKE '%%napplied funds allocation%%'
-          )
+          ){{sc}}
         ORDER BY COALESCE(lr.value_date, lr.payment_date) DESC, lra.repayment_id, lra.id
-        """,
-        (start_date, end_date),
+        """.replace("{{sc}}", sc_sql),
+        P(start_date, end_date),
     ),
     (
         "loans_with_latest_state.csv",
@@ -244,19 +357,21 @@ def build_export_queries(start_date: str, end_date: str) -> list:
             ORDER BY as_of_date DESC
             LIMIT 1
         ) lds ON true
-        WHERE l.status = 'active'
+        WHERE l.status = 'active'{sc}
         ORDER BY l.id
-        """,
-        (end_date,),
+        """.replace("{sc}", sc_sql),
+        P(end_date),
     ),
     (
         "loan_schedules.csv",
         """
         SELECT ls.*
         FROM loan_schedules ls
+        JOIN loans l ON l.id = ls.loan_id
+        WHERE TRUE{sc}
         ORDER BY ls.loan_id, ls.version
-        """,
-        (),
+        """.replace("{sc}", sc_sql),
+        sc_params,
     ),
     (
         "schedule_lines.csv",
@@ -264,9 +379,11 @@ def build_export_queries(start_date: str, end_date: str) -> list:
         SELECT ls.loan_id, ls.version AS schedule_version, sl.*
         FROM schedule_lines sl
         JOIN loan_schedules ls ON ls.id = sl.loan_schedule_id
+        JOIN loans l ON l.id = ls.loan_id
+        WHERE TRUE{sc}
         ORDER BY ls.loan_id, ls.version, sl."Period"
-        """,
-        (),
+        """.replace("{sc}", sc_sql),
+        sc_params,
     ),
     (
         "unapplied_funds.csv",
@@ -279,38 +396,44 @@ def build_export_queries(start_date: str, end_date: str) -> list:
                 ELSE 'other'
             END AS movement_type
         FROM unapplied_funds uf
-        WHERE uf.value_date BETWEEN %s AND %s
+        JOIN loans l ON l.id = uf.loan_id
+        WHERE uf.value_date BETWEEN %s AND %s{sc}
         ORDER BY uf.loan_id, uf.value_date, uf.id
-        """,
-        (start_date, end_date),
+        """.replace("{sc}", sc_sql),
+        P(start_date, end_date),
     ),
     (
         "allocation_audit_log.csv",
         """
         SELECT aal.*
         FROM allocation_audit_log aal
-        WHERE aal.as_of_date BETWEEN %s AND %s
+        JOIN loans l ON l.id = aal.loan_id
+        WHERE aal.as_of_date BETWEEN %s AND %s{sc}
         ORDER BY aal.created_at
-        """,
-        (start_date, end_date),
+        """.replace("{sc}", sc_sql),
+        P(start_date, end_date),
     ),
     (
         "loan_modifications.csv",
         """
         SELECT lm.*
         FROM loan_modifications lm
+        JOIN loans l ON l.id = lm.loan_id
+        WHERE TRUE{sc}
         ORDER BY lm.loan_id, lm.modification_date
-        """,
-        (),
+        """.replace("{sc}", sc_sql),
+        sc_params,
     ),
     (
         "loan_recasts.csv",
         """
-        SELECT lr.*
-        FROM loan_recasts lr
-        ORDER BY lr.loan_id, lr.recast_date
-        """,
-        (),
+        SELECT lrec.*
+        FROM loan_recasts lrec
+        JOIN loans l ON l.id = lrec.loan_id
+        WHERE TRUE{sc}
+        ORDER BY lrec.loan_id, lrec.recast_date
+        """.replace("{sc}", sc_sql),
+        sc_params,
     ),
     (
         "config.csv",
@@ -328,7 +451,7 @@ def build_export_queries(start_date: str, end_date: str) -> list:
 QUERIES = build_export_queries(DEFAULT_START_DATE, DEFAULT_END_DATE)
 
 
-def _export_config_rates(conn, export_dir: str) -> None:
+def _export_config_rates(conn, export_dir: str) -> str | None:
     """Export flattened default_rates and penalty_rates per config key and loan_type for verification."""
     PRODUCT_PREFIX = "product_config:"
     with conn.cursor() as cur:
@@ -382,6 +505,7 @@ def _export_config_rates(conn, export_dir: str) -> None:
             w.writerow(colnames)
             w.writerows(_format_csv_row(r) for r in flat_rows)
         print(f"  {len(flat_rows):5} rows -> {out_path}")
+        return out_path
     except PermissionError:
         alt_path = os.path.join(export_dir, "config_rates_per_product_new.csv")
         with open(alt_path, "w", newline="", encoding="utf-8") as f:
@@ -389,9 +513,19 @@ def _export_config_rates(conn, export_dir: str) -> None:
             w.writerow(colnames)
             w.writerows(_format_csv_row(r) for r in flat_rows)
         print(f"  {len(flat_rows):5} rows -> {alt_path} (original in use)")
+        return alt_path
+    return None
 
 
-def _export_repayment_application(conn, export_dir: str, start_date: str, end_date: str) -> None:
+def _export_repayment_application(
+    conn,
+    export_dir: str,
+    start_date: str,
+    end_date: str,
+    *,
+    loan_id: int | None = None,
+    product_code: str | None = None,
+) -> str | None:
     """
     Export unapplied funds ledger view linked to allocations.
 
@@ -403,9 +537,8 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
     No raw receipt amounts are included here; use repayment_id to link back to
     loan_repayments.csv and loan_repayment_allocation.csv.
     """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
+    sc_sql, sc_params = _loan_scope_sql_and_params(loan_id, product_code)
+    q = """
             WITH alloc_receipts AS (
                 SELECT
                     lr.id AS repayment_id,
@@ -415,6 +548,7 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
                     COALESCE(SUM(lra.alloc_interest_total), 0) AS alloc_int_total,
                     COALESCE(SUM(lra.alloc_fees_total), 0) AS alloc_fees_total
                 FROM loan_repayments lr
+                JOIN loans l ON l.id = lr.loan_id
                 LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
                 WHERE (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
                   AND NOT (
@@ -433,7 +567,7 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
                                 )
                               )
                     )
-                  )
+                  ){sc}
                 GROUP BY lr.id, lr.loan_id, lr.value_date, lr.payment_date, lr.amount
             ),
             credits_and_reversals AS (
@@ -485,9 +619,10 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
                     SUM(COALESCE(lra.alloc_fees_charges,0)) AS alloc_fees_charges
                 FROM loan_repayment_allocation lra
                 JOIN loan_repayments lr ON lr.id = lra.repayment_id
+                JOIN loans l ON l.id = lr.loan_id
                 WHERE lra.event_type IN ('unapplied_funds_allocation', 'unallocation_parent_reversed')
                   AND (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
-                  AND lra.source_repayment_id IS NOT NULL
+                  AND lra.source_repayment_id IS NOT NULL{sc}
                 GROUP BY
                     lr.id,
                     lr.original_repayment_id,
@@ -520,9 +655,11 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
                 ) AS unapplied_running_balance
             FROM ledger l
             ORDER BY l.value_date, l.repayment_id, l.entry_kind
-            """,
-            (start_date, end_date, start_date, end_date),
-        )
+            """
+    q = q.replace("{sc}", sc_sql)
+    params = (start_date, end_date) + sc_params + (start_date, end_date) + sc_params
+    with conn.cursor() as cur:
+        cur.execute(q, params)
         rows = cur.fetchall()
         colnames = [d[0] for d in cur.description]
     out_path = os.path.join(export_dir, "unapplied_funds_ledger.csv")
@@ -532,6 +669,7 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
             w.writerow(colnames)
             w.writerows(_format_csv_row(r) for r in rows)
         print(f"  {len(rows):5} rows -> {out_path}")
+        return out_path
     except PermissionError:
         alt_path = os.path.join(export_dir, "unapplied_funds_ledger_new.csv")
         with open(alt_path, "w", newline="", encoding="utf-8") as f:
@@ -539,18 +677,27 @@ def _export_repayment_application(conn, export_dir: str, start_date: str, end_da
             w.writerow(colnames)
             w.writerows(_format_csv_row(r) for r in rows)
         print(f"  {len(rows):5} rows -> {alt_path} (original in use)")
+        return alt_path
+    return None
 
 
-def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: str) -> None:
+def _export_statement_credits(
+    conn,
+    export_dir: str,
+    start_date: str,
+    end_date: str,
+    *,
+    loan_id: int | None = None,
+    product_code: str | None = None,
+) -> str | None:
     """
     Statement-oriented credits view driven strictly by persisted tables:
     1) Credits from loan_repayment_allocation totals per receipt (non-system receipts).
     2) Credits from unapplied liquidations (event_type='unapplied_funds_allocation').
     3) One accrual summary line per scheduled due date (regular/default/penalty period sums).
     """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
+    sc_sql, sc_params = _loan_scope_sql_and_params(loan_id, product_code)
+    q = """
             WITH alloc_receipts AS (
                 SELECT
                     lr.loan_id,
@@ -573,6 +720,7 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                     (lr.amount - COALESCE(SUM(lra.alloc_principal_total + lra.alloc_interest_total + lra.alloc_fees_total), 0)) AS unapplied_amount,
                     lr.amount AS receipt_amount
                 FROM loan_repayments lr
+                JOIN loans l ON l.id = lr.loan_id
                 LEFT JOIN loan_repayment_allocation lra ON lra.repayment_id = lr.id
                 WHERE (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
                   AND NOT (
@@ -591,7 +739,7 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                                 )
                               )
                     )
-                  )
+                  ){sc}
                 GROUP BY
                     lr.loan_id, lr.id, lr.value_date, lr.payment_date,
                     lr.status, lr.original_repayment_id, lr.customer_reference, lr.amount
@@ -621,6 +769,7 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                     COALESCE(SUM(lra.alloc_fees_charges), 0) AS alloc_fees_charges
                 FROM loan_repayment_allocation lra
                 JOIN loan_repayments lr ON lr.id = lra.repayment_id
+                JOIN loans l ON l.id = lr.loan_id
                 WHERE lra.event_type IN ('unapplied_funds_allocation', 'unallocation_parent_reversed')
                   AND lra.source_repayment_id IS NOT NULL
                   AND (COALESCE(lr.value_date, lr.payment_date))::date BETWEEN %s AND %s
@@ -630,7 +779,7 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                           SELECT 1 FROM loan_repayments lr_rev
                           WHERE lr_rev.original_repayment_id = lra.source_repayment_id
                       )
-                  )
+                  ){sc}
                 GROUP BY
                     lr.loan_id,
                     lr.id,
@@ -647,7 +796,8 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                     ) AS prev_due_date
                 FROM schedule_lines sl
                 JOIN loan_schedules ls ON ls.id = sl.loan_schedule_id
-                WHERE to_date(sl."Date", 'DD-Mon-YYYY') BETWEEN %s::date AND %s::date
+                JOIN loans l ON l.id = ls.loan_id
+                WHERE to_date(sl."Date", 'DD-Mon-YYYY') BETWEEN %s::date AND %s::date{sc}
             ),
             due_accruals AS (
                 SELECT
@@ -738,9 +888,18 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
                 d.default_interest_period
             FROM due_accruals d
             ORDER BY loan_id, value_date, line_type, repayment_id
-            """,
-            (start_date, end_date, start_date, end_date, start_date, end_date),
-        )
+            """
+    q = q.replace("{sc}", sc_sql)
+    stmt_params = (
+        (start_date, end_date)
+        + sc_params
+        + (start_date, end_date)
+        + sc_params
+        + (start_date, end_date)
+        + sc_params
+    )
+    with conn.cursor() as cur:
+        cur.execute(q, stmt_params)
         rows = cur.fetchall()
         colnames = [d[0] for d in cur.description]
 
@@ -751,6 +910,7 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
             w.writerow(colnames)
             w.writerows(_format_csv_row(r) for r in rows)
         print(f"  {len(rows):5} rows -> {out_path}")
+        return out_path
     except PermissionError:
         alt_path = os.path.join(export_dir, "statement_credits_view_new.csv")
         with open(alt_path, "w", newline="", encoding="utf-8") as f:
@@ -758,19 +918,27 @@ def _export_statement_credits(conn, export_dir: str, start_date: str, end_date: 
             w.writerow(colnames)
             w.writerows(_format_csv_row(r) for r in rows)
         print(f"  {len(rows):5} rows -> {alt_path} (original in use)")
+        return alt_path
+    return None
 
 
-def _export_loans_capture_rates(conn, export_dir: str) -> None:
+def _export_loans_capture_rates(
+    conn,
+    export_dir: str,
+    *,
+    loan_id: int | None = None,
+    product_code: str | None = None,
+) -> str | None:
     """Export rates captured at loan (loan parameters): annual_rate, monthly_rate, metadata.penalty_rate_pct."""
+    sc_sql, sc_params = _loan_scope_sql_and_params(loan_id, product_code)
+    sql = f"SELECT l.id, l.annual_rate, l.monthly_rate, l.metadata FROM loans l WHERE TRUE{sc_sql} ORDER BY l.id"
     with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, annual_rate, monthly_rate, metadata FROM loans ORDER BY id"
-        )
+        cur.execute(sql, sc_params)
         rows = cur.fetchall()
     out_path = os.path.join(export_dir, "loans_capture_rates.csv")
     colnames = ["loan_id", "annual_rate", "monthly_rate", "penalty_rate_pct", "penalty_quotation", "currency"]
     flat_rows = []
-    for loan_id, annual_rate, monthly_rate, metadata in rows:
+    for lid_row, annual_rate, monthly_rate, metadata in rows:
         penalty_rate_pct = ""
         penalty_quotation = ""
         currency = ""
@@ -783,13 +951,14 @@ def _export_loans_capture_rates(conn, export_dir: str) -> None:
                     currency = md.get("currency", "")
             except Exception:
                 pass
-        flat_rows.append([loan_id, annual_rate or "", monthly_rate or "", penalty_rate_pct, penalty_quotation, currency])
+        flat_rows.append([lid_row, annual_rate or "", monthly_rate or "", penalty_rate_pct, penalty_quotation, currency])
     try:
         with open(out_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(colnames)
             w.writerows(_format_csv_row(r) for r in flat_rows)
         print(f"  {len(flat_rows):5} rows -> {out_path}")
+        return out_path
     except PermissionError:
         alt_path = os.path.join(export_dir, "loans_capture_rates_new.csv")
         with open(alt_path, "w", newline="", encoding="utf-8") as f:
@@ -797,13 +966,17 @@ def _export_loans_capture_rates(conn, export_dir: str) -> None:
             w.writerow(colnames)
             w.writerows(_format_csv_row(r) for r in flat_rows)
         print(f"  {len(flat_rows):5} rows -> {alt_path} (original in use)")
+        return alt_path
+    return None
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Export loan-related tables to CSV under ./farndacred_exports/",
+        description="Export loan-related tables to CSV (default folder: ./farndacred_exports/ or --output-dir).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  %(prog)s --start-date 2025-01-01 --end-date 2025-06-30\n  %(prog)s   # uses DEFAULT_START_DATE / DEFAULT_END_DATE in script",
+        epilog="Examples:\n  %(prog)s --start-date 2025-01-01 --end-date 2025-06-30\n"
+        "  %(prog)s --start-date 2025-01-01 --end-date 2025-01-31 --product-code TERM\n"
+        "  %(prog)s --start-date 2025-01-01 --end-date 2025-01-31 --loan-id 42\n",
     )
     p.add_argument(
         "--start-date",
@@ -817,7 +990,51 @@ def _parse_args(argv=None) -> argparse.Namespace:
         metavar="YYYY-MM-DD",
         help=f"Inclusive end for date-filtered exports (default: {DEFAULT_END_DATE})",
     )
+    p.add_argument(
+        "--product-code",
+        default="",
+        metavar="CODE",
+        help="Restrict exports to loans with this products.code (omit or empty for all products).",
+    )
+    p.add_argument(
+        "--loan-id",
+        type=int,
+        default=None,
+        metavar="ID",
+        help="Restrict exports to this loan id (omit for all loans).",
+    )
+    p.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="DIR",
+        help="Folder for CSV and ZIP output (default: FARNDACRED_EXPORT_DIR env if set, else <project>/farndacred_exports).",
+    )
     return p.parse_args(argv)
+
+
+def _maybe_zip_export_files(export_dir: str, written_paths: list[str], *, label: str) -> str | None:
+    """If total size of written CSVs >= threshold, add a single ZIP with those files. Returns zip path or None."""
+    thr = _zip_threshold_bytes()
+    if thr <= 0 or not written_paths:
+        return None
+    existing = [p for p in written_paths if p and os.path.isfile(p)]
+    if not existing:
+        return None
+    total = sum(os.path.getsize(p) for p in existing)
+    if total < thr:
+        return None
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)[:120]
+    zip_name = f"farndacred_export_{safe}.zip"
+    zip_path = os.path.join(export_dir, zip_name)
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in existing:
+                zf.write(p, arcname=os.path.basename(p))
+        print(f"ZIP ({total} bytes across {len(existing)} file(s)) -> {zip_path}")
+        return zip_path
+    except OSError as e:
+        print(f"Warning: could not create ZIP {zip_path}: {e}", file=sys.stderr)
+        return None
 
 
 def main(argv=None) -> None:
@@ -853,14 +1070,34 @@ def main(argv=None) -> None:
         d1 = eff
         end_date = d1.isoformat()
 
-    queries = build_export_queries(start_date, end_date)
+    product_code = (args.product_code or "").strip() or None
+    loan_id_f = args.loan_id
+    if loan_id_f is not None and loan_id_f <= 0:
+        print("Error: --loan-id must be a positive integer", file=sys.stderr)
+        raise SystemExit(2)
 
-    os.makedirs(EXPORT_DIR, exist_ok=True)
+    queries = build_export_queries(
+        start_date,
+        end_date,
+        loan_id=loan_id_f,
+        product_code=product_code,
+    )
+
+    export_dir = ensure_export_directory(resolve_export_directory(args.output_dir))
+    print(f"Output directory: {export_dir}")
     conn = psycopg2.connect(get_database_url())
+    written_paths: list[str] = []
     try:
         print(f"Date range (inclusive): {start_date} .. {end_date}")
+        if product_code or loan_id_f is not None:
+            parts = []
+            if product_code:
+                parts.append(f"product_code={product_code}")
+            if loan_id_f is not None:
+                parts.append(f"loan_id={loan_id_f}")
+            print("Filters: " + ", ".join(parts))
         for filename, query, params in queries:
-            path = os.path.join(EXPORT_DIR, filename)
+            path = os.path.join(export_dir, filename)
             with conn.cursor() as cur:
                 cur.execute(query, params)
                 rows = cur.fetchall()
@@ -871,27 +1108,57 @@ def main(argv=None) -> None:
                     w.writerow(colnames)
                     w.writerows(_format_csv_row(r) for r in rows)
                 print(f"  {len(rows):5} rows -> {path}")
+                written_paths.append(os.path.abspath(path))
             except PermissionError:
                 base, ext = os.path.splitext(filename)
-                alt_path = os.path.join(EXPORT_DIR, f"{base}_new{ext}")
-                with open(alt_path, "w", newline="", encoding="utf-8") as f:
-                    w = csv.writer(f)
-                    w.writerow(colnames)
-                    w.writerows(_format_csv_row(r) for r in rows)
+                alt_path = os.path.join(export_dir, f"{base}_new{ext}")
+                try:
+                    with open(alt_path, "w", newline="", encoding="utf-8") as f:
+                        w = csv.writer(f)
+                        w.writerow(colnames)
+                        w.writerows(_format_csv_row(r) for r in rows)
+                except OSError as e2:
+                    if _is_no_space_oserror(e2):
+                        _exit_disk_full(alt_path, e2, export_root=export_dir)
+                    raise
                 print(f"  {len(rows):5} rows -> {alt_path} (original in use)")
+                written_paths.append(os.path.abspath(alt_path))
+            except OSError as e:
+                if _is_no_space_oserror(e):
+                    _exit_disk_full(path, e, export_root=export_dir)
+                raise
         # Flatten config into rates-per-product for verification (default_rates, penalty_rates per loan_type)
-        _export_config_rates(conn, EXPORT_DIR)
+        pth = _export_config_rates(conn, export_dir)
+        if pth:
+            written_paths.append(os.path.abspath(pth))
         # Flatten loan-level capture rates (annual_rate, monthly_rate, metadata.penalty_rate_pct)
-        _export_loans_capture_rates(conn, EXPORT_DIR)
+        pth = _export_loans_capture_rates(
+            conn, export_dir, loan_id=loan_id_f, product_code=product_code
+        )
+        if pth:
+            written_paths.append(os.path.abspath(pth))
         # Unapplied funds ledger: +credits and -liquidations linked to repayment IDs
-        _export_repayment_application(conn, EXPORT_DIR, start_date, end_date)
+        pth = _export_repayment_application(
+            conn, export_dir, start_date, end_date, loan_id=loan_id_f, product_code=product_code
+        )
+        if pth:
+            written_paths.append(os.path.abspath(pth))
         # Statement-oriented lines for credits/unapplied/liquidation and period accrual summaries
-        _export_statement_credits(conn, EXPORT_DIR, start_date, end_date)
+        pth = _export_statement_credits(
+            conn, export_dir, start_date, end_date, loan_id=loan_id_f, product_code=product_code
+        )
+        if pth:
+            written_paths.append(os.path.abspath(pth))
+
+        zip_label = f"{start_date}_{end_date}_prod_{product_code or 'all'}_loan_{loan_id_f or 'all'}"
+        z = _maybe_zip_export_files(export_dir, written_paths, label=zip_label)
+        if z:
+            print(f"Auto-ZIP threshold: {_zip_threshold_bytes()} bytes (set FARNDACRED_EXPORT_ZIP_MIN_BYTES to change).")
 
     finally:
         conn.close()
 
-    print(f"\nExports saved to: {os.path.abspath(EXPORT_DIR)}")
+    print(f"\nExports saved to: {export_dir}")
     print("Open the CSV files in Excel or any spreadsheet.")
     print("Rates: see config.csv (raw) and config_rates_per_product.csv (flattened per product/loan_type).")
 

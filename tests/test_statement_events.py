@@ -276,6 +276,64 @@ def test_dedupe_unapplied_credit_when_bundled_on_receipt():
     assert u_after[0].event_date == date(2025, 1, 2)
 
 
+def test_dedupe_unapplied_reversal_when_bundled_on_receipt_reversal():
+    """Reversal allocation carries negative unallocated; ledger reversal must not double-hit running."""
+    loan = [
+        StatementEvent(
+            date(2025, 1, 1),
+            "PAYMENT_RECEIPT",
+            "Reversal - Repayment id 446 (Receipt -100)",
+            Decimal("60"),
+            Decimal("0"),
+            repayment_id=446,
+            sort_ordinal=50,
+            meta={"unapplied_delta": "-10"},
+        ),
+    ]
+    u_before = [
+        StatementEvent(
+            date(2025, 1, 1),
+            "UNAPPLIED_LEDGER",
+            "Unapplied reversal - repayment 446",
+            Decimal("0"),
+            Decimal("0"),
+            repayment_id=446,
+            sort_ordinal=61,
+            meta={"unapplied_delta": "-10", "entry_kind": "reversal"},
+        ),
+    ]
+    u_after = _dedupe_unapplied_ledger_credits_bundled_on_receipts(loan, u_before)
+    assert u_after == []
+
+
+def test_reversal_receipt_unapplied_no_double_count_in_dual_running():
+    evs = [
+        StatementEvent(
+            date(2025, 5, 30),
+            "PAYMENT_RECEIPT",
+            "Repayment id 283 (Receipt 100)",
+            Decimal("0"),
+            Decimal("60"),
+            repayment_id=283,
+            sort_ordinal=50,
+            meta={"unapplied_delta": "10"},
+        ),
+        StatementEvent(
+            date(2025, 5, 30),
+            "PAYMENT_RECEIPT",
+            "Reversal - Repayment id 446 (Receipt -100)",
+            Decimal("60"),
+            Decimal("0"),
+            repayment_id=446,
+            sort_ordinal=50,
+            meta={"unapplied_delta": "-10"},
+        ),
+    ]
+    d = apply_dual_running_customer_events(evs, Decimal("500"), Decimal("0"))
+    assert d[0][2] == Decimal("10")
+    assert d[1][2] == Decimal("0")
+
+
 def test_apply_dual_running_loan_vs_unapplied():
     evs = [
         StatementEvent(
