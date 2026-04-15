@@ -78,6 +78,90 @@ def is_journal_double_entry_balanced(lines: list[dict]) -> bool:
     return journal_totals_balanced_for_posting(td, tc)
 
 
+def _journal_entries_loan_id_column_exists(cur) -> bool:
+    """True when migration 81 (``journal_entries.loan_id``) has been applied."""
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_catalog = current_database()
+          AND table_schema = ANY (current_schemas(false))
+          AND table_name = 'journal_entries'
+          AND column_name = 'loan_id'
+        LIMIT 1
+        """
+    )
+    return cur.fetchone() is not None
+
+
+def journal_entry_loan_product_predicate_sql(
+    je_alias: str,
+    loan_id: int | None,
+    product_code: str | None,
+    *,
+    journal_entries_has_loan_id: bool = True,
+) -> tuple[str, list]:
+    """
+    SQL fragment (no leading AND) to restrict ``journal_entries`` rows by loan and/or product.
+
+    When ``journal_entries_has_loan_id`` is True (column present), prefer ``journal_entries.loan_id``
+    for indexed matching, with legacy fallbacks for NULL.
+
+    When False (migration not applied yet), use only ``event_id`` / ``reference`` heuristics.
+    """
+    p_loan: int | None = None
+    if loan_id is not None:
+        try:
+            x = int(loan_id)
+            if x > 0:
+                p_loan = x
+        except (TypeError, ValueError):
+            pass
+    parts: list[str] = []
+    params: list = []
+    if p_loan is not None:
+        ls = str(p_loan)
+        legacy = (
+            f"({je_alias}.event_id = %s OR strpos(COALESCE({je_alias}.event_id, ''), %s) > 0 "
+            f"OR COALESCE({je_alias}.reference, '') ILIKE %s "
+            f"OR COALESCE({je_alias}.reference, '') ~ ('LOAN-' || %s::text || '($|[^0-9])')"
+            ")"
+        )
+        if journal_entries_has_loan_id:
+            parts.append(
+                f"({je_alias}.loan_id = %s OR ({je_alias}.loan_id IS NULL AND {legacy}))"
+            )
+            params.extend([p_loan, ls, f"LOAN-{ls}-", f"LOAN-{ls}%", ls])
+        else:
+            parts.append(legacy)
+            params.extend([ls, f"LOAN-{ls}-", f"LOAN-{ls}%", ls])
+    pc = (product_code or "").strip()
+    if pc:
+        if p_loan is not None:
+            parts.append("EXISTS (SELECT 1 FROM loans l WHERE l.id = %s AND l.product_code = %s)")
+            params.extend([p_loan, pc])
+        elif not parts:
+            if journal_entries_has_loan_id:
+                parts.append(
+                    "EXISTS (SELECT 1 FROM loans l WHERE l.product_code = %s AND ("
+                    f"{je_alias}.loan_id = l.id OR ({je_alias}.loan_id IS NULL AND ("
+                    f"{je_alias}.event_id = l.id::text OR strpos(COALESCE({je_alias}.event_id, ''), 'LOAN-' || l.id::text || '-') > 0 OR "
+                    f"COALESCE({je_alias}.reference, '') ~ ('LOAN-' || l.id::text || '($|[^0-9])')"
+                    ")))))"
+                )
+            else:
+                parts.append(
+                    "EXISTS (SELECT 1 FROM loans l WHERE l.product_code = %s AND ("
+                    f"{je_alias}.event_id = l.id::text OR strpos(COALESCE({je_alias}.event_id, ''), 'LOAN-' || l.id::text || '-') > 0 OR "
+                    f"COALESCE({je_alias}.reference, '') ~ ('LOAN-' || l.id::text || '($|[^0-9])')"
+                    "))"
+                )
+            params.append(pc)
+    if not parts:
+        return "", []
+    return "(" + " AND ".join(parts) + ")", params
+
+
 def assert_journal_lines_balanced(lines: list[dict], *, context: str) -> None:
     """
     Enforce double-entry for posting: per-line 10dp, then totals must match at **2dp**.
@@ -1144,7 +1228,14 @@ class AccountingRepository:
             )
             return cur.fetchone() is not None
 
-    def get_child_account_summaries(self, parent_code: str, start_date, end_date):
+    def get_child_account_summaries(
+        self,
+        parent_code: str,
+        start_date,
+        end_date,
+        loan_id: int | None = None,
+        product_code: str | None = None,
+    ):
         """
         For a parent account code, return net movement per child in the date range.
         Each row: child code/name + total debit/credit for that child.
@@ -1154,6 +1245,12 @@ class AccountingRepository:
         Returns: code, name, ob_debit, ob_credit, period_debit, period_credit
         """
         with self.conn.cursor() as cur:
+            je_has_loan = _journal_entries_loan_id_column_exists(cur)
+            je_lp, je_lp_params = journal_entry_loan_product_predicate_sql(
+                "je", loan_id, product_code, journal_entries_has_loan_id=je_has_loan
+            )
+            je_join_extra = f"                   AND {je_lp}\n" if je_lp else ""
+
             cur.execute(
                 """
                 WITH RECURSIVE tree AS (
@@ -1193,10 +1290,14 @@ class AccountingRepository:
                     ON ji.entry_id = je.id
                    AND je.status = 'POSTED'
                    AND COALESCE(je.is_active, TRUE) = TRUE
+"""
+                + je_join_extra
+                + """
                 GROUP BY t.top_child_code, t.top_child_name
                 ORDER BY t.top_child_code
                 """,
-                (parent_code, start_date, start_date, start_date, end_date, start_date, end_date),
+                (parent_code, start_date, start_date, start_date, end_date, start_date, end_date)
+                + tuple(je_lp_params),
             )
             rows = list(cur.fetchall())
 
@@ -1216,10 +1317,15 @@ class AccountingRepository:
                     ON ji.entry_id = je.id
                    AND je.status = 'POSTED'
                    AND COALESCE(je.is_active, TRUE) = TRUE
+"""
+                + je_join_extra
+                + """
                 WHERE p.code = %s
                 GROUP BY p.code, p.name
                 """,
-                (start_date, start_date, start_date, end_date, start_date, end_date, parent_code),
+                (start_date, start_date, start_date, end_date, start_date, end_date)
+                + tuple(je_lp_params)
+                + (parent_code,),
             )
             prow = cur.fetchone()
             if prow:
@@ -1474,6 +1580,7 @@ class AccountingRepository:
         posting_policy: str = "standard",
         gl_anchor_date: date | datetime | None = None,
         do_commit: bool = True,
+        loan_id: int | None = None,
     ):
         if lines:
             assert_journal_lines_balanced(
@@ -1491,13 +1598,14 @@ class AccountingRepository:
                 hdr_entry_type,
                 hdr_created_by,
                 journal_lines,
+                hdr_loan_id=None,
             ):
                 cur.execute(
                     """
                     INSERT INTO journal_entries (
-                        entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active
+                        entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active, loan_id
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s)
                     RETURNING id
                     """,
                     (
@@ -1508,6 +1616,7 @@ class AccountingRepository:
                         hdr_event_tag,
                         hdr_entry_type,
                         hdr_created_by,
+                        hdr_loan_id,
                     ),
                 )
                 new_id = cur.fetchone()["id"]
@@ -1729,6 +1838,7 @@ class AccountingRepository:
                         hdr_entry_type="PERIOD_ADJUSTMENT",
                         hdr_created_by=created_by,
                         journal_lines=delta_lines,
+                        hdr_loan_id=loan_id,
                     )
                     if existing_adj is not None:
                         cur.execute(
@@ -1777,6 +1887,7 @@ class AccountingRepository:
                         hdr_entry_type="EVENT",
                         hdr_created_by=created_by,
                         journal_lines=lines,
+                        hdr_loan_id=loan_id,
                     )
                     cur.execute("RELEASE SAVEPOINT je_open_replace_sp")
                     if existing_entry_id is not None:
@@ -1805,6 +1916,7 @@ class AccountingRepository:
                             description = %s,
                             entry_type = %s,
                             created_by = %s,
+                            loan_id = %s,
                             is_active = TRUE,
                             superseded_at = NULL,
                             superseded_by_id = NULL
@@ -1816,6 +1928,7 @@ class AccountingRepository:
                             description,
                             "EVENT",
                             created_by,
+                            loan_id,
                             existing_entry_id,
                         ),
                     )
@@ -1855,6 +1968,7 @@ class AccountingRepository:
                         hdr_entry_type="PERIOD_ADJUSTMENT",
                         hdr_created_by=created_by,
                         journal_lines=delta_lines,
+                        hdr_loan_id=loan_id,
                     )
                     if existing_adj is not None:
                         cur.execute(
@@ -1899,8 +2013,16 @@ class AccountingRepository:
             )
             return cur.fetchall()
 
-    def get_journal_entries(self, start_date=None, end_date=None, account_code=None):
+    def get_journal_entries(
+        self,
+        start_date=None,
+        end_date=None,
+        account_code=None,
+        loan_id: int | None = None,
+        product_code: str | None = None,
+    ):
         with self.conn.cursor() as cur:
+            je_has_loan = _journal_entries_loan_id_column_exists(cur)
             where_clauses = ["COALESCE(je.is_active, TRUE) = TRUE"]
             params = []
             
@@ -1913,6 +2035,12 @@ class AccountingRepository:
             if account_code:
                 where_clauses.append("je.id IN (SELECT entry_id FROM journal_items ji2 JOIN accounts a2 ON ji2.account_id = a2.id WHERE a2.code = %s)")
                 params.append(account_code)
+            jp, jparams = journal_entry_loan_product_predicate_sql(
+                "je", loan_id, product_code, journal_entries_has_loan_id=je_has_loan
+            )
+            if jp:
+                where_clauses.append(jp)
+                params.extend(jparams)
                 
             where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
             
@@ -1938,13 +2066,27 @@ class AccountingRepository:
             """, tuple(params))
             return cur.fetchall()
 
-    def get_account_ledger(self, account_code, start_date=None, end_date=None, include_descendants=False):
+    def get_account_ledger(
+        self,
+        account_code,
+        start_date=None,
+        end_date=None,
+        include_descendants=False,
+        loan_id: int | None = None,
+        product_code: str | None = None,
+    ):
         """
         Ledger for one account. If ``include_descendants`` is True, opening balance and
         transaction lines include every **active** descendant account (and the account
         itself), using the same date rules as ``get_child_account_summaries``.
         """
         with self.conn.cursor() as cur:
+            je_has_loan = _journal_entries_loan_id_column_exists(cur)
+            je_lp, je_lp_params = journal_entry_loan_product_predicate_sql(
+                "je", loan_id, product_code, journal_entries_has_loan_id=je_has_loan
+            )
+            je_extra_ob = f" AND {je_lp}" if je_lp else ""
+
             # Get account details
             cur.execute("SELECT id, code, name, category FROM accounts WHERE code = %s", (account_code,))
             account = cur.fetchone()
@@ -1989,9 +2131,9 @@ class AccountingRepository:
                   ON ji.entry_id = je.id
                  AND je.status = 'POSTED'
                  AND COALESCE(je.is_active, TRUE) = TRUE
-                WHERE ji.account_id = ANY(%s::uuid[]) {ob_date_filter}
+                WHERE ji.account_id = ANY(%s::uuid[]) {ob_date_filter}{je_extra_ob}
                 """,
-                tuple(ob_params),
+                tuple(ob_params + je_lp_params),
             )
             ob = cur.fetchone()
 
@@ -2009,6 +2151,9 @@ class AccountingRepository:
             if end_date:
                 tx_where_clauses.append("je.entry_date <= %s")
                 tx_params.append(end_date)
+            if je_lp:
+                tx_where_clauses.append(je_lp)
+                tx_params.extend(je_lp_params)
 
             tx_where = " AND ".join(tx_where_clauses)
 
@@ -2297,6 +2442,7 @@ class AccountingRepository:
 
         Each entry dict must include:
           entry_date, reference, description, event_id, event_tag, created_by, lines
+        Optional: loan_id (integer) stored on the journal header for indexed GL filtering.
         """
         if not entries:
             return
@@ -2314,6 +2460,7 @@ class AccountingRepository:
                     posting_policy=posting_policy,
                     gl_anchor_date=gl_anchor_date,
                     do_commit=False,
+                    loan_id=e.get("loan_id"),
                 )
             if do_commit:
                 self.conn.commit()
@@ -2348,6 +2495,7 @@ class AccountingRepository:
                                 posting_policy=posting_policy,
                                 gl_anchor_date=gl_anchor_date,
                                 do_commit=False,
+                                loan_id=ee.get("loan_id"),
                             )
                         if do_commit:
                             self.conn.commit()
@@ -2403,6 +2551,7 @@ class AccountingRepository:
                     "EVENT",
                     e.get("created_by") or "system",
                     True,
+                    e.get("loan_id"),
                 )
                 for e in entries
             ]
@@ -2413,7 +2562,7 @@ class AccountingRepository:
                 cur,
                 """
                 INSERT INTO journal_entries (
-                    entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active
+                    entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active, loan_id
                 )
                 VALUES %s
                 RETURNING id, event_id, event_tag

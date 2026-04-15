@@ -256,11 +256,20 @@ class AccountingService:
         finally:
             conn.close()
 
-    def get_child_account_summaries(self, parent_code: str, start_date: date, end_date: date):
+    def get_child_account_summaries(
+        self,
+        parent_code: str,
+        start_date: date,
+        end_date: date,
+        loan_id: int | None = None,
+        product_code: str | None = None,
+    ):
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
-            return repo.get_child_account_summaries(parent_code, start_date, end_date)
+            return repo.get_child_account_summaries(
+                parent_code, start_date, end_date, loan_id=loan_id, product_code=product_code
+            )
         finally:
             conn.close()
 
@@ -483,11 +492,24 @@ class AccountingService:
         finally:
             conn.close()
 
-    def get_journal_entries(self, start_date: date = None, end_date: date = None, account_code: str = None):
+    def get_journal_entries(
+        self,
+        start_date: date = None,
+        end_date: date = None,
+        account_code: str = None,
+        loan_id: int | None = None,
+        product_code: str | None = None,
+    ):
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
-            rows = repo.get_journal_entries(start_date, end_date, account_code)
+            rows = repo.get_journal_entries(
+                start_date,
+                end_date,
+                account_code,
+                loan_id=loan_id,
+                product_code=product_code,
+            )
             return self._annotate_journal_entries_balance(rows)
         finally:
             conn.close()
@@ -559,12 +581,19 @@ class AccountingService:
         end_date: date = None,
         *,
         include_descendants: bool = False,
+        loan_id: int | None = None,
+        product_code: str | None = None,
     ):
         conn = get_conn()
         try:
             repo = AccountingRepository(conn)
             return repo.get_account_ledger(
-                account_code, start_date, end_date, include_descendants=include_descendants
+                account_code,
+                start_date,
+                end_date,
+                include_descendants=include_descendants,
+                loan_id=loan_id,
+                product_code=product_code,
             )
         finally:
             conn.close()
@@ -1306,6 +1335,7 @@ class AccountingService:
                     posting_policy=policy,
                     gl_anchor_date=anchor_date,
                     do_commit=False,
+                    loan_id=loan_id,
                 )
             conn.commit()
         except Exception:
@@ -1459,6 +1489,7 @@ class AccountingService:
                             "event_tag": event_type,
                             "created_by": created_by,
                             "lines": lines,
+                            "loan_id": loan_id,
                         }
                     )
             if journal_entries:

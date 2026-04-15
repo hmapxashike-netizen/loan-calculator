@@ -1,0 +1,2 @@
+line_type,entry_kind,loan_id,value_date,repayment_id,repayment_key,narration,credits,unapplied_from_receipt,alloc_prin_arrears,alloc_int_arrears,alloc_penalty_int,alloc_default_int,alloc_fees_charges,regular_interest_period,penalty_interest_period,default_interest_period
+period_accrual,,2000,2024-11-19,,,Accruals for period ending 2024-11-19,,,,,,,,5.8976666667,0,0

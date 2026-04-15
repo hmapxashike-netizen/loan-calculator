@@ -10,7 +10,6 @@ from display_formatting import (
     resolve_display_format,
 )
 from io import BytesIO
-import numpy_financial as npf
 
 from accounting.core import (
     MappingRegistry,
@@ -48,7 +47,6 @@ from style import (
     render_sub_header,
 )
 from ui.components import inject_tertiary_hyperlink_css_once
-from ui.system_configurations import render_system_configurations_ui
 
 try:
     from customers.core import (
@@ -453,6 +451,8 @@ def _format_schedule_df(df: pd.DataFrame):
 
 def system_configurations_ui():
     """System configurations: sectors, EOD, accounting periods, products, and IFRS provision tables."""
+    from ui.system_configurations import render_system_configurations_ui
+
     _list_sectors = (
         globals().get("list_sectors") if _customers_available else (lambda *a, **k: [])
     )
@@ -679,6 +679,8 @@ def compute_consumer_schedule(
         amount_display = loan_required
     base_monthly = (base_rate / 12.0) if rate_basis == "Per annum" else base_rate
     total_monthly_rate = base_monthly + additional_monthly_rate
+    import numpy_financial as npf
+
     monthly_installment = float(npf.pmt(total_monthly_rate, loan_term, -total_facility))
 
     if first_repayment_date is not None:
@@ -1099,6 +1101,7 @@ def statements_ui():
         list_customers=list_customers,
         get_display_name=get_display_name,
         money_df_column_config=_money_df_column_config,
+        list_products=globals().get("list_products"),
     )
 
 def accounting_ui():

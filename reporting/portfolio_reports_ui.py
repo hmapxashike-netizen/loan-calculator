@@ -15,10 +15,7 @@ import streamlit as st
 
 from style import render_main_header, render_sub_header, render_sub_sub_header
 
-from psycopg2.extras import RealDictCursor
-
 from decimal_utils import as_10dp
-from grade_scale_config import provision_pct_from_value
 from loan_management import _connection
 from reporting.portfolio_reporting import (
     ARREARS_BUCKET_KEYS,
@@ -36,10 +33,100 @@ from reporting.portfolio_reporting import (
     build_regulatory_maturity_summary_table,
     restructure_scope_sql,
 )
-from provisions.engine import compute_security_provision_breakdown
 
-# First selectbox option: no report rendered; Data export UI only on this screen.
+
+def _portfolio_real_dict_cursor():
+    """Defer psycopg2.extras import until a portfolio DB report actually runs."""
+    from psycopg2.extras import RealDictCursor
+
+    return RealDictCursor
+
+
+# Legacy placeholder (sessions may still hold this until migration runs).
 _PORTFOLIO_REPORT_PLACEHOLDER = "— Select report to view —"
+
+# (Radio label, stable session id, [(selectbox label, report key rk), ...]). Group 6 has no sub-reports (bulk export only).
+_PORTFOLIO_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
+    (
+        "1 · Portfolio Performance & Risk",
+        "g_perf",
+        [
+            ("Debtor Arrears Ageing (current delinquency status)", "r21"),
+            ("Portfolio at Risk (PAR) (total exposure of loans with arrears)", "r22"),
+            ("Migration / Roll Rates (movement between delinquency buckets)", "shell_23"),
+            ("Concentration Reports (exposure by sector, region, or product)", "r51"),
+            ("Collection Efficiency (actual collections vs. targets)", "shell_41"),
+        ],
+    ),
+    (
+        "2 · Financial Reporting & Impairment",
+        "g_ifrs",
+        [
+            ("IFRS Provisions (Single Loan) (individual impairment assessments)", "ifrs"),
+            ("ECL / Provision Movement (changes in ECL over time)", "r52"),
+            ("IIS Movement (interest in suspense tracking)", "r42"),
+        ],
+    ),
+    (
+        "3 · Treasury & Liquidity Management",
+        "g_treas",
+        [
+            ("Debtor Maturity Profile (when your money is coming in)", "mat_11"),
+            ("Creditor Maturity Profile (when your debts are due to be paid)", "shell_12"),
+            ("Gap Analysis (variance between debtor and creditor timing)", "shell_gap"),
+        ],
+    ),
+    (
+        "4 · Regulatory & Statutory Compliance",
+        "g_reg",
+        [
+            ("Regulatory Maturity Profile (regulator-ready buckets)", "reg_mat"),
+            ("Loan Classification (standard, sub-standard, doubtful, loss)", "r53"),
+        ],
+    ),
+    (
+        "5 · Sales & Operational Data",
+        "g_sales",
+        [
+            ("Disbursed Loans (new business volume and BD tracking)", "r32"),
+            ("Master Loan Listing (comprehensive active loan data)", "r31"),
+        ],
+    ),
+    (
+        "6 · Data export",
+        "g_export",
+        [],
+    ),
+]
+
+_GROUP_ID_TO_REPORTS: dict[str, list[tuple[str, str]]] = {g[1]: g[2] for g in _PORTFOLIO_GROUPS}
+
+# Sessions may still hold the old flat dropdown label until migration runs once.
+_LEGACY_PORTFOLIO_LABEL_TO_RK: dict[str, str] = {
+    "IFRS Provisions (single loan)": "ifrs",
+    "Debtor maturity profile": "mat_11",
+    "Regulatory maturity profile": "reg_mat",
+    "Creditor maturity profile (shell)": "shell_12",
+    "Debtor arrears (aging)": "r21",
+    "Portfolio at risk (PAR)": "r22",
+    "Migration / roll rates (shell)": "shell_23",
+    "Master loan listing": "r31",
+    "Disbursed loans (period)": "r32",
+    "Collection efficiency (shell)": "shell_41",
+    "IIS movement": "r42",
+    "Concentration": "r51",
+    "ECL / provisions (IFRS view)": "r52",
+    "Loan classification (regulatory)": "r53",
+}
+
+
+def _portfolio_group_id_for_rk(rk: str) -> str:
+    for _title, gid, items in _PORTFOLIO_GROUPS:
+        for _lbl, rkk in items:
+            if rkk == rk:
+                return gid
+    return "g_perf"
+
 
 # Reports whose loan base queries support restructure tag filters (OR semantics).
 _REPORT_KEYS_WITH_RESTRUCTURE_FILTER = frozenset(
@@ -56,7 +143,7 @@ _RESTRUCTURE_TAG_LABELS: tuple[tuple[str, str], ...] = (
     ("Originated from split", RESTRUCTURE_SCOPE_SPLIT),
     ("Modification top-up applied", RESTRUCTURE_SCOPE_TOPUP),
 )
-# Reset selectbox on next run (cannot set portfolio_report_pick after the widget is created).
+# Clear report selection on next run (cannot assign widget key after the widget is created).
 _PORTFOLIO_CLOSE_NEXT_RUN_KEY = "_portfolio_close_report_next_run"
 # After export success, bump nonce so Loan ID gets a new widget key (form + clear_on_submit=False
 # otherwise keeps the submitted value; cannot assign the same key after the widget exists).
@@ -80,10 +167,8 @@ def _default_as_of() -> date:
 
 
 def _df_download(df: pd.DataFrame, filename: str, *, button_key: str) -> None:
-    # No per-report CSV while viewing a report; bulk export lives on the default screen only.
-    if st.session_state.get("portfolio_report_pick") != _PORTFOLIO_REPORT_PLACEHOLDER:
-        return
-    if not st.session_state.get("portfolio_exports_visible", False):
+    # No per-report CSV while viewing a report; bulk export lives under Data export only.
+    if st.session_state.get("portfolio_sel_rk"):
         return
     if df.empty:
         return
@@ -339,7 +424,7 @@ def _report_par(
         {rs_clause}
     """
     with _connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=_portfolio_real_dict_cursor()) as cur:
             cur.execute(sql, (as_of,))
             rows = cur.fetchall() or []
     if not rows:
@@ -420,7 +505,7 @@ def _report_master_listing(
         ORDER BY l.id
     """
     with _connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=_portfolio_real_dict_cursor()) as cur:
             cur.execute(sql, (as_of,))
             rows = cur.fetchall() or []
     df = pd.DataFrame(rows)
@@ -470,7 +555,7 @@ def _report_disbursed(
         ORDER BY l.disbursement_date, l.id
     """
     with _connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=_portfolio_real_dict_cursor()) as cur:
             cur.execute(sql, (period_start, period_end))
             rows = cur.fetchall() or []
     df = pd.DataFrame(rows)
@@ -532,7 +617,7 @@ def _report_iis_movement(
         {rs_clause}
     """
     with _connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=_portfolio_real_dict_cursor()) as cur:
             cur.execute(sql, (period_start, period_end))
             rows = cur.fetchall() or []
     df = pd.DataFrame(rows)
@@ -613,7 +698,7 @@ def _concentration_query(
         ORDER BY sum_exposure DESC NULLS LAST
     """
     with _connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=_portfolio_real_dict_cursor()) as cur:
             cur.execute(sql, (as_of,))
             rows = cur.fetchall() or []
     return pd.DataFrame(rows)
@@ -632,7 +717,8 @@ def _report_ecl_provision(
     )
     try:
         from provisions.config import list_pd_bands, list_security_subtypes, provision_schema_ready
-        from grade_scale_config import grade_scale_schema_ready, resolve_loan_grade
+        from grade_scale_config import grade_scale_schema_ready, provision_pct_from_value, resolve_loan_grade
+        from provisions.engine import compute_security_provision_breakdown
     except ImportError as e:
         st.error(f"Provisions config unavailable: {e}")
         return
@@ -680,7 +766,7 @@ def _report_ecl_provision(
         ORDER BY l.id
     """
     with _connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=_portfolio_real_dict_cursor()) as cur:
             cur.execute(sql, (as_of,))
             rows = cur.fetchall() or []
 
@@ -751,7 +837,12 @@ def _report_regulatory_classification(
         "This does not change IFRS PD-based provision math."
     )
     try:
-        from grade_scale_config import grade_scale_schema_ready, list_loan_grade_scale_rules, resolve_loan_grade
+        from grade_scale_config import (
+            grade_scale_schema_ready,
+            list_loan_grade_scale_rules,
+            provision_pct_from_value,
+            resolve_loan_grade,
+        )
     except ImportError as e:
         st.error(f"Grade scale config unavailable: {e}")
         return
@@ -785,7 +876,7 @@ def _report_regulatory_classification(
         ORDER BY l.id
     """
     with _connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=_portfolio_real_dict_cursor()) as cur:
             cur.execute(sql, (as_of,))
             rows = cur.fetchall() or []
 
@@ -852,9 +943,175 @@ def _report_regulatory_classification(
     _df_download(df, f"loan_classification_regulatory_{as_of.isoformat()}.csv", button_key="port_r53_csv")
 
 
+def _render_portfolio_data_export_block() -> None:
+    st.divider()
+    render_sub_sub_header("Data Export")
+    if st.session_state.pop(_PORTFOLIO_CLEAR_EXPORT_LOAN_ID_NEXT_RUN, False):
+        prev = int(st.session_state.get(_EXPORT_LOAN_ID_INPUT_NONCE_KEY, 0))
+        st.session_state[_EXPORT_LOAN_ID_INPUT_NONCE_KEY] = prev + 1
+        st.session_state.pop(f"export_loan_id_text_{prev}", None)
+    _loan_id_nonce = int(st.session_state.get(_EXPORT_LOAN_ID_INPUT_NONCE_KEY, 0))
+    _loan_id_widget_key = f"export_loan_id_text_{_loan_id_nonce}"
+    _export_ok_msg = st.session_state.pop("portfolio_export_success_detail", None)
+    if _export_ok_msg:
+        st.success(_export_ok_msg)
+        _log = st.session_state.get("portfolio_export_last_stdout")
+        if _log is not None:
+            with st.expander("View export log"):
+                st.code(_log or "(no stdout)")
+    st.caption(
+        "Export low-level database tables to CSV in the folder you set below (default: project farndacred_exports/). "
+        "Optional filters narrow rows at the database (product and/or loan). "
+        "Large exports auto-create a ZIP when total CSV size exceeds the threshold "
+        "(FARNDACRED_EXPORT_ZIP_MIN_BYTES, default 12 MiB). "
+        "Streamlit has no folder picker — paste a full path from Explorer."
+    )
+
+    product_labels: list[str] = ["All"]
+    product_codes: list[str | None] = [None]
+    try:
+        from loan_management.product_catalog import list_products
+
+        for p in list_products(active_only=False):
+            code = (p.get("code") or "").strip()
+            if not code:
+                continue
+            name = (p.get("name") or "").strip() or code
+            product_labels.append(f"{code} — {name}")
+            product_codes.append(code)
+    except Exception:
+        pass
+
+    ex_c1, ex_c2, ex_c3, ex_c4 = st.columns([1, 1, 1.1, 1.1], vertical_alignment="bottom")
+    with ex_c1:
+        exp_start = st.date_input(
+            "Start Date", value=date(date.today().year, 1, 1), key="export_start"
+        )
+    with ex_c2:
+        exp_end = st.date_input("End Date", value=date.today(), key="export_end")
+    with ex_c3:
+        pick_i = st.selectbox(
+            "Product",
+            options=list(range(len(product_labels))),
+            format_func=lambda i: product_labels[i],
+            key="export_product_idx",
+        )
+    with ex_c4:
+        loan_id_raw = st.text_input(
+            "Loan ID",
+            value="",
+            placeholder="All loans",
+            key=_loan_id_widget_key,
+            help="Leave empty for all loans, or enter a numeric loan id.",
+        )
+    if _EXPORT_OUTPUT_DIR_WIDGET_KEY not in st.session_state:
+        st.session_state[_EXPORT_OUTPUT_DIR_WIDGET_KEY] = os.path.abspath(
+            os.path.join(_project_root_for_export(), "farndacred_exports")
+        )
+    out_col, btn_col = st.columns([3.2, 0.9], vertical_alignment="bottom")
+    with out_col:
+        export_out_raw = st.text_input(
+            "Output folder",
+            key=_EXPORT_OUTPUT_DIR_WIDGET_KEY,
+            help="Absolute path or ~ ; created if missing. Override with env FARNDACRED_EXPORT_DIR when using CLI only.",
+        )
+    with btn_col:
+        run_export = st.button("Run Data Export", type="primary", key="portfolio_run_data_export")
+
+    if run_export:
+        import subprocess
+        import sys
+
+        exp_product = product_codes[int(pick_i)] if pick_i < len(product_codes) else None
+        loan_id_arg: int | None = None
+        lid_s = (loan_id_raw or "").strip()
+        loan_id_invalid = False
+        if lid_s:
+            try:
+                loan_id_arg = int(lid_s)
+                if loan_id_arg <= 0:
+                    st.error("Loan ID must be a positive integer.")
+                    loan_id_invalid = True
+            except ValueError:
+                st.error("Loan ID must be a whole number.")
+                loan_id_invalid = True
+
+        out_s = (export_out_raw or "").strip()
+        out_bad = False
+        if "\n" in out_s or "\r" in out_s:
+            st.error("Output folder must be a single-line path.")
+            out_bad = True
+        elif not out_s:
+            st.error("Output folder cannot be empty.")
+            out_bad = True
+        else:
+            export_output_abs = os.path.abspath(os.path.expandvars(os.path.expanduser(out_s)))
+
+        if loan_id_invalid:
+            pass
+        elif out_bad:
+            pass
+        elif exp_start > exp_end:
+            st.error("Start Date must be on or before End Date.")
+        else:
+            cmd = [
+                sys.executable,
+                "scripts/export_loan_tables.py",
+                "--start-date",
+                exp_start.strftime("%Y-%m-%d"),
+                "--end-date",
+                exp_end.strftime("%Y-%m-%d"),
+                "--output-dir",
+                export_output_abs,
+            ]
+            if exp_product:
+                cmd.extend(["--product-code", exp_product])
+            if loan_id_arg is not None:
+                cmd.extend(["--loan-id", str(loan_id_arg)])
+
+            with st.spinner("Running export script…"):
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        cwd=_project_root_for_export(),
+                        check=True,
+                    )
+                    scope_bits: list[str] = []
+                    if loan_id_arg is not None:
+                        scope_bits.append(f"loan **{loan_id_arg}**")
+                    if exp_product:
+                        scope_bits.append(f"product **{exp_product}**")
+                    scope_txt = (
+                        "Confirmed: export completed for " + ", ".join(scope_bits)
+                        if scope_bits
+                        else "Confirmed: export completed (all loans, all products)"
+                    )
+                    detail = (
+                        f"{scope_txt} for **{exp_start}** – **{exp_end}**. "
+                        f"Output folder: `{export_output_abs}` (see script log in expander below)."
+                    )
+                    st.session_state["portfolio_export_success_detail"] = detail
+                    st.session_state[_PORTFOLIO_CLEAR_EXPORT_LOAN_ID_NEXT_RUN] = True
+                    st.session_state["portfolio_export_last_stdout"] = result.stdout or ""
+                    st.rerun()
+                except subprocess.CalledProcessError as e:
+                    st.error("Export failed.")
+                    _err_txt = (e.stderr or e.stdout or "").lower()
+                    if "disk full" in _err_txt or "no space" in _err_txt:
+                        st.warning(
+                            "Output disk may be full. Free space on the drive for your **Output folder**, "
+                            "delete old exports/ZIPs there, choose another folder, or narrow dates and filters."
+                        )
+                    with st.expander("View error"):
+                        st.code(e.stderr or e.stdout or str(e))
+                except Exception as e:
+                    st.error(f"Error executing script: {e}")
+
+
 def render_portfolio_reports_ui() -> None:
     try:
-        from loan_management import _connection
         from loan_management.schema_ddl import _ensure_loans_schema_for_save_loan
 
         with _connection() as conn:
@@ -862,39 +1119,48 @@ def render_portfolio_reports_ui() -> None:
     except Exception:
         pass
 
-    st.session_state.setdefault("portfolio_exports_visible", False)
-    report_keys = [
-        ("IFRS Provisions (single loan)", "ifrs"),
-        ("Debtor maturity profile", "mat_11"),
-        ("Regulatory maturity profile", "reg_mat"),
-        ("Creditor maturity profile (shell)", "shell_12"),
-        ("Debtor arrears (aging)", "r21"),
-        ("Portfolio at risk (PAR)", "r22"),
-        ("Migration / roll rates (shell)", "shell_23"),
-        ("Master loan listing", "r31"),
-        ("Disbursed loans (period)", "r32"),
-        ("Collection efficiency (shell)", "shell_41"),
-        ("IIS movement", "r42"),
-        ("Concentration", "r51"),
-        ("ECL / provisions (IFRS view)", "r52"),
-        ("Loan classification (regulatory)", "r53"),
-    ]
-    labels = [x[0] for x in report_keys]
-    key_by_label = {x[0]: x[1] for x in report_keys}
-    select_options = [_PORTFOLIO_REPORT_PLACEHOLDER] + labels
+    st.session_state.setdefault("portfolio_nav_group", "g_perf")
+    st.session_state.setdefault("portfolio_sel_rk", "")
+
+    _legacy_pick = st.session_state.pop("portfolio_report_pick", None)
+    if _legacy_pick and _legacy_pick != _PORTFOLIO_REPORT_PLACEHOLDER:
+        _mrk = _LEGACY_PORTFOLIO_LABEL_TO_RK.get(_legacy_pick)
+        if _mrk:
+            st.session_state["portfolio_nav_group"] = _portfolio_group_id_for_rk(_mrk)
+            st.session_state["portfolio_sel_rk"] = _mrk
+
+    def _on_portfolio_group_change() -> None:
+        st.session_state["portfolio_sel_rk"] = ""
 
     if st.session_state.pop(_PORTFOLIO_CLOSE_NEXT_RUN_KEY, False):
-        st.session_state["portfolio_report_pick"] = _PORTFOLIO_REPORT_PLACEHOLDER
+        st.session_state["portfolio_sel_rk"] = ""
 
-    def _on_report_pick_change() -> None:
-        p = st.session_state.get("portfolio_report_pick")
-        if p != _PORTFOLIO_REPORT_PLACEHOLDER:
-            st.session_state["portfolio_exports_visible"] = False
+    _group_id = st.session_state["portfolio_nav_group"]
+    _items_cur = _GROUP_ID_TO_REPORTS.get(_group_id, [])
+    _valid_rks = {b for _a, b in _items_cur}
+    _sr = (st.session_state.get("portfolio_sel_rk") or "").strip()
+    if _group_id == "g_export" and _sr:
+        st.session_state["portfolio_sel_rk"] = ""
+        _sr = ""
+    elif _sr and _sr not in _valid_rks:
+        st.session_state["portfolio_sel_rk"] = ""
+        _sr = ""
 
-    # Migrate old sessions that stored a bare label without the placeholder option.
-    _cur_pick = st.session_state.get("portfolio_report_pick")
-    if _cur_pick is not None and _cur_pick not in select_options:
-        st.session_state["portfolio_report_pick"] = _PORTFOLIO_REPORT_PLACEHOLDER
+    _gopts = [g[1] for g in _PORTFOLIO_GROUPS]
+    _gfmt = {g[1]: g[0] for g in _PORTFOLIO_GROUPS}
+    st.caption("Report area")
+    st.radio(
+        "Report area",
+        options=_gopts,
+        format_func=lambda x: _gfmt[x],
+        key="portfolio_nav_group",
+        horizontal=True,
+        label_visibility="collapsed",
+        on_change=_on_portfolio_group_change,
+    )
+
+    _group_id = st.session_state["portfolio_nav_group"]
+    _items_cur = _GROUP_ID_TO_REPORTS.get(_group_id, [])
 
     as_of_default = _default_as_of()
     as_of = as_of_default
@@ -903,17 +1169,30 @@ def render_portfolio_reports_ui() -> None:
 
     c1, c2, c3, c4 = st.columns([2, 1, 1, 1], gap="xxsmall", vertical_alignment="top")
     with c1:
-        st.caption("Report")
-        choice = st.selectbox(
-            "Report",
-            select_options,
-            key="portfolio_report_pick",
-            label_visibility="collapsed",
-            on_change=_on_report_pick_change,
-        )
-    report_open = choice != _PORTFOLIO_REPORT_PLACEHOLDER
-    rk = key_by_label[choice] if report_open else None
-    _no_snap = rk in ("ifrs", "r32", "r42", "shell_12", "shell_23", "shell_41") if rk else True
+        if _group_id == "g_export":
+            st.caption("Data export")
+            st.caption("Bulk table export — panel below.")
+        else:
+            st.caption("Report")
+            _rk_opts = [""] + [b for _a, b in _items_cur]
+            _rk_lbl = {b: a for a, b in _items_cur}
+            st.selectbox(
+                "Report",
+                options=_rk_opts,
+                format_func=lambda x: "— Select report —" if not x else _rk_lbl.get(x, x),
+                key="portfolio_sel_rk",
+                label_visibility="collapsed",
+            )
+
+    if _group_id == "g_export":
+        rk = None
+        report_open = False
+    else:
+        _sr2 = (st.session_state.get("portfolio_sel_rk") or "").strip()
+        rk = _sr2 if _sr2 else None
+        report_open = bool(rk)
+
+    _no_snap = rk in ("ifrs", "r32", "r42", "shell_12", "shell_23", "shell_41", "shell_gap") if rk else True
     with c2:
         if report_open and not _no_snap:
             st.caption("As-of")
@@ -968,16 +1247,8 @@ def render_portfolio_reports_ui() -> None:
             if st.button("✕", key="portfolio_close_report", help="Close report"):
                 st.session_state[_PORTFOLIO_CLOSE_NEXT_RUN_KEY] = True
                 st.rerun()
-    else:
-        _ex_vis = st.session_state.get("portfolio_exports_visible", False)
-        if st.button(
-            "Hide exports" if _ex_vis else "Data export",
-            key="portfolio_exports_toggle",
-            help="Show or hide the bulk data export panel below.",
-        ):
-            st.session_state["portfolio_exports_visible"] = not _ex_vis
 
-    if not report_open:
+    if not report_open and _group_id != "g_export":
         st.info("Select a report from the dropdown above to view it.")
     elif rk == "ifrs":
         from provisions.ui import render_ifrs_provision_calculator
@@ -992,6 +1263,14 @@ def render_portfolio_reports_ui() -> None:
             "Creditor loans maturity profile",
             [
                 "Mirror of debtor maturity for **liabilities you owe** — needs an outbound / creditor product model (not in this LMS yet).",
+            ],
+        )
+    elif rk == "shell_gap":
+        _shell_report(
+            "Gap analysis (debtor vs creditor timing)",
+            [
+                "Compare **debtor maturity** (cash inflows) vs **creditor maturity** (outflows) by period bucket.",
+                "Variance highlights liquidity gaps; needs both asset-side and liability-side maturity inputs.",
             ],
         )
     elif rk == "shell_23":
@@ -1067,170 +1346,5 @@ def render_portfolio_reports_ui() -> None:
     elif rk == "r53":
         _report_regulatory_classification(as_of, active_only, restructure_scope)
 
-    if not report_open and st.session_state.get("portfolio_exports_visible", False):
-        st.divider()
-        render_sub_sub_header("Data Export")
-        if st.session_state.pop(_PORTFOLIO_CLEAR_EXPORT_LOAN_ID_NEXT_RUN, False):
-            prev = int(st.session_state.get(_EXPORT_LOAN_ID_INPUT_NONCE_KEY, 0))
-            st.session_state[_EXPORT_LOAN_ID_INPUT_NONCE_KEY] = prev + 1
-            st.session_state.pop(f"export_loan_id_text_{prev}", None)
-        _loan_id_nonce = int(st.session_state.get(_EXPORT_LOAN_ID_INPUT_NONCE_KEY, 0))
-        _loan_id_widget_key = f"export_loan_id_text_{_loan_id_nonce}"
-        _export_ok_msg = st.session_state.pop("portfolio_export_success_detail", None)
-        if _export_ok_msg:
-            st.success(_export_ok_msg)
-            _log = st.session_state.get("portfolio_export_last_stdout")
-            if _log is not None:
-                with st.expander("View export log"):
-                    st.code(_log or "(no stdout)")
-        st.caption(
-            "Export low-level database tables to CSV in the folder you set below (default: project farndacred_exports/). "
-            "Optional filters narrow rows at the database (product and/or loan). "
-            "Large exports auto-create a ZIP when total CSV size exceeds the threshold "
-            "(FARNDACRED_EXPORT_ZIP_MIN_BYTES, default 12 MiB). "
-            "Streamlit has no folder picker — paste a full path from Explorer."
-        )
-
-        product_labels: list[str] = ["All"]
-        product_codes: list[str | None] = [None]
-        try:
-            from loan_management.product_catalog import list_products
-
-            for p in list_products(active_only=False):
-                code = (p.get("code") or "").strip()
-                if not code:
-                    continue
-                name = (p.get("name") or "").strip() or code
-                product_labels.append(f"{code} — {name}")
-                product_codes.append(code)
-        except Exception:
-            pass
-
-        # Plain widgets + button (not st.form): form submit + Enter can make inputs look cleared
-        # while a long export runs; Loan ID only resets after a successful export (nonce bump).
-        ex_c1, ex_c2, ex_c3, ex_c4 = st.columns([1, 1, 1.1, 1.1], vertical_alignment="bottom")
-        with ex_c1:
-            exp_start = st.date_input(
-                "Start Date", value=date(date.today().year, 1, 1), key="export_start"
-            )
-        with ex_c2:
-            exp_end = st.date_input("End Date", value=date.today(), key="export_end")
-        with ex_c3:
-            pick_i = st.selectbox(
-                "Product",
-                options=list(range(len(product_labels))),
-                format_func=lambda i: product_labels[i],
-                key="export_product_idx",
-            )
-        with ex_c4:
-            loan_id_raw = st.text_input(
-                "Loan ID",
-                value="",
-                placeholder="All loans",
-                key=_loan_id_widget_key,
-                help="Leave empty for all loans, or enter a numeric loan id.",
-            )
-        if _EXPORT_OUTPUT_DIR_WIDGET_KEY not in st.session_state:
-            st.session_state[_EXPORT_OUTPUT_DIR_WIDGET_KEY] = os.path.abspath(
-                os.path.join(_project_root_for_export(), "farndacred_exports")
-            )
-        out_col, btn_col = st.columns([3.2, 0.9], vertical_alignment="bottom")
-        with out_col:
-            export_out_raw = st.text_input(
-                "Output folder",
-                key=_EXPORT_OUTPUT_DIR_WIDGET_KEY,
-                help="Absolute path or ~ ; created if missing. Override with env FARNDACRED_EXPORT_DIR when using CLI only.",
-            )
-        with btn_col:
-            run_export = st.button("Run Data Export", type="primary", key="portfolio_run_data_export")
-
-        if run_export:
-            import subprocess
-            import sys
-
-            exp_product = product_codes[int(pick_i)] if pick_i < len(product_codes) else None
-            loan_id_arg: int | None = None
-            lid_s = (loan_id_raw or "").strip()
-            loan_id_invalid = False
-            if lid_s:
-                try:
-                    loan_id_arg = int(lid_s)
-                    if loan_id_arg <= 0:
-                        st.error("Loan ID must be a positive integer.")
-                        loan_id_invalid = True
-                except ValueError:
-                    st.error("Loan ID must be a whole number.")
-                    loan_id_invalid = True
-
-            out_s = (export_out_raw or "").strip()
-            out_bad = False
-            if "\n" in out_s or "\r" in out_s:
-                st.error("Output folder must be a single-line path.")
-                out_bad = True
-            elif not out_s:
-                st.error("Output folder cannot be empty.")
-                out_bad = True
-            else:
-                export_output_abs = os.path.abspath(os.path.expandvars(os.path.expanduser(out_s)))
-
-            if loan_id_invalid:
-                pass
-            elif out_bad:
-                pass
-            elif exp_start > exp_end:
-                st.error("Start Date must be on or before End Date.")
-            else:
-                cmd = [
-                    sys.executable,
-                    "scripts/export_loan_tables.py",
-                    "--start-date",
-                    exp_start.strftime("%Y-%m-%d"),
-                    "--end-date",
-                    exp_end.strftime("%Y-%m-%d"),
-                    "--output-dir",
-                    export_output_abs,
-                ]
-                if exp_product:
-                    cmd.extend(["--product-code", exp_product])
-                if loan_id_arg is not None:
-                    cmd.extend(["--loan-id", str(loan_id_arg)])
-
-                with st.spinner("Running export script…"):
-                    try:
-                        result = subprocess.run(
-                            cmd,
-                            capture_output=True,
-                            text=True,
-                            cwd=_project_root_for_export(),
-                            check=True,
-                        )
-                        scope_bits: list[str] = []
-                        if loan_id_arg is not None:
-                            scope_bits.append(f"loan **{loan_id_arg}**")
-                        if exp_product:
-                            scope_bits.append(f"product **{exp_product}**")
-                        scope_txt = (
-                            "Confirmed: export completed for " + ", ".join(scope_bits)
-                            if scope_bits
-                            else "Confirmed: export completed (all loans, all products)"
-                        )
-                        detail = (
-                            f"{scope_txt} for **{exp_start}** – **{exp_end}**. "
-                            f"Output folder: `{export_output_abs}` (see script log in expander below)."
-                        )
-                        st.session_state["portfolio_export_success_detail"] = detail
-                        st.session_state[_PORTFOLIO_CLEAR_EXPORT_LOAN_ID_NEXT_RUN] = True
-                        st.session_state["portfolio_export_last_stdout"] = result.stdout or ""
-                        st.rerun()
-                    except subprocess.CalledProcessError as e:
-                        st.error("Export failed.")
-                        _err_txt = (e.stderr or e.stdout or "").lower()
-                        if "disk full" in _err_txt or "no space" in _err_txt:
-                            st.warning(
-                                "Output disk may be full. Free space on the drive for your **Output folder**, "
-                                "delete old exports/ZIPs there, choose another folder, or narrow dates and filters."
-                            )
-                        with st.expander("View error"):
-                            st.code(e.stderr or e.stdout or str(e))
-                    except Exception as e:
-                        st.error(f"Error executing script: {e}")
+    if _group_id == "g_export":
+        _render_portfolio_data_export_block()

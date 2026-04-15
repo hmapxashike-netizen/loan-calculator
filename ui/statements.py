@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import html as html_module
 import json
+import re
 import uuid
+import zipfile
 from datetime import date, datetime
 from io import BytesIO
 
@@ -16,7 +18,154 @@ from display_formatting import format_display_amount
 from reporting.statements import PERIODIC_NUMERIC_HEADINGS
 from style import BRAND_GREEN
 
+from ui.components import inject_tertiary_hyperlink_css_once
 from ui.streamlit_feedback import run_with_spinner
+
+# Default Streamlit server.maxMessageSize WebSocket limit (keep payloads below this).
+_GL_STREAMLIT_MAX_MESSAGE_BYTES = 200 * 1024 * 1024
+# st.dataframe ships the full table to the browser; cap displayed rows to avoid MessageSizeError.
+_GL_UI_MAX_ROWS = 20_000
+# Streamlit hides the dataframe toolbar "Download as CSV" above ~150k rows (client-side export).
+_GL_SERVER_EXPORT_MIN_ROWS = 150_000
+# ZIP server exports when the raw CSV is at least this large (typical GL text compresses well).
+_GL_ZIP_IF_CSV_BYTES = 5 * 1024 * 1024
+# Raw CSV at/above Streamlit’s default cap must be zipped (and use strong compression).
+_GL_ZIP_IF_RAW_CSV_200MB = 200 * 1024 * 1024
+
+
+def _gl_safe_export_stem(
+    *,
+    kind: str,
+    account_code: str | None,
+    gl_start,
+    gl_end,
+    loan_id: int | None = None,
+    product_code: str | None = None,
+) -> str:
+    acct = re.sub(r"[^\w.\-]+", "_", (account_code or "all").strip())[:48] or "all"
+    stem = f"gl_{kind}_{acct}_{gl_start}_{gl_end}"
+    if loan_id is not None:
+        stem += f"_loan{int(loan_id)}"
+    if product_code:
+        stem += "_" + (re.sub(r"[^\w.\-]+", "_", str(product_code).strip())[:32] or "product")
+    return stem
+
+
+def _gl_dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    df_export = df.copy()
+    if "Date" in df_export.columns:
+        c = df_export["Date"]
+        if pd.api.types.is_datetime64_any_dtype(c):
+            df_export["Date"] = c.dt.strftime("%Y-%m-%d")
+        elif c.dtype == object:
+
+            def _fmt_date_cell(v):
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    return ""
+                if hasattr(v, "strftime"):
+                    return v.strftime("%Y-%m-%d")
+                return str(v)
+
+            df_export["Date"] = c.map(_fmt_date_cell)
+    buf = BytesIO()
+    df_export.to_csv(buf, index=False, encoding="utf-8-sig", lineterminator="\n")
+    return buf.getvalue()
+
+
+def _gl_zip_csv_bytes(csv_bytes: bytes, *, stem: str, level: int) -> bytes:
+    zbuf = BytesIO()
+    with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED, compresslevel=level) as zf:
+        zf.writestr(f"{stem}.csv", csv_bytes)
+    return zbuf.getvalue()
+
+
+def _gl_pack_csv_export(csv_bytes: bytes, *, stem: str) -> tuple[bytes, str, str] | None:
+    """Build payload for ``st.download_button``. Returns None if still above Streamlit’s ~200 MB cap."""
+    margin = 2 * 1024 * 1024
+    max_payload = _GL_STREAMLIT_MAX_MESSAGE_BYTES - margin
+    n = len(csv_bytes)
+    prefer_zip = n >= _GL_ZIP_IF_CSV_BYTES or n >= _GL_ZIP_IF_RAW_CSV_200MB
+    must_zip = n > max_payload
+
+    if not prefer_zip and not must_zip:
+        return csv_bytes, f"{stem}.csv", "text/csv"
+
+    level_first = 9 if (n >= _GL_ZIP_IF_RAW_CSV_200MB or must_zip) else 6
+    zb = _gl_zip_csv_bytes(csv_bytes, stem=stem, level=level_first)
+    if len(zb) > max_payload and level_first == 6:
+        zb = _gl_zip_csv_bytes(csv_bytes, stem=stem, level=9)
+    if len(zb) > max_payload:
+        return None
+    return zb, f"{stem}.zip", "application/zip"
+
+
+def _gl_dataframe_for_ui(df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
+    if df is None or df.empty or len(df) <= _GL_UI_MAX_ROWS:
+        return df, False
+    return df.iloc[:_GL_UI_MAX_ROWS].copy(), True
+
+
+def _render_gl_server_csv_export(
+    df: pd.DataFrame,
+    *,
+    kind: str,
+    account_code: str | None,
+    gl_start,
+    gl_end,
+    button_key: str,
+    ui_truncated: bool,
+    loan_id: int | None = None,
+    product_code: str | None = None,
+) -> None:
+    if df is None or df.empty:
+        return
+    need_export = ui_truncated or len(df) >= _GL_SERVER_EXPORT_MIN_ROWS
+    if not need_export:
+        return
+    inject_tertiary_hyperlink_css_once()
+    if ui_truncated:
+        st.warning(
+            f"Showing only the first {_GL_UI_MAX_ROWS:,} of {len(df):,} rows in the table so the page stays "
+            f"under Streamlit’s default **~200 MB** browser payload limit. Use **Download CSV (server)** for the full extract."
+        )
+    if len(df) >= _GL_SERVER_EXPORT_MIN_ROWS:
+        st.caption(
+            "This table is large: the in-table **Download as CSV** control may be hidden by Streamlit. "
+            "Use the server export below."
+        )
+    stem = _gl_safe_export_stem(
+        kind=kind,
+        account_code=account_code,
+        gl_start=gl_start,
+        gl_end=gl_end,
+        loan_id=loan_id,
+        product_code=product_code,
+    )
+    csv_b = _gl_dataframe_to_csv_bytes(df)
+    packed = _gl_pack_csv_export(csv_b, stem=stem)
+    if packed is None:
+        st.error(
+            "The export is still larger than Streamlit’s default **200 MB** message limit after ZIP compression. "
+            "Narrow the date range or account filter, or raise `server.maxMessageSize` in `.streamlit/config.toml`."
+        )
+        return
+    data, fname, mime = packed
+    help_txt = "Server-built UTF-8 CSV (with BOM), full precision as in the full extract."
+    if fname.endswith(".zip"):
+        if len(csv_b) >= _GL_ZIP_IF_RAW_CSV_200MB:
+            help_txt += " Zipped (max compression) because the raw CSV is over 200 MB."
+        else:
+            help_txt += " Zipped because the CSV is large or to stay under Streamlit’s message size limit."
+    st.download_button(
+        label="Download CSV (server)",
+        data=data,
+        file_name=fname,
+        mime=mime,
+        key=button_key,
+        type="tertiary",
+        help=help_txt,
+    )
+
 
 # Money columns for both periodic and customer/flow statements (10dp in row dicts; CSV keeps full precision).
 _STATEMENT_MONEY_COLUMNS = frozenset(
@@ -266,6 +415,7 @@ def render_statements_ui(
     list_customers,
     get_display_name,
     money_df_column_config,
+    list_products=None,
 ) -> None:
         """
         Generate statements on demand (no persistence).
@@ -849,7 +999,7 @@ button[aria-label="Generate"]{
     
             st.markdown("##### General Ledger")
             st.markdown(
-                "<span style='font-size:0.975rem;color:#64748b;'>From · To · Account</span>",
+                "<span style='font-size:0.975rem;color:#64748b;'>From · To · Account · Loan · Product</span>",
                 unsafe_allow_html=True,
             )
     
@@ -867,9 +1017,70 @@ button[aria-label="Generate"]{
                 account_options = ["All"] + [f"{a['code']} - {a['name']}" for a in all_accounts]
                 gl_account_sel = st.selectbox("Account", account_options, key="stmt_gl_acct")
     
+            gl_loan_err: str | None = None
+            gl_loan_id_val: int | None = None
+            gl_product_code_val: str | None = None
+            gl_r2a, gl_r2b = st.columns([1.0, 2.2])
+            with gl_r2a:
+                gl_loan_in = st.text_input(
+                    "Loan ID",
+                    value="",
+                    key="stmt_gl_loan_id",
+                    placeholder="All loans",
+                    help="Optional. Posted journals for this loan (event_id / reference patterns used by loan and EOD GL).",
+                )
+            with gl_r2b:
+                _plabs = ["All"]
+                _pcodes: list[str | None] = [None]
+                _lp_fn = list_products
+                if _lp_fn is None:
+                    try:
+                        from loan_management.product_catalog import list_products as _lp_fn
+                    except Exception:
+                        _lp_fn = None
+                if callable(_lp_fn):
+                    try:
+                        for p in _lp_fn(active_only=False):
+                            code = (p.get("code") or "").strip()
+                            if not code:
+                                continue
+                            name = (p.get("name") or "").strip() or code
+                            _plabs.append(f"{code} — {name}")
+                            _pcodes.append(code)
+                    except Exception:
+                        pass
+                _pi = st.selectbox(
+                    "Product",
+                    options=list(range(len(_plabs))),
+                    format_func=lambda i: _plabs[i],
+                    key="stmt_gl_product_idx",
+                    help="Optional. Journals whose loan linkage matches loans with this product_code.",
+                )
+                if _pi < len(_pcodes):
+                    gl_product_code_val = _pcodes[_pi]
+
+            _loan_raw = (gl_loan_in or "").strip()
+            if _loan_raw:
+                try:
+                    _n = int(_loan_raw)
+                    if _n <= 0:
+                        gl_loan_err = "Loan ID must be a positive integer."
+                    else:
+                        gl_loan_id_val = _n
+                except ValueError:
+                    gl_loan_err = "Loan ID must be a whole number."
+
             account_filter = None if gl_account_sel == "All" else gl_account_sel.split(" - ")[0]
-    
-            if account_filter:
+
+            if not gl_loan_err and (gl_loan_id_val or gl_product_code_val):
+                st.caption(
+                    "Loan / product filters are applied in SQL on journal headers (event_id, reference patterns used by "
+                    "loan approval and EOD). Entries without a loan key may be excluded."
+                )
+
+            if gl_loan_err:
+                st.error(gl_loan_err)
+            elif account_filter:
                 # If a parent account is selected, allow user to choose between Rollup Summary or Full Ledger.
                 _is_parent = svc.is_parent_account(account_filter)
                 _view_mode = "Parent Summary (Rollup)"
@@ -885,7 +1096,13 @@ button[aria-label="Generate"]{
     
                 if _is_parent and _view_mode == "Parent Summary (Rollup)":
                     st.markdown(f"#### Account Statement (Parent Summary): {gl_account_sel}")
-                    child_rows = svc.get_child_account_summaries(account_filter, gl_start, gl_end)
+                    child_rows = svc.get_child_account_summaries(
+                        account_filter,
+                        gl_start,
+                        gl_end,
+                        loan_id=gl_loan_id_val,
+                        product_code=gl_product_code_val,
+                    )
     
                     def _fmt_bal(d, c):
                         net = float(d or 0) - float(c or 0)
@@ -937,12 +1154,22 @@ button[aria-label="Generate"]{
                             }
                         )
     
-                    import pandas as pd
-    
                     df_summary = pd.DataFrame(summary_rows) if summary_rows else pd.DataFrame(
                         columns=["Child Account", "Opening Balance", "Debit", "Credit", "Closing Balance"]
                     )
-                    st.dataframe(df_summary, use_container_width=True, hide_index=True)
+                    df_summary_ui, _gl_summary_trunc = _gl_dataframe_for_ui(df_summary)
+                    st.dataframe(df_summary_ui, use_container_width=True, hide_index=True)
+                    _render_gl_server_csv_export(
+                        df_summary,
+                        kind="parent_summary",
+                        account_code=account_filter,
+                        gl_start=gl_start,
+                        gl_end=gl_end,
+                        button_key="stmt_gl_srv_csv_parent_summary",
+                        ui_truncated=_gl_summary_trunc,
+                        loan_id=gl_loan_id_val,
+                        product_code=gl_product_code_val,
+                    )
                     if summary_rows:
                         st.caption(f"Flow totals for period: Debit {total_dr:,.2f} | Credit {total_cr:,.2f}")
     
@@ -952,6 +1179,8 @@ button[aria-label="Generate"]{
                         start_date=gl_start,
                         end_date=gl_end,
                         include_descendants=bool(_is_parent),
+                        loan_id=gl_loan_id_val,
+                        product_code=gl_product_code_val,
                     )
                     if ledger:
                         _ledger_title = (
@@ -1028,13 +1257,31 @@ button[aria-label="Generate"]{
                         })
     
                         df_ledger = pd.DataFrame(rows)
-                        st.dataframe(df_ledger, use_container_width=True, hide_index=True)
+                        df_ledger_ui, _gl_ledger_trunc = _gl_dataframe_for_ui(df_ledger)
+                        st.dataframe(df_ledger_ui, use_container_width=True, hide_index=True)
+                        _render_gl_server_csv_export(
+                            df_ledger,
+                            kind="account_ledger",
+                            account_code=account_filter,
+                            gl_start=gl_start,
+                            gl_end=gl_end,
+                            button_key="stmt_gl_srv_csv_ledger",
+                            ui_truncated=_gl_ledger_trunc,
+                            loan_id=gl_loan_id_val,
+                            product_code=gl_product_code_val,
+                        )
                         st.caption(f"Totals for period: Debit {total_dr:,.2f} | Credit {total_cr:,.2f}")
     
                     else:
                         st.info("Account not found.")
             else:
-                entries = svc.get_journal_entries(start_date=gl_start, end_date=gl_end, account_code=account_filter)
+                entries = svc.get_journal_entries(
+                    start_date=gl_start,
+                    end_date=gl_end,
+                    account_code=account_filter,
+                    loan_id=gl_loan_id_val,
+                    product_code=gl_product_code_val,
+                )
                 if entries:
                     flat_rows = []
                     for entry in entries:
@@ -1053,15 +1300,27 @@ button[aria-label="Generate"]{
                     df_all = pd.DataFrame(flat_rows) if flat_rows else pd.DataFrame(
                         columns=["Date", "Reference", "Event", "Balanced", "Account", "Debit", "Credit"]
                     )
+                    df_all_ui, _gl_je_trunc = _gl_dataframe_for_ui(df_all)
                     _gl_je_cols = {
                         "Debit": st.column_config.NumberColumn(format="%.10f", step=1e-10),
                         "Credit": st.column_config.NumberColumn(format="%.10f", step=1e-10),
                     }
                     st.dataframe(
-                        df_all,
+                        df_all_ui,
                         use_container_width=True,
                         hide_index=True,
-                        column_config=money_df_column_config(df_all, overrides=_gl_je_cols),
+                        column_config=money_df_column_config(df_all_ui, overrides=_gl_je_cols),
+                    )
+                    _render_gl_server_csv_export(
+                        df_all,
+                        kind="journal_entries",
+                        account_code=None,
+                        gl_start=gl_start,
+                        gl_end=gl_end,
+                        button_key="stmt_gl_srv_csv_je_all",
+                        ui_truncated=_gl_je_trunc,
+                        loan_id=gl_loan_id_val,
+                        product_code=gl_product_code_val,
                     )
                     st.caption(
                         "Debit/Credit columns use 10 decimal places. "

@@ -1613,11 +1613,31 @@ def render_customers_ui(
 
     inject_tertiary_hyperlink_css_once()
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        ["Add Individual", "Add Corporate", "View & Manage", "Agents", "Approvals", "Batch Capture"]
+    _cust_nav = [
+        "Add Individual",
+        "Add Corporate",
+        "View & Manage",
+        "Agents",
+        "Approvals",
+        "Batch Capture",
+    ]
+    st.session_state.setdefault("customers_subnav", _cust_nav[0])
+    if st.session_state["customers_subnav"] not in _cust_nav:
+        st.session_state["customers_subnav"] = _cust_nav[0]
+    st.markdown(
+        '<p class="farnda-cust-section-nav" aria-hidden="true"></p>',
+        unsafe_allow_html=True,
     )
+    st.caption("Section")
+    st.selectbox(
+        "Customers section",
+        _cust_nav,
+        key="customers_subnav",
+        label_visibility="collapsed",
+    )
+    _cust_active = st.session_state["customers_subnav"]
 
-    with tab1:
+    if _cust_active == "Add Individual":
         render_add_individual_tab(
             customers_available=customers_available,
             documents_available=documents_available,
@@ -1627,8 +1647,8 @@ def render_customers_ui(
             list_document_categories=list_document_categories,
             upload_document=upload_document,
         )
-    
-    with tab2:
+
+    elif _cust_active == "Add Corporate":
         render_add_corporate_tab(
             customers_available=customers_available,
             documents_available=documents_available,
@@ -1639,7 +1659,7 @@ def render_customers_ui(
             upload_document=upload_document,
         )
 
-    with tab3:
+    elif _cust_active == "View & Manage":
         render_view_manage_customers_tab(
             customers_available=customers_available,
             documents_available=documents_available,
@@ -1658,7 +1678,7 @@ def render_customers_ui(
             upload_document=upload_document,
         )
 
-    with tab4:
+    elif _cust_active == "Agents":
         render_agents_tab(
             agents_available=agents_available,
             agents_error=agents_error,
@@ -1671,10 +1691,10 @@ def render_customers_ui(
             upload_document=upload_document,
         )
 
-    with tab5:
+    elif _cust_active == "Approvals":
         customer_approvals_ui(is_tab=True)
 
-    with tab6:
+    elif _cust_active == "Batch Capture":
         render_sub_sub_header("Batch Customer Capture (Migration)")
         st.caption(
             "Upload a CSV to create customers in bulk for migration. "

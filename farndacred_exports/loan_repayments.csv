@@ -1,0 +1,1 @@
+id,loan_id,schedule_line_id,period_number,amount,payment_date,reference,status,created_at,updated_at,customer_reference,company_reference,value_date,system_date,original_repayment_id,source_cash_gl_account_id,customer_name,repayment_key,receipt_type

@@ -65,15 +65,24 @@ def render_accounting_ui(
     ]
     if show_bank_reconciliation_tab:
         tab_labels.append("Bank reconciliation")
-    tabs = st.tabs(tab_labels)
-    tab_coa = tabs[0]
-    tab_templates = tabs[1]
-    tab_mapping = tabs[2]
-    tab_manual = tabs[3]
-    tab_reports = tabs[4]
-    tab_bank_recon = tabs[5] if show_bank_reconciliation_tab else None
 
-    with tab_coa:
+    st.session_state.setdefault("accounting_subnav", tab_labels[0])
+    if st.session_state["accounting_subnav"] not in tab_labels:
+        st.session_state["accounting_subnav"] = tab_labels[0]
+    st.markdown(
+        '<p class="farnda-acco-section-nav" aria-hidden="true"></p>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Section")
+    st.selectbox(
+        "Accounting section",
+        tab_labels,
+        key="accounting_subnav",
+        label_visibility="collapsed",
+    )
+    _acco_active = st.session_state["accounting_subnav"]
+
+    if _acco_active == "Chart of Accounts":
         from ui.accounting.coa_tab import render_accounting_coa_tab
 
         render_accounting_coa_tab(
@@ -81,23 +90,19 @@ def render_accounting_ui(
             loan_management_available=loan_management_available,
             list_products=list_products,
         )
-
-    with tab_templates:
+    elif _acco_active == "Transaction Templates":
         from ui.accounting.transaction_templates_tab import render_transaction_templates_tab
 
         render_transaction_templates_tab(templates_ui=bundle.templates)
-
-    with tab_mapping:
+    elif _acco_active == "Receipt → GL Mapping":
         from ui.accounting.receipt_gl_mapping_tab import render_receipt_gl_mapping_tab
 
         render_receipt_gl_mapping_tab(receipt_gl=bundle.receipt_gl)
-
-    with tab_manual:
+    elif _acco_active == "Manual Journals":
         from ui.accounting.manual_journals_tab import render_manual_journals_tab
 
         render_manual_journals_tab()
-
-    with tab_reports:
+    elif _acco_active == "Financial Reports":
         from ui.accounting.financial_reports_tab import render_financial_reports_tab
 
         render_financial_reports_tab(
@@ -106,9 +111,7 @@ def render_accounting_ui(
             get_system_date=get_system_date,
             money_df_column_config=money_df_column_config,
         )
+    elif _acco_active == "Bank reconciliation" and show_bank_reconciliation_tab:
+        from ui.accounting.bank_reconciliation_tab import render_bank_reconciliation_tab
 
-    if tab_bank_recon is not None:
-        with tab_bank_recon:
-            from ui.accounting.bank_reconciliation_tab import render_bank_reconciliation_tab
-
-            render_bank_reconciliation_tab()
+        render_bank_reconciliation_tab()

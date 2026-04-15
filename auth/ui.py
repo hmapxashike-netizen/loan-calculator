@@ -6,7 +6,6 @@ from pathlib import Path
 import streamlit as st
 
 from auth.service import AuthService, totp_issuer_name
-from auth.totp import provisioning_uri, qr_png_bytes
 from dal import get_conn, UserRepository
 from middleware import set_current_user, clear_current_user
 from style import render_sub_sub_header
@@ -331,6 +330,8 @@ def _render_totp_setup_wizard() -> None:
         st.error("Session expired. Sign in again.")
         st.rerun()
         return
+
+    from auth.totp import provisioning_uri, qr_png_bytes
 
     issuer = totp_issuer_name()
     uri = provisioning_uri(secret=secret, email=row_user.email, issuer=issuer)

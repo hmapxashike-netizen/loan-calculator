@@ -10,13 +10,8 @@ from pathlib import Path
 import importlib.util
 
 import streamlit as st
-import pandas as pd
-from streamlit_option_menu import option_menu
 
 from middleware import get_current_user, clear_current_user, require_login
-from auth.ui import auth_page, render_totp_recovery_regeneration_sidebar
-from dal import get_conn, UserRepository, SecurityAuditLogRepository
-from auth.service import AuthService
 from style import (
     inject_farnda_global_styles_once,
     inject_style_block,
@@ -24,8 +19,6 @@ from style import (
     render_sub_header,
     render_sub_sub_header,
 )
-from ui.components import inject_tertiary_hyperlink_css_once
-
 
 def _configure_logging_from_env() -> None:
     """
@@ -126,11 +119,39 @@ def _load_loan_ui_module():
     return mod
 
 
-loan_app = _load_loan_ui_module()
+_LOAN_UI_SESSION_KEY = "_farnda_cred_loan_ui_module_singleton"
 
 
-def _dataframe_first_col_left_config(df: pd.DataFrame) -> dict | None:
+def get_loan_app():
+    """
+    Return the dynamically loaded loan UI module (``app.py``), cached for the Streamlit session.
+
+    Loading via ``importlib`` re-executes a large module; caching avoids repeating that work on
+    every rerun (Loan management, Teller, Reamortisation, Statements, etc.). The cache is
+    invalidated when ``app.py`` changes on disk so edits still apply without a manual session reset.
+    """
+    app_path = Path(__file__).resolve().parent / "app.py"
+    try:
+        mtime = app_path.stat().st_mtime
+    except OSError:
+        mtime = None
+    cached = st.session_state.get(_LOAN_UI_SESSION_KEY)
+    if (
+        cached is not None
+        and isinstance(cached, tuple)
+        and len(cached) == 2
+        and cached[0] == mtime
+    ):
+        return cached[1]
+    mod = _load_loan_ui_module()
+    st.session_state[_LOAN_UI_SESSION_KEY] = (mtime, mod)
+    return mod
+
+
+def _dataframe_first_col_left_config(df) -> dict | None:
     """Streamlit dataframe: left-align first column only (headers follow grid defaults)."""
+    import pandas as pd
+
     if df.shape[1] < 1:
         return None
     return {str(df.columns[0]): {"alignment": "left"}}
@@ -138,6 +159,8 @@ def _dataframe_first_col_left_config(df: pd.DataFrame) -> dict | None:
 
 def _audit_log_ts_cell(v: object) -> str:
     """String for audit ``created_at`` (matches Agents / View & Manage table timestamps)."""
+    import pandas as pd
+
     if v is None:
         return ""
     try:
@@ -156,6 +179,8 @@ def _audit_log_ts_cell(v: object) -> str:
 
 def _audit_log_id_cell(v: object) -> str:
     """String audit row id (numeric display like Agents table ID column)."""
+    import pandas as pd
+
     if v is None:
         return ""
     try:
@@ -169,8 +194,10 @@ def _audit_log_id_cell(v: object) -> str:
         return str(v)
 
 
-def _recent_login_audit_pdf_bytes(df_display: pd.DataFrame, *, title: str = "Recent login activity") -> bytes | None:
+def _recent_login_audit_pdf_bytes(df_display, *, title: str = "Recent login activity") -> bytes | None:
     """PDF table export for audit login grid (landscape; truncates long agent strings)."""
+    import pandas as pd
+
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import landscape, letter
@@ -355,6 +382,8 @@ def render_sidebar_option_menu(menu_keys: list[str], current_choice: str) -> str
     Render sidebar navigation via streamlit-option-menu.
     This bypasses Streamlit built-in radio/page nav internals for full styling control.
     """
+    from streamlit_option_menu import option_menu
+
     if current_choice not in menu_keys:
         current_choice = menu_keys[0]
     display_options = [section.upper() for section in menu_keys]
@@ -416,6 +445,12 @@ def officer_home():
 
 
 def admin_home():
+    import pandas as pd
+
+    from auth.service import AuthService
+    from dal import SecurityAuditLogRepository, UserRepository, get_conn
+    from ui.components import inject_tertiary_hyperlink_css_once
+
     render_main_page_title("Admin Dashboard")
     st.session_state.setdefault("admin_users_panel", None)
 
@@ -830,7 +865,7 @@ def loan_management_app():
     Wrapper that calls the existing app.main() to render the legacy/back-office UI.
     This is only reachable for LOAN_OFFICER and ADMIN via role-based menu.
     """
-    loan_app.main()
+    get_loan_app().main()
 
 
 def _build_menu_for_role_legacy(role: str) -> dict[str, callable]:
@@ -838,30 +873,36 @@ def _build_menu_for_role_legacy(role: str) -> dict[str, callable]:
     if role == "BORROWER":
         return {"Home": borrower_home}
 
-    loan_sections = loan_app.get_loan_app_sections()
+    loan_sections = get_loan_app().get_loan_app_sections()
 
     if role == "VENDOR":
         return {
-            "Subscription": lambda: loan_app.render_loan_app_section("Subscription"),
+            "Subscription": lambda: get_loan_app().render_loan_app_section("Subscription"),
         }
 
     if role == "LOAN_OFFICER":
         allowed = [s for s in loan_sections if s != "System configurations"]
         menu: dict[str, callable] = {"Officer Dashboard": officer_home}
         for section in allowed:
-            menu[section] = lambda section_name=section: loan_app.render_loan_app_section(section_name)
+            menu[section] = lambda section_name=section: get_loan_app().render_loan_app_section(
+                section_name
+            )
         return menu
 
     if role == "ADMIN":
         menu = {"Admin Dashboard": admin_home}
         for section in loan_sections:
-            menu[section] = lambda section_name=section: loan_app.render_loan_app_section(section_name)
+            menu[section] = lambda section_name=section: get_loan_app().render_loan_app_section(
+                section_name
+            )
         return menu
 
     if role == "SUPERADMIN":
         menu = {"Admin Dashboard": admin_home}
         for section in loan_sections:
-            menu[section] = lambda section_name=section: loan_app.render_loan_app_section(section_name)
+            menu[section] = lambda section_name=section: get_loan_app().render_loan_app_section(
+                section_name
+            )
         return menu
 
     return {}
@@ -874,7 +915,7 @@ def _build_menu_from_permission_keys(role: str, keys: frozenset[str]) -> dict[st
         nav_permission_key_for_section,
     )
 
-    loan_sections = loan_app.get_loan_app_sections()
+    loan_sections = get_loan_app().get_loan_app_sections()
     menu: dict[str, callable] = {}
 
     if PERMISSION_DASHBOARD_OFFICER in keys:
@@ -885,12 +926,14 @@ def _build_menu_from_permission_keys(role: str, keys: frozenset[str]) -> dict[st
     for section in loan_sections:
         pk = nav_permission_key_for_section(section)
         if pk and pk in keys:
-            menu[section] = lambda section_name=section: loan_app.render_loan_app_section(section_name)
+            menu[section] = lambda section_name=section: get_loan_app().render_loan_app_section(
+                section_name
+            )
 
     if not menu and role == "VENDOR":
         sub_k = nav_permission_key_for_section("Subscription")
         if sub_k and sub_k in keys:
-            menu["Subscription"] = lambda: loan_app.render_loan_app_section("Subscription")
+            menu["Subscription"] = lambda: get_loan_app().render_loan_app_section("Subscription")
 
     return menu
 
@@ -922,7 +965,10 @@ def main():
 
     user = get_current_user()
     if user is None:
-        # Not logged in: only show auth page (login/register)
+        # Not logged in: only show auth page (login/register). Import here so cold start avoids
+        # pandas, option_menu, admin DAL paths, and keeps the auth module graph smaller until needed.
+        from auth.ui import auth_page
+
         auth_page()
         render_footer()
         return
@@ -997,6 +1043,8 @@ def main():
     choice = render_sidebar_option_menu(menu_keys=menu_keys, current_choice=current_choice)
     st.session_state[nav_key] = choice
     render_sidebar_user_meta(user=user, system_date=system_date)
+    from auth.ui import render_totp_recovery_regeneration_sidebar
+
     render_totp_recovery_regeneration_sidebar(user)
     if msg := st.session_state.pop("_farnda_tenant_bind_message", None):
         st.sidebar.warning(str(msg))

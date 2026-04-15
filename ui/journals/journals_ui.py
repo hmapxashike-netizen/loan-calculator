@@ -2,36 +2,53 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from decimal import Decimal
-
-import pandas as pd
-import psycopg2
-import psycopg2.extras
 import streamlit as st
 
+_JOURNALS_SVC_KEY = "_farnda_journals_accounting_service"
 
-from style import render_main_header, render_sub_header, render_sub_sub_header
 
-from accounting.service import AccountingService
-from config import get_database_url
-from ui.journals.helpers import (
-    MANUAL_SUBACCOUNT_PLACEHOLDER,
-    ordered_system_tags_for_direction,
-    widget_key_part,
-)
-from ui.journals.posting_leaves import (
-    clear_posting_leaf_accounts_cache,
-    get_posting_leaf_accounts_for_balance_adjust,
-)
+def _journals_accounting_service():
+    """
+    One ``AccountingService`` per Streamlit session for this page.
+
+    Avoids re-importing ``accounting.service`` and re-constructing the service on every rerun
+    (same behaviour: stateless DB facade).
+    """
+    if _JOURNALS_SVC_KEY not in st.session_state:
+        from accounting.service import AccountingService
+
+        st.session_state[_JOURNALS_SVC_KEY] = AccountingService()
+    return st.session_state[_JOURNALS_SVC_KEY]
 
 
 def render_journals_ui(*, get_system_date) -> None:
-    svc = AccountingService()
+    # Light path first: section switcher only needs Streamlit + style (no pandas / psycopg2 / accounting yet).
+    from style import render_sub_sub_header
+
+    _jnav = ["Manual Journals", "Balance Adjustments"]
+    st.session_state.setdefault("journals_subnav", _jnav[0])
+    if st.session_state["journals_subnav"] not in _jnav:
+        st.session_state["journals_subnav"] = _jnav[0]
+    st.markdown(
+        '<p class="farnda-journals-section-nav" aria-hidden="true"></p>',
+        unsafe_allow_html=True,
+    )
+    st.radio(
+        "Journals section",
+        _jnav,
+        key="journals_subnav",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    _j_act = st.session_state["journals_subnav"]
+
+    svc = _journals_accounting_service()
 
     try:
         bad_journals = svc.list_unbalanced_journal_entries()
         if bad_journals:
+            import pandas as pd
+
             st.error(
                 f"**Data integrity:** {len(bad_journals)} journal header(s) are **materially** unbalanced "
                 "(per-line 10dp, then totals compared at **2dp**; sub–2dp drift is ignored). "
@@ -60,10 +77,17 @@ def render_journals_ui(*, get_system_date) -> None:
                         st.error(str(ex))
     except Exception as ex:
         st.caption(f"Could not check journal double-entry integrity: {ex}")
-    
-    tab_manual, tab_adjust = st.tabs(["Manual Journals", "Balance Adjustments"])
-    
-    with tab_manual:
+
+    if _j_act == "Manual Journals":
+        from datetime import datetime
+        from decimal import Decimal
+
+        from ui.journals.helpers import (
+            MANUAL_SUBACCOUNT_PLACEHOLDER,
+            ordered_system_tags_for_direction,
+            widget_key_part,
+        )
+
         render_sub_sub_header("Post Manual Journal")
         with st.form("journals_manual_journal_form"):
             templates_all = svc.list_all_transaction_templates()
@@ -276,8 +300,19 @@ def render_journals_ui(*, get_system_date) -> None:
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error posting journal: {e}")
-    
-    with tab_adjust:
+
+    elif _j_act == "Balance Adjustments":
+        from decimal import Decimal
+
+        import psycopg2
+        import psycopg2.extras
+
+        from config import get_database_url
+        from ui.journals.posting_leaves import (
+            clear_posting_leaf_accounts_cache,
+            get_posting_leaf_accounts_for_balance_adjust,
+        )
+
         render_sub_sub_header("Balance Adjustment Journal")
         st.info(
             "One-off GL corrections. Only **posting accounts** are listed: active accounts with **no** "
@@ -288,7 +323,7 @@ def render_journals_ui(*, get_system_date) -> None:
             "The leaf list is cached briefly (about two minutes) to avoid repeating the same chart walk on "
             "every Streamlit rerun; one `list_accounts` query plus an in-memory pass is already light."
         )
-    
+
         posting_leaves = get_posting_leaf_accounts_for_balance_adjust()
     
         dr_i = 0

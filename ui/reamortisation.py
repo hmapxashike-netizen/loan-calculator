@@ -6,9 +6,13 @@ import pandas as pd
 import streamlit as st
 
 from decimal_utils import as_10dp
-from loan_management.recast_orchestration import compute_recast_unapplied_allocation
-from services.modification_capture_bridge import EOD_SUMMARY_BUCKET_ROWS
 from ui.streamlit_feedback import run_with_spinner
+
+
+def _eod_summary_bucket_rows():
+    from services.modification_capture_bridge import EOD_SUMMARY_BUCKET_ROWS
+
+    return EOD_SUMMARY_BUCKET_ROWS
 
 def _section_heading(title: str) -> None:
     """Section title that renders reliably inside tab panels."""
@@ -193,7 +197,7 @@ def render_reamortisation_ui(
                         f"Balance outstanding as of {as_of_bal.strftime('%d/%m/%Y')}{_cap}"
                     )
                     row_eod: dict[str, float] = {}
-                    for lab, key in EOD_SUMMARY_BUCKET_ROWS:
+                    for lab, key in _eod_summary_bucket_rows():
                         row_eod[lab] = float(as_10dp(bal_recast.get(key) or 0))
                     row_eod["Total outstanding (total_exposure)"] = float(
                         as_10dp(bal_recast.get("total_exposure") or 0)
@@ -561,7 +565,7 @@ def render_reamortisation_ui(
                 if snap:
                     st.caption("Outstanding balance snapshot at submission")
                     row_bal: dict[str, float] = {}
-                    for lab, key in EOD_SUMMARY_BUCKET_ROWS:
+                    for lab, key in _eod_summary_bucket_rows():
                         row_bal[lab] = float(as_10dp(snap.get(key) or 0.0))
                     out_snap = float(
                         as_10dp(
@@ -677,6 +681,10 @@ def render_reamortisation_ui(
                         buckets = dict(det.get("bucket_snapshot") or {})
                         bal_map = {k: _f10(v) for k, v in buckets.items()}
                         if unap > 0 and bal_map:
+                            from loan_management.recast_orchestration import (
+                                compute_recast_unapplied_allocation,
+                            )
+
                             alloc, _unused = compute_recast_unapplied_allocation(unap, bal_map)
                             liq_alloc_preview = {k: _f10(v) for k, v in alloc.items()}
                             jr_rows.append(

@@ -1,0 +1,1 @@
+repayment_id,repayment_key,loan_id,value_date,entry_kind,liquidation_repayment_id,unapplied_delta,alloc_prin_arrears,alloc_int_arrears,alloc_penalty_int,alloc_default_int,alloc_fees_charges,unapplied_running_balance

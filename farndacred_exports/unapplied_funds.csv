@@ -1,0 +1,1 @@
+id,loan_id,repayment_id,amount,currency,value_date,created_at,applied_at,status,notes,entry_type,reference,allocation_repayment_id,source_repayment_id,source_unapplied_id,movement_type

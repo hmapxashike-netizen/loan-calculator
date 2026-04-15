@@ -1,0 +1,22 @@
+config_key,product_code,loan_type,default_interest_pct,penalty_pct,penalty_balance_basis,penalty_quotation
+product_config:BULLET-USD,BULLET-USD,bullet_loan,10,10,Arrears,Absolute Rate
+product_config:BULLET-USD,BULLET-USD,consumer_loan,7,2,Arrears,Absolute Rate
+product_config:BULLET-USD,BULLET-USD,customised_repayments,10,2,Arrears,Absolute Rate
+product_config:BULLET-USD,BULLET-USD,term_loan,10,2,Arrears,Absolute Rate
+product_config:CONSUMER-USD,CONSUMER-USD,bullet_loan,10,2,Arrears,Margin
+product_config:CONSUMER-USD,CONSUMER-USD,consumer_loan,7,10,Arrears,Margin
+product_config:CONSUMER-USD,CONSUMER-USD,customised_repayments,10,2,Arrears,Margin
+product_config:CONSUMER-USD,CONSUMER-USD,term_loan,10,2,Arrears,Margin
+product_config:CONSUTPC-USD,CONSUTPC-USD,consumer_loan,7,10,Arrears,Absolute Rate
+product_config:CUSTOM-USD,CUSTOM-USD,bullet_loan,10,2,Arrears,Absolute Rate
+product_config:CUSTOM-USD,CUSTOM-USD,consumer_loan,7,2,Arrears,Absolute Rate
+product_config:CUSTOM-USD,CUSTOM-USD,customised_repayments,10,10,Arrears,Absolute Rate
+product_config:CUSTOM-USD,CUSTOM-USD,term_loan,10,2,Arrears,Absolute Rate
+product_config:TERM-USD,TERM-USD,bullet_loan,10,2,Arrears,Absolute Rate
+product_config:TERM-USD,TERM-USD,consumer_loan,7,2,Arrears,Absolute Rate
+product_config:TERM-USD,TERM-USD,customised_repayments,10,2,Arrears,Absolute Rate
+product_config:TERM-USD,TERM-USD,term_loan,10,10,Arrears,Absolute Rate
+system_config,(system),bullet_loan,10,2,Arrears,Absolute Rate
+system_config,(system),consumer_loan,7,2,Arrears,Absolute Rate
+system_config,(system),customised_repayments,10,2,Arrears,Absolute Rate
+system_config,(system),term_loan,10,2,Arrears,Absolute Rate
