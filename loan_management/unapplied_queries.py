@@ -61,6 +61,56 @@ def get_loans_with_unapplied_balance(as_of_date: date) -> list[int]:
             return [int(r[0]) for r in cur.fetchall()]
 
 
+def get_loan_ids_with_unapplied_balance_and_arrears_for_eod(as_of_date: date) -> list[int]:
+    """
+    Subset of :func:`get_loans_with_unapplied_balance` that can actually consume
+    unapplied toward arrears in EOD.
+
+    Matches the early exits in ``apply_unapplied_funds_to_arrears_eod``:
+    net unapplied (value_date <= as_of) > 0 and latest ``loan_daily_state`` on
+    or before ``as_of_date`` has a positive sum of the five arrears-related buckets
+    (interest arrears, default, penalty, principal arrears, fees).
+    """
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH unapplied_positive AS (
+                    SELECT loan_id
+                    FROM unapplied_funds
+                    WHERE value_date <= %s
+                    GROUP BY loan_id
+                    HAVING COALESCE(SUM(amount), 0) > 0
+                ),
+                latest_daily AS (
+                    SELECT DISTINCT ON (loan_id)
+                        loan_id,
+                        COALESCE(principal_arrears, 0) AS principal_arrears,
+                        COALESCE(interest_arrears_balance, 0) AS interest_arrears_balance,
+                        COALESCE(default_interest_balance, 0) AS default_interest_balance,
+                        COALESCE(penalty_interest_balance, 0) AS penalty_interest_balance,
+                        COALESCE(fees_charges_balance, 0) AS fees_charges_balance
+                    FROM loan_daily_state
+                    WHERE as_of_date <= %s
+                    ORDER BY loan_id, as_of_date DESC
+                )
+                SELECT up.loan_id
+                FROM unapplied_positive up
+                INNER JOIN latest_daily ld ON ld.loan_id = up.loan_id
+                WHERE (
+                    ld.interest_arrears_balance
+                    + ld.default_interest_balance
+                    + ld.penalty_interest_balance
+                    + ld.principal_arrears
+                    + ld.fees_charges_balance
+                ) > 0
+                ORDER BY up.loan_id
+                """,
+                (as_of_date, as_of_date),
+            )
+            return [int(r[0]) for r in cur.fetchall()]
+
+
 def get_unapplied_entries(loan_id: int, through_date: date) -> list[tuple[date, float]]:
     """
     Unapplied entries for statement from loan_repayment_allocation.unallocated only.

@@ -12,9 +12,9 @@ SOURCE_CASH_ACCOUNT_CACHE_KEY = "source_cash_account_cache"
 SOURCE_CASH_TREE_ROOT_CODE = "A100000"
 
 
-def get_cached_source_cash_account_entries() -> list[dict]:
+def get_cached_source_cash_account_entries(*, system_config: dict | None = None) -> list[dict]:
     """Snapshot rows ``{id, code, name}`` from system config; empty if cache never built."""
-    cfg = load_system_config_from_db() or {}
+    cfg = system_config if system_config is not None else (load_system_config_from_db() or {})
     block = cfg.get(SOURCE_CASH_ACCOUNT_CACHE_KEY) or {}
     entries = block.get("entries") or []
     if not isinstance(entries, list):
@@ -26,6 +26,7 @@ def validate_source_cash_gl_account_id_for_new_posting(
     account_uuid: str | None,
     *,
     field_label: str = "Cash account",
+    system_config: dict | None = None,
 ) -> str:
     """
     Require a populated source-cash cache and a reference that appears in it.
@@ -35,7 +36,7 @@ def validate_source_cash_gl_account_id_for_new_posting(
 
     Returns canonical UUID string.
     """
-    entries = get_cached_source_cash_account_entries()
+    entries = get_cached_source_cash_account_entries(system_config=system_config)
     if not entries:
         raise ValueError(
             f"{field_label}: the source cash list has not been built. "

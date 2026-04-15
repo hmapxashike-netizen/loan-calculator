@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -12,6 +15,12 @@ import streamlit as st
 from style import BRAND_GREEN, BRAND_TEXT_MUTED, inject_style_block, render_sub_header, render_sub_sub_header
 
 from ui.streamlit_feedback import run_with_spinner
+
+_logger = logging.getLogger(__name__)
+
+
+def _trace_ui_enabled() -> bool:
+    return os.environ.get("FARNDACRED_TRACE_TELLER_UI", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _inject_teller_green_primary_submit_css_once() -> None:
@@ -60,6 +69,7 @@ def render_teller_ui(
     source_cash_gl_widget_label: str,
     source_cash_gl_cache_empty_warning,
 ) -> None:
+    t_ui0 = time.perf_counter()
     if not customers_available:
         st.error("Customer module is required for Teller. Check database connection.")
         return
@@ -96,12 +106,26 @@ def render_teller_ui(
     _teller_active = st.session_state["teller_subnav"]
 
     if _teller_active == "Single repayment":
+        t0 = time.perf_counter()
         render_sub_sub_header("Single repayment capture")
         customers_list = list_customers(status="active") or []
+        if _trace_ui_enabled():
+            _logger.info(
+                "TRACE teller.ui single_repayment list_customers rows=%s wall_s=%.3f",
+                len(customers_list),
+                time.perf_counter() - t0,
+            )
         if not customers_list:
             st.info("No active customers. Add customers first.")
         else:
-            options = [(c["id"], get_display_name(c["id"])) for c in customers_list]
+            t_opts0 = time.perf_counter()
+            options = [
+                (
+                    c["id"],
+                    (str(c.get("display_name") or "").strip() or get_display_name(c["id"]) or f"Customer #{c['id']}"),
+                )
+                for c in customers_list
+            ]
             labels = [f"{name} (ID {cid})" for cid, name in options]
             idx = 0
             if "teller_customer_id" in st.session_state:
@@ -109,6 +133,13 @@ def render_teller_ui(
                     idx = next(i for i, (cid, _) in enumerate(options) if cid == st.session_state["teller_customer_id"])
                 except StopIteration:
                     pass
+            if _trace_ui_enabled():
+                _logger.info(
+                    "TRACE teller.ui single_repayment build_customer_options rows=%s wall_s=%.3f",
+                    len(options),
+                    time.perf_counter() - t_opts0,
+                )
+            t_top0 = time.perf_counter()
             pick_col1, pick_col2, pick_col3 = st.columns([1.15, 1.2, 0.85], gap="small")
             with pick_col1:
                 st.caption("Customer")
@@ -121,9 +152,22 @@ def render_teller_ui(
                 )
             cid = options[labels.index(sel)][0] if sel and labels else None
             st.session_state["teller_customer_id"] = cid
+            if _trace_ui_enabled():
+                _logger.info(
+                    "TRACE teller.ui single_repayment top_row_customer_select wall_s=%.3f",
+                    time.perf_counter() - t_top0,
+                )
 
             if cid:
+                t1 = time.perf_counter()
                 loans_list = get_loans_by_customer(cid)
+                if _trace_ui_enabled():
+                    _logger.info(
+                        "TRACE teller.ui single_repayment get_loans_by_customer customer_id=%s rows=%s wall_s=%.3f",
+                        cid,
+                        len(loans_list or []),
+                        time.perf_counter() - t1,
+                    )
                 loans_active = [l for l in loans_list if l.get("status") == "active"]
                 if not loans_active:
                     st.info("No active loans for this customer.")
@@ -133,6 +177,7 @@ def render_teller_ui(
                         for l in loans_active
                     ]
                     loan_labels = [t[1] for t in loan_options]
+                    t_loan_sel0 = time.perf_counter()
                     with pick_col2:
                         st.caption("Loan")
                         loan_sel = st.selectbox(
@@ -142,9 +187,23 @@ def render_teller_ui(
                             label_visibility="collapsed",
                         )
                     loan_id = loan_options[loan_labels.index(loan_sel)][0] if loan_sel and loan_labels else None
+                    if _trace_ui_enabled():
+                        _logger.info(
+                            "TRACE teller.ui single_repayment loan_select_widget rows=%s wall_s=%.3f",
+                            len(loan_labels),
+                            time.perf_counter() - t_loan_sel0,
+                        )
 
                     if loan_id:
+                        t2 = time.perf_counter()
                         summary = teller_service.fetch_teller_amount_due_summary(loan_id)
+                        if _trace_ui_enabled():
+                            _logger.info(
+                                "TRACE teller.ui single_repayment amount_due_summary loan_id=%s ok=%s wall_s=%.3f",
+                                loan_id,
+                                bool(summary),
+                                time.perf_counter() - t2,
+                            )
                         amount_due = summary["amount_due_today"] if summary else None
                         help_text = None
                         if amount_due is not None and summary is not None:
@@ -155,6 +214,7 @@ def render_teller_ui(
                                 f"{float(summary.get('today_allocations_to_delinquency') or 0):,.2f}\n"
                                 f"Method: {summary.get('method')}"
                             )
+                        t_amt_ui0 = time.perf_counter()
                         with pick_col3:
                             st.caption("Amount due today")
                             if amount_due is not None:
@@ -171,6 +231,11 @@ def render_teller_ui(
                                     f'<p style="font-size:0.875rem;margin:0;color:{BRAND_TEXT_MUTED};">—</p>',
                                     unsafe_allow_html=True,
                                 )
+                        if _trace_ui_enabled():
+                            _logger.info(
+                                "TRACE teller.ui single_repayment amount_due_widgets wall_s=%.3f",
+                                time.perf_counter() - t_amt_ui0,
+                            )
 
                         now = datetime.now()
                         _sys = get_system_date()
@@ -179,7 +244,15 @@ def render_teller_ui(
                             "This choice applies to **this receipt only** (not the loan’s disbursement cash). "
                             "**System date** for posting is taken from configured system date."
                         )
+                        t3 = time.perf_counter()
                         _t_cash_lab, _t_cash_ids = source_cash_gl_cached_labels_and_ids()
+                        if _trace_ui_enabled():
+                            _logger.info(
+                                "TRACE teller.ui single_repayment source_cash_cache rows=%s wall_s=%.3f",
+                                len(_t_cash_ids or []),
+                                time.perf_counter() - t3,
+                            )
+                        t_form0 = time.perf_counter()
                         with st.form("teller_single_form", clear_on_submit=True):
                             row_a1, row_a2, row_a3 = st.columns(3, gap="small")
                             with row_a1:
@@ -234,6 +307,11 @@ def render_teller_ui(
                                 )
                             with row_b3:
                                 st.empty()
+                            if _trace_ui_enabled():
+                                _logger.info(
+                                    "TRACE teller.ui single_repayment form_widgets_before_submit wall_s=%.3f",
+                                    time.perf_counter() - t_form0,
+                                )
                             submitted = st.form_submit_button("Record repayment", type="primary")
                             if submitted and amount > 0:
                                 if not _src_cash_gl:
@@ -265,8 +343,14 @@ def render_teller_ui(
                                     except Exception as e:
                                         st.error(f"Could not record repayment: {e}")
                                         st.exception(e)
+        if _trace_ui_enabled():
+            _logger.info(
+                "TRACE teller.ui single_repayment overall wall_s=%.3f",
+                time.perf_counter() - t0,
+            )
 
     elif _teller_active == "Batch payments":
+        t_batch0 = time.perf_counter()
         render_sub_sub_header("Batch payments")
         st.caption(
             "Upload an Excel file with repayment rows. **source_cash_gl_account_id** must be a UUID that appears in the "
@@ -274,10 +358,18 @@ def render_teller_ui(
             "**System configurations → Accounting configurations** when the chart changes."
         )
 
+        t_tpl0 = time.perf_counter()
         today = get_system_date().isoformat()
         _tpl_bytes = teller_service.build_batch_upload_template_excel_bytes(
             sample_system_date_iso=today
         )
+        if _trace_ui_enabled():
+            _logger.info(
+                "TRACE teller.ui batch_payments build_template_bytes bytes=%s wall_s=%.3f",
+                len(_tpl_bytes or b""),
+                time.perf_counter() - t_tpl0,
+            )
+        t_up0 = time.perf_counter()
         b_col1, b_col2 = st.columns(2)
         with b_col1:
             st.download_button(
@@ -289,27 +381,55 @@ def render_teller_ui(
             )
         with b_col2:
             uploaded = st.file_uploader("Upload Excel file", type=["xlsx", "xls"], key="teller_batch_upload")
+        if _trace_ui_enabled():
+            _logger.info(
+                "TRACE teller.ui batch_payments template_row_and_uploader wall_s=%.3f uploaded=%s",
+                time.perf_counter() - t_up0,
+                bool(uploaded),
+            )
         if uploaded:
             try:
+                t_read0 = time.perf_counter()
                 df = pd.read_excel(uploaded, engine="openpyxl")
+                if _trace_ui_enabled():
+                    _logger.info(
+                        "TRACE teller.ui batch_payments read_excel rows=%s cols=%s wall_s=%.3f",
+                        len(df.index),
+                        len(df.columns),
+                        time.perf_counter() - t_read0,
+                    )
                 required = ["loan_id", "amount", "source_cash_gl_account_id"]
                 missing = [c for c in required if c not in df.columns]
                 if missing:
                     st.error(f"Missing columns: {', '.join(missing)}. Use the template.")
                 else:
+                    t_df0 = time.perf_counter()
                     st.dataframe(df.head(20), width="stretch", hide_index=True)
                     if len(df) > 20:
                         st.caption(f"Showing first 20 of {len(df)} rows.")
+                    if _trace_ui_enabled():
+                        _logger.info(
+                            "TRACE teller.ui batch_payments preview_dataframe wall_s=%.3f",
+                            time.perf_counter() - t_df0,
+                        )
                     p_col1, p_col2 = st.columns(2)
                     with p_col1:
                         process_batch = st.button("Process batch", type="primary", key="teller_batch_process")
                     with p_col2:
                         st.caption(f"Rows loaded: {len(df)}")
                     if process_batch:
+                        t_parse0 = time.perf_counter()
                         valid_rows, parse_errors = teller_service.parse_batch_repayment_rows_from_dataframe(
                             df,
                             fallback_payment_date_iso=get_system_date().isoformat(),
                         )
+                        if _trace_ui_enabled():
+                            _logger.info(
+                                "TRACE teller.ui batch_payments parse_rows valid=%s parse_errors=%s wall_s=%.3f",
+                                len(valid_rows),
+                                len(parse_errors),
+                                time.perf_counter() - t_parse0,
+                            )
                         if parse_errors:
                             st.warning(f"Parse issues: {len(parse_errors)} row(s) skipped.")
                             with st.expander("Parse errors"):
@@ -318,10 +438,24 @@ def render_teller_ui(
                         if not valid_rows:
                             st.error("No valid rows to process. Ensure loan_id and amount are numeric and positive.")
                         else:
+                            t_proc0 = time.perf_counter()
+
+                            def _run_batch():
+                                return teller_service.run_batch_repayments(valid_rows)
+
                             success, fail, errors = run_with_spinner(
                                 "Processing batch repayments…",
-                                lambda: teller_service.run_batch_repayments(valid_rows),
+                                _run_batch,
                             )
+                            if _trace_ui_enabled():
+                                _logger.info(
+                                    "TRACE teller.ui batch_payments run_batch_repayments "
+                                    "valid_in=%s success=%s fail=%s wall_s=%.3f",
+                                    len(valid_rows),
+                                    success,
+                                    fail,
+                                    time.perf_counter() - t_proc0,
+                                )
                             st.success(f"Batch complete: **{success}** repaid, **{fail}** failed.")
                             if errors:
                                 with st.expander("Processing errors"):
@@ -330,6 +464,11 @@ def render_teller_ui(
             except Exception as e:
                 st.error(f"Could not read file: {e}")
                 st.exception(e)
+        if _trace_ui_enabled():
+            _logger.info(
+                "TRACE teller.ui batch_payments branch_overall wall_s=%.3f",
+                time.perf_counter() - t_batch0,
+            )
 
     elif _teller_active == "Reverse receipt":
         render_sub_sub_header("Reverse receipt")
@@ -339,7 +478,13 @@ def render_teller_ui(
         if not customers_list:
             st.info("No active customers. Add customers first.")
         else:
-            options = [(c["id"], get_display_name(c["id"])) for c in customers_list]
+            options = [
+                (
+                    c["id"],
+                    (str(c.get("display_name") or "").strip() or get_display_name(c["id"]) or f"Customer #{c['id']}"),
+                )
+                for c in customers_list
+            ]
             labels = [f"{name} (ID {cid})" for cid, name in options]
             idx = 0
             if "teller_rev_customer_id" in st.session_state:
@@ -534,7 +679,13 @@ def render_teller_ui(
         if not customers_list:
             st.info("No active customers. Add customers first.")
         else:
-            options = [(c["id"], get_display_name(c["id"])) for c in customers_list]
+            options = [
+                (
+                    c["id"],
+                    (str(c.get("display_name") or "").strip() or get_display_name(c["id"]) or f"Customer #{c['id']}"),
+                )
+                for c in customers_list
+            ]
             labels = [f"{name} (ID {cid})" for cid, name in options]
             idx = 0
             if "teller_wr_customer_id" in st.session_state:
@@ -640,3 +791,6 @@ def render_teller_ui(
                                 except Exception as e:
                                     st.error(f"Error posting recovery receipt journal: {e}")
                                     st.exception(e)
+
+    if _trace_ui_enabled():
+        _logger.info("TRACE teller.ui overall wall_s=%.3f active=%s", time.perf_counter() - t_ui0, _teller_active)

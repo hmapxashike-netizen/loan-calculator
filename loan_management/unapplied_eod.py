@@ -10,7 +10,6 @@ from .allocation_queries import get_net_allocation_for_loan_date, get_unallocate
 from .cash_gl import _post_event_for_loan
 from .daily_state import get_loan_daily_state_balances, save_loan_daily_state
 from .db import RealDictCursor, _connection
-from .unapplied_queries import get_unapplied_balance
 from .unapplied_refs import _unapplied_original_reference
 from .waterfall_core import BUCKET_TO_ALLOC, STANDARD_SKIP_BUCKETS, _get_waterfall_config
 
@@ -27,12 +26,22 @@ def apply_unapplied_funds_to_arrears_eod(
     Creates a system repayment and allocation with event_type='unapplied_funds_allocation'.
     Returns amount applied (0 if none).
     """
-    unapplied_as_of = get_unapplied_balance(loan_id, as_of_date)
-    # To prevent double-liquidation during EOD replays, cap to the overall unapplied balance
+    # As-of ledger balance and lifetime total in one round-trip (replay cap uses overall total).
     with _connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COALESCE(SUM(amount), 0) FROM unapplied_funds WHERE loan_id = %s", (loan_id,))
-            overall_unapplied = float(as_10dp(cur.fetchone()[0] or 0))
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN value_date <= %s THEN amount ELSE 0 END), 0),
+                    COALESCE(SUM(amount), 0)
+                FROM unapplied_funds
+                WHERE loan_id = %s
+                """,
+                (as_of_date, loan_id),
+            )
+            row = cur.fetchone()
+    unapplied_as_of = float(as_10dp(row[0] or 0))
+    overall_unapplied = float(as_10dp(row[1] or 0))
     # Use ledger precision (10 dp) — rounding to 2 dp here left tiny residuals (e.g. sub‑cent balances).
     unapplied = float(as_10dp(max(0.0, min(unapplied_as_of, overall_unapplied))))
 
@@ -383,19 +392,14 @@ def apply_unapplied_funds_to_arrears_eod(
         new_penalty_interest = max(0.0, penalty_balance - alloc_penalty_interest)
         new_fees_charges = max(0.0, fees_balance - alloc_fees_charges)
 
-        # Use the daily accrual values already saved by EOD for this date.
+        # Use the daily accrual values already saved by EOD for this date (same row as ``state``).
         # Never re-derive from the engine (which ignores grace periods and allocations).
-        daily_state = get_loan_daily_state_balances(loan_id, as_of_date)
-        if daily_state:
-            reg_daily = float(daily_state.get("regular_interest_daily", 0) or 0)
-            def_daily = float(daily_state.get("default_interest_daily", 0) or 0)
-            pen_daily = float(daily_state.get("penalty_interest_daily", 0) or 0)
-            reg_period = float(daily_state.get("regular_interest_period_to_date", 0) or 0)
-            def_period = float(daily_state.get("default_interest_period_to_date", 0) or 0)
-            pen_period = float(daily_state.get("penalty_interest_period_to_date", 0) or 0)
-        else:
-            reg_daily = def_daily = pen_daily = 0.0
-            reg_period = def_period = pen_period = 0.0
+        reg_daily = float(state.get("regular_interest_daily", 0) or 0)
+        def_daily = float(state.get("default_interest_daily", 0) or 0)
+        pen_daily = float(state.get("penalty_interest_daily", 0) or 0)
+        reg_period = float(state.get("regular_interest_period_to_date", 0) or 0)
+        def_period = float(state.get("default_interest_period_to_date", 0) or 0)
+        pen_period = float(state.get("penalty_interest_period_to_date", 0) or 0)
 
         arrears_after = new_interest_arrears + new_default_interest + new_penalty_interest + new_principal_arrears
         days_overdue = int(state.get("days_overdue") or 0)

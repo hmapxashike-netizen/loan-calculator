@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -12,7 +15,7 @@ from .allocation_queries import (
     get_net_allocation_for_loan_date,
     get_unallocated_for_loan_date,
 )
-from .cash_gl import _post_event_for_loan
+from .cash_gl import _merge_cash_gl_into_payload
 from .loan_approval_gl_guard import require_loan_approval_gl_before_repayment
 from .daily_state import save_loan_daily_state
 from .db import RealDictCursor, _connection
@@ -22,6 +25,12 @@ from .unapplied_recast import _credit_unapplied_funds
 from .unapplied_refs import _repayment_journal_reference, _unapplied_original_reference
 from .waterfall_core import _get_waterfall_config, compute_waterfall_allocation
 
+_logger = logging.getLogger(__name__)
+
+
+def _trace_enabled() -> bool:
+    return os.environ.get("FARNDACRED_TRACE_TELLER", "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def allocate_repayment_waterfall(
     repayment_id: int,
@@ -30,6 +39,8 @@ def allocate_repayment_waterfall(
     system_config: dict | None = None,
     preloaded_balances: dict | None = None,
     event_type: str = "new_allocation",
+    conn=None,
+    skip_loan_approval_guard: bool = False,
 ) -> None:
     """
     Allocate a repayment across loan buckets using the configured waterfall
@@ -60,11 +71,15 @@ def allocate_repayment_waterfall(
 
     cfg = system_config or load_system_config_from_db() or {}
     profile_key, bucket_order = _get_waterfall_config(cfg)
-    with _connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+
+    def _run(_conn) -> None:
+        t_gl_s = 0.0
+        with _conn.cursor(cursor_factory=RealDictCursor) as cur:
+            t_wall0 = time.perf_counter()
+            t_fetch0 = time.perf_counter()
             cur.execute(
                 """
-                SELECT lr.id, lr.loan_id, lr.amount,
+                SELECT lr.id, lr.loan_id, lr.amount, lr.source_cash_gl_account_id,
                        COALESCE(lr.value_date, lr.payment_date) AS eff_date
                 FROM loan_repayments lr
                 WHERE lr.id = %s
@@ -74,6 +89,7 @@ def allocate_repayment_waterfall(
             row = cur.fetchone()
             if not row:
                 raise ValueError(f"Repayment {repayment_id} not found.")
+            t_fetch_s = time.perf_counter() - t_fetch0
 
             amount = float(row["amount"])
             if amount <= 0:
@@ -83,7 +99,8 @@ def allocate_repayment_waterfall(
                 return
 
             loan_id = int(row["loan_id"])
-            require_loan_approval_gl_before_repayment(loan_id)
+            if not skip_loan_approval_guard:
+                require_loan_approval_gl_before_repayment(loan_id, conn=_conn)
             eff_date = row["eff_date"] or as_of
             if hasattr(eff_date, "date"):
                 eff_date = eff_date.date()
@@ -94,20 +111,33 @@ def allocate_repayment_waterfall(
 
             # Ensure prior calendar day state exists (closing = opening for eff_date).
             prev_cal = eff_date - timedelta(days=1)
-            run_single_loan_eod(loan_id, prev_cal, sys_cfg=system_config)
+            t_prev0 = time.perf_counter()
+            cur.execute(
+                "SELECT 1 FROM loan_daily_state WHERE loan_id = %s AND as_of_date = %s LIMIT 1",
+                (loan_id, prev_cal),
+            )
+            if cur.fetchone() is None:
+                run_single_loan_eod(loan_id, prev_cal, sys_cfg=system_config)
+            t_prev_s = time.perf_counter() - t_prev0
 
             # Serialize same-loan allocation (multiple receipts / concurrent saves).
+            t_lock0 = time.perf_counter()
             cur.execute("SELECT pg_advisory_xact_lock(%s, %s)", (4021001, loan_id))
+            t_lock_s = time.perf_counter() - t_lock0
 
+            t_open0 = time.perf_counter()
             balances, st_prev, days_overdue = _get_opening_balances_for_repayment(
                 cur, loan_id, eff_date, repayment_id,
             )
+            t_open_s = time.perf_counter() - t_open0
             state_as_of = eff_date
 
+            t_alloc0 = time.perf_counter()
             alloc, unapplied = compute_waterfall_allocation(
                 amount, balances, bucket_order, profile_key,
                 state_as_of=state_as_of, repayment_id=repayment_id,
             )
+            t_alloc_s = time.perf_counter() - t_alloc0
 
             alloc_principal_not_due = alloc.get("alloc_principal_not_due", 0.0)
             alloc_principal_arrears = alloc.get("alloc_principal_arrears", 0.0)
@@ -149,7 +179,7 @@ def allocate_repayment_waterfall(
                     f"amount={amount}, allocated={total_alloc}, unapplied={unapplied}"
                 )
 
-            cur2 = conn.cursor()
+            cur2 = _conn.cursor()
             cur2.execute(
                 """
                 INSERT INTO loan_repayment_allocation (
@@ -180,138 +210,196 @@ def allocate_repayment_waterfall(
                 ),
             )
             if unapplied > 1e-6:
-                _credit_unapplied_funds(conn, loan_id, repayment_id, unapplied, eff_date)
+                _credit_unapplied_funds(_conn, loan_id, repayment_id, unapplied, eff_date)
 
+            t_gl0 = time.perf_counter()
             try:
                 from accounting.service import AccountingService
 
                 svc = AccountingService()
 
-                # Each post_event uses transaction_templates for that event_type only.
-                # Cash Dr must equal the sum of Cr lines for THAT journal — do not use full receipt
-                # amount on PAYMENT_PRINCIPAL (only 2 lines: cash + principal_arrears); split not-yet-due
-                # to PAYMENT_PRINCIPAL_NOT_YET_DUE, interest arrears vs accrued to separate events, etc.
+                # Resolve cash GL once per receipt (avoids N extra DB connections from
+                # AccountingService.post_event / _merge_cash_gl_into_payload per leg).
+                cash_ao: dict[str, str] = {}
+                sc = row.get("source_cash_gl_account_id")
+                if sc:
+                    cash_ao = {"cash_operating": str(sc).strip()}
+                else:
+                    cur.execute(
+                        "SELECT cash_gl_account_id FROM loans WHERE id = %s",
+                        (loan_id,),
+                    )
+                    rloan = cur.fetchone()
+                    if rloan and rloan.get("cash_gl_account_id"):
+                        cash_ao = {"cash_operating": str(rloan["cash_gl_account_id"]).strip()}
+                    else:
+                        merged = _merge_cash_gl_into_payload(loan_id, repayment_id, {})
+                        mo = merged.get("account_overrides") or {}
+                        co = mo.get("cash_operating")
+                        if co:
+                            cash_ao = {"cash_operating": str(co).strip()}
+
+                def _gl_payload(tag_amounts: dict) -> dict:
+                    p = dict(tag_amounts)
+                    if cash_ao:
+                        p["account_overrides"] = dict(cash_ao)
+                    return p
 
                 _rj = _repayment_journal_reference(loan_id, repayment_id)
+                eff_date_gl = _date_conv(eff_date) or (
+                    eff_date.date() if isinstance(eff_date, datetime) else eff_date
+                )
+                if hasattr(eff_date_gl, "date") and not isinstance(eff_date_gl, date):
+                    eff_date_gl = eff_date_gl.date()
 
-                # Overpayment remainder: credit unapplied_funds and post GL using the
-                # dedicated template (UNAPPLIED_FUNDS_OVERPAYMENT).
+                gl_items: list[dict] = []
+
                 if unapplied > 1e-6:
-                    _post_event_for_loan(svc, loan_id, repayment_id=repayment_id,
-                        event_type="UNAPPLIED_FUNDS_OVERPAYMENT",
-                        reference=_unapplied_original_reference(
-                            "credit",
-                            loan_id=loan_id,
-                            repayment_id=repayment_id,
-                            value_date=eff_date,
-                        ),
-                        description="Unapplied funds on overpayment",
-                        event_id=_unapplied_original_reference(
-                            "credit",
-                            loan_id=loan_id,
-                            repayment_id=repayment_id,
-                            value_date=eff_date,
-                        ),
-                        created_by="system",
-                        entry_date=eff_date,
-                        amount=Decimal(str(unapplied)),
+                    gl_items.append(
+                        {
+                            "event_type": "UNAPPLIED_FUNDS_OVERPAYMENT",
+                            "reference": _unapplied_original_reference(
+                                "credit",
+                                loan_id=loan_id,
+                                repayment_id=repayment_id,
+                                value_date=eff_date,
+                            ),
+                            "description": "Unapplied funds on overpayment",
+                            "event_id": _unapplied_original_reference(
+                                "credit",
+                                loan_id=loan_id,
+                                repayment_id=repayment_id,
+                                value_date=eff_date,
+                            ),
+                            "created_by": "system",
+                            "entry_date": eff_date_gl,
+                            "amount": Decimal(str(unapplied)),
+                            "payload": _gl_payload({}),
+                            "loan_id": loan_id,
+                            "repayment_id": repayment_id,
+                        }
                     )
                 if alloc_principal_arrears > 0:
                     p = Decimal(str(alloc_principal_arrears))
-                    _post_event_for_loan(svc, loan_id, repayment_id=repayment_id,
-                        event_type="PAYMENT_PRINCIPAL",
-                        reference=_rj,
-                        description=f"Principal (arrears) — {_rj}",
-                        event_id=f"REPAY-{repayment_id}-PRIN-ARR",
-                        created_by="system",
-                        entry_date=eff_date,
-                        payload={
-                            "cash_operating": p,
-                            "principal_arrears": p,
-                        },
+                    gl_items.append(
+                        {
+                            "event_type": "PAYMENT_PRINCIPAL",
+                            "reference": _rj,
+                            "description": f"Principal (arrears) — {_rj}",
+                            "event_id": f"REPAY-{repayment_id}-PRIN-ARR",
+                            "created_by": "system",
+                            "entry_date": eff_date_gl,
+                            "payload": _gl_payload(
+                                {"cash_operating": p, "principal_arrears": p}
+                            ),
+                            "loan_id": loan_id,
+                            "repayment_id": repayment_id,
+                        }
                     )
-
                 if alloc_principal_not_due > 0:
                     p = Decimal(str(alloc_principal_not_due))
-                    _post_event_for_loan(svc, loan_id, repayment_id=repayment_id,
-                        event_type="PAYMENT_PRINCIPAL_NOT_YET_DUE",
-                        reference=_rj,
-                        description=f"Principal (not yet due) — {_rj}",
-                        event_id=f"REPAY-{repayment_id}-PRIN-NYD",
-                        created_by="system",
-                        entry_date=eff_date,
-                        payload={
-                            "cash_operating": p,
-                            "loan_principal": p,
-                        },
+                    gl_items.append(
+                        {
+                            "event_type": "PAYMENT_PRINCIPAL_NOT_YET_DUE",
+                            "reference": _rj,
+                            "description": f"Principal (not yet due) — {_rj}",
+                            "event_id": f"REPAY-{repayment_id}-PRIN-NYD",
+                            "created_by": "system",
+                            "entry_date": eff_date_gl,
+                            "payload": _gl_payload({"cash_operating": p, "loan_principal": p}),
+                            "loan_id": loan_id,
+                            "repayment_id": repayment_id,
+                        }
                     )
-
                 if alloc_interest_arrears > 0:
                     p = Decimal(str(alloc_interest_arrears))
-                    _post_event_for_loan(svc, loan_id, repayment_id=repayment_id,
-                        event_type="PAYMENT_REGULAR_INTEREST",
-                        reference=_rj,
-                        description=f"Interest (arrears) — {_rj}",
-                        event_id=f"REPAY-{repayment_id}-INT-ARR",
-                        created_by="system",
-                        entry_date=eff_date,
-                        payload={
-                            "cash_operating": p,
-                            "regular_interest_arrears": p,
-                        },
+                    gl_items.append(
+                        {
+                            "event_type": "PAYMENT_REGULAR_INTEREST",
+                            "reference": _rj,
+                            "description": f"Interest (arrears) — {_rj}",
+                            "event_id": f"REPAY-{repayment_id}-INT-ARR",
+                            "created_by": "system",
+                            "entry_date": eff_date_gl,
+                            "payload": _gl_payload(
+                                {"cash_operating": p, "regular_interest_arrears": p}
+                            ),
+                            "loan_id": loan_id,
+                            "repayment_id": repayment_id,
+                        }
                     )
-
                 if alloc_interest_accrued > 0:
                     p = Decimal(str(alloc_interest_accrued))
-                    _post_event_for_loan(svc, loan_id, repayment_id=repayment_id,
-                        event_type="PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
-                        reference=_rj,
-                        description=f"Interest (accrued / not billed) — {_rj}",
-                        event_id=f"REPAY-{repayment_id}-INT-ACC",
-                        created_by="system",
-                        entry_date=eff_date,
-                        payload={
-                            "cash_operating": p,
-                            "regular_interest_accrued": p,
-                        },
+                    gl_items.append(
+                        {
+                            "event_type": "PAYMENT_REGULAR_INTEREST_NOT_YET_DUE",
+                            "reference": _rj,
+                            "description": f"Interest (accrued / not billed) — {_rj}",
+                            "event_id": f"REPAY-{repayment_id}-INT-ACC",
+                            "created_by": "system",
+                            "entry_date": eff_date_gl,
+                            "payload": _gl_payload(
+                                {"cash_operating": p, "regular_interest_accrued": p}
+                            ),
+                            "loan_id": loan_id,
+                            "repayment_id": repayment_id,
+                        }
                     )
-
                 if alloc_penalty_interest > 0:
                     p = Decimal(str(alloc_penalty_interest))
-                    _post_event_for_loan(svc, loan_id, repayment_id=repayment_id,
-                        event_type="PAYMENT_PENALTY_INTEREST",
-                        reference=_rj,
-                        description=f"Penalty interest — {_rj}",
-                        event_id=f"REPAY-{repayment_id}-PEN",
-                        created_by="system",
-                        entry_date=eff_date,
-                        payload={
-                            "cash_operating": p,
-                            "penalty_interest_asset": p,
-                            "penalty_interest_suspense": p,
-                            "penalty_interest_income": p,
-                        },
+                    gl_items.append(
+                        {
+                            "event_type": "PAYMENT_PENALTY_INTEREST",
+                            "reference": _rj,
+                            "description": f"Penalty interest — {_rj}",
+                            "event_id": f"REPAY-{repayment_id}-PEN",
+                            "created_by": "system",
+                            "entry_date": eff_date_gl,
+                            "payload": _gl_payload(
+                                {
+                                    "cash_operating": p,
+                                    "penalty_interest_asset": p,
+                                    "penalty_interest_suspense": p,
+                                    "penalty_interest_income": p,
+                                }
+                            ),
+                            "loan_id": loan_id,
+                            "repayment_id": repayment_id,
+                        }
                     )
-
                 if alloc_default_interest > 0:
                     p = Decimal(str(alloc_default_interest))
-                    _post_event_for_loan(svc, loan_id, repayment_id=repayment_id,
-                        event_type="PAYMENT_DEFAULT_INTEREST",
-                        reference=_rj,
-                        description=f"Default interest — {_rj}",
-                        event_id=f"REPAY-{repayment_id}-DEF",
-                        created_by="system",
-                        entry_date=eff_date,
-                        payload={
-                            "cash_operating": p,
-                            "default_interest_asset": p,
-                            "default_interest_suspense": p,
-                            "default_interest_income": p,
-                        },
+                    gl_items.append(
+                        {
+                            "event_type": "PAYMENT_DEFAULT_INTEREST",
+                            "reference": _rj,
+                            "description": f"Default interest — {_rj}",
+                            "event_id": f"REPAY-{repayment_id}-DEF",
+                            "created_by": "system",
+                            "entry_date": eff_date_gl,
+                            "payload": _gl_payload(
+                                {
+                                    "cash_operating": p,
+                                    "default_interest_asset": p,
+                                    "default_interest_suspense": p,
+                                    "default_interest_income": p,
+                                }
+                            ),
+                            "loan_id": loan_id,
+                            "repayment_id": repayment_id,
+                        }
                     )
 
+                if gl_items:
+                    svc.bulk_post_events(gl_items)
+
             except Exception as e:
-                print(f"Failed to post repayment journals for {repayment_id}: {e}")
+                _logger.warning(
+                    "Failed to post repayment journals for repayment_id=%s: %s",
+                    repayment_id,
+                    e,
+                )
+            t_gl_s = time.perf_counter() - t_gl0
 
             new_interest_accrued = max(0.0, balances["interest_accrued_balance"] - alloc_interest_accrued)
             new_interest_arrears = max(0.0, balances["interest_arrears_balance"] - alloc_interest_arrears)
@@ -355,8 +443,8 @@ def allocate_repayment_waterfall(
                 + new_default_interest + new_penalty_interest + new_fees_charges
             )
             eff_date_val = _date_conv(eff_date) or (eff_date.date() if isinstance(eff_date, datetime) else eff_date)
-            net_alloc = get_net_allocation_for_loan_date(loan_id, eff_date_val, conn=conn)
-            unalloc = get_unallocated_for_loan_date(loan_id, eff_date_val, conn=conn)
+            net_alloc = get_net_allocation_for_loan_date(loan_id, eff_date_val, conn=_conn)
+            unalloc = get_unallocated_for_loan_date(loan_id, eff_date_val, conn=_conn)
 
             # Update loan_daily_state in the same connection/cursor so it commits with the allocation.
             # Explicit UPDATE so we don't rely on ON CONFLICT; row must exist (from restore or EOD).
@@ -444,6 +532,31 @@ def allocate_repayment_waterfall(
                     regular_interest_in_suspense_balance=new_reg_susp,
                     penalty_interest_in_suspense_balance=new_pen_susp,
                     default_interest_in_suspense_balance=new_def_susp,
-                    conn=conn,
+                    conn=_conn,
                 )
             cur2.close()
+
+            if _trace_enabled():
+                wall_s = time.perf_counter() - t_wall0
+                _logger.info(
+                    "TRACE allocate_repayment_waterfall repayment_id=%s loan_id=%s eff_date=%s amount=%.2f "
+                    "fetch_s=%.3f prev_eod_s=%.3f lock_s=%.3f opening_s=%.3f alloc_compute_s=%.3f gl_bulk_s=%.3f "
+                    "wall_s=%.3f",
+                    repayment_id,
+                    loan_id,
+                    eff_date.isoformat() if hasattr(eff_date, "isoformat") else str(eff_date),
+                    float(amount),
+                    float(t_fetch_s),
+                    float(t_prev_s),
+                    float(t_lock_s),
+                    float(t_open_s),
+                    float(t_alloc_s),
+                    float(t_gl_s),
+                    float(wall_s),
+                )
+
+    if conn is not None:
+        _run(conn)
+        return
+    with _connection() as _conn:
+        _run(_conn)

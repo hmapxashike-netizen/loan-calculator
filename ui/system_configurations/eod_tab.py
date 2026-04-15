@@ -186,6 +186,21 @@ def render_eod_config_tab(
         key="syscfg_eod_loan_engine_log_timing",
         help="Adds an extra INFO line with prefetch_s, compute_s, commit_s per EOD run.",
     )
+    _repay_slice_default = int(eod_tasks.get("repayment_batch_slice_size", 100) or 100)
+    eod_tasks["repayment_batch_slice_size"] = st.number_input(
+        "Teller batch repayment: DB connection slice size",
+        min_value=1,
+        max_value=500,
+        value=max(1, min(500, _repay_slice_default)),
+        step=1,
+        key="syscfg_repayment_batch_slice_size",
+        help=(
+            "When uploading many repayments (Teller → Batch payments), reuse one PostgreSQL "
+            "connection for this many consecutive rows before opening a new one. "
+            "Each row still commits separately. Also overridable by env "
+            "FARNDACRED_REPAYMENT_BATCH_SLICE_SIZE. Default 100."
+        ),
+    )
 
     st.markdown("**Stage failure policy**")
     st.caption(

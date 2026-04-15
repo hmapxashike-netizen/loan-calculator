@@ -80,7 +80,7 @@ from loan_management import (
     get_unallocated_for_loan_date,
     get_loan_daily_state_balances,
     get_loan_ids_with_reversed_receipts_on_date,
-    get_loans_with_unapplied_balance,
+    get_loan_ids_with_unapplied_balance_and_arrears_for_eod,
     get_repayment_ids_for_loan_and_date,
     get_repayment_ids_for_value_date,
     reallocate_repayment,
@@ -1017,6 +1017,23 @@ def get_engine_state_for_loan_date(loan_id: int, as_of_date: date) -> Dict[str, 
     }
 
 
+def _trace_engine_timing_enabled(sys_cfg: Dict[str, Any] | None = None) -> bool:
+    """
+    Toggleable EOD timing trace.
+
+    - Env: FARNDACRED_TRACE_EOD=1 (preferred for ad-hoc tracing)
+    - Config: eod_settings.tasks.loan_engine_log_timing=true (existing)
+    """
+    if os.environ.get("FARNDACRED_TRACE_EOD", "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    try:
+        eod_st = (sys_cfg or {}).get("eod_settings") or {}
+        tasks_cfg = (eod_st.get("tasks") if isinstance(eod_st, dict) else None) or {}
+        return bool(tasks_cfg.get("loan_engine_log_timing", False))
+    except Exception:
+        return False
+
+
 def _run_loan_engine_for_date(
     as_of_date: date,
     sys_cfg: Dict[str, Any],
@@ -1065,9 +1082,8 @@ def _run_loan_engine_for_date(
         commit_batch_size = 250
     commit_batch_size = max(1, min(10_000, commit_batch_size))
 
-    log_engine_timing = bool(tasks_cfg.get("loan_engine_log_timing", False)) or (
-        os.environ.get("FARNDACRED_EOD_LOG_ENGINE_TIMING", "").strip().lower()
-        in ("1", "true", "yes", "on")
+    log_engine_timing = _trace_engine_timing_enabled(sys_cfg) or (
+        os.environ.get("FARNDACRED_EOD_LOG_ENGINE_TIMING", "").strip().lower() in ("1", "true", "yes", "on")
     )
     t_engine_wall0 = time.perf_counter()
     prefetch_s = 0.0
@@ -1181,14 +1197,15 @@ def _run_loan_engine_for_date(
             setattr(engine_loan, "_eod_schedule_version", v0)
 
             resume_payload = parse_engine_resume_dict(engine_resume_raw.get(loan_id_int))
-            use_incremental = (
-                incremental_enabled
-                and resume_payload is not None
-                and engine_resume_is_valid_schema(resume_payload)
-                and product_code_matches_resume(resume_payload, dict(loan_row))
-                and loan_id_int not in reversed_since_resume
-                and not _bumps_invalidate_incremental_resume(bumps, yesterday, as_of_date)
-            )
+            _inc_checks = {
+                "incremental_enabled": bool(incremental_enabled),
+                "resume_present": resume_payload is not None,
+                "resume_schema_ok": bool(resume_payload is not None and engine_resume_is_valid_schema(resume_payload)),
+                "product_match": bool(resume_payload is not None and product_code_matches_resume(resume_payload, dict(loan_row))),
+                "no_reversals_window": bool(loan_id_int not in reversed_since_resume),
+                "no_bumps_invalidate": bool(not _bumps_invalidate_incremental_resume(bumps, yesterday, as_of_date)),
+            }
+            use_incremental = all(_inc_checks.values())
             if use_incremental:
                 try:
                     apply_engine_resume(engine_loan, resume_payload)
@@ -1211,6 +1228,25 @@ def _run_loan_engine_for_date(
                 _eod_sync_engine_schedule_for_date(engine_loan, loan_row, current, bumps, ver_rows)
                 engine_loan.process_day(current)
                 current += timedelta(days=1)
+            if log_engine_timing:
+                try:
+                    if incremental_enabled:
+                        if incremental_path_for_loan:
+                            _logger.info(
+                                "TRACE eod.engine_path loan_id=%s as_of=%s path=incremental",
+                                loan_id_int,
+                                as_of_date.isoformat(),
+                            )
+                        else:
+                            failed = [k for k, ok in _inc_checks.items() if not ok]
+                            _logger.info(
+                                "TRACE eod.engine_path loan_id=%s as_of=%s path=full_replay failed_checks=%s",
+                                loan_id_int,
+                                as_of_date.isoformat(),
+                                ",".join(failed) if failed else "",
+                            )
+                except Exception:
+                    pass
 
             # Capture engine state at end of yesterday (accrual-only, no allocations)
             engine_yesterday = {
@@ -1572,12 +1608,26 @@ def _apply_unapplied_funds_to_arrears(as_of_date: date, sys_cfg: Dict[str, Any])
     towards arrears (waterfall order). Creates allocation with event_type='unapplied_funds_allocation'.
     Returns number of loans that had funds applied.
     """
-    loan_ids = get_loans_with_unapplied_balance(as_of_date)
+    t0 = time.perf_counter()
+    loan_ids = get_loan_ids_with_unapplied_balance_and_arrears_for_eod(as_of_date)
+    fetch_s = time.perf_counter() - t0
     applied_count = 0
+    t_loop0 = time.perf_counter()
     for loan_id in loan_ids:
         amount = apply_unapplied_funds_to_arrears_eod(loan_id, as_of_date, sys_cfg)
         if amount > 0:
             applied_count += 1
+    loop_s = time.perf_counter() - t_loop0
+    if _trace_engine_timing_enabled(sys_cfg):
+        _logger.info(
+            "EOD apply_unapplied_to_arrears detail as_of=%s candidate_loans=%s applied_loans=%s "
+            "t_fetch_candidates_s=%.3f t_loop_s=%.3f",
+            as_of_date,
+            len(loan_ids),
+            applied_count,
+            fetch_s,
+            loop_s,
+        )
     return applied_count
 
 

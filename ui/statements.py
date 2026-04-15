@@ -458,15 +458,18 @@ def render_statements_ui(
             except (TypeError, ValueError):
                 return None
     
-        def _customer_label(cid):
-            cid_n = _normalize_customer_id(cid)
+        def _customer_row_label(c: dict) -> str:
+            """Prefer SQL ``display_name`` from :func:`list_customers` / :func:`search_customers_by_name` (no N+1)."""
+            cid_n = _normalize_customer_id(c.get("id"))
             if cid_n is None:
-                return f"Customer #{cid}"
+                return "Customer"
+            nm = (c.get("display_name") or "").strip()
+            if nm:
+                return nm
             try:
-                nm = get_display_name(cid_n) if customers_available else ""
+                nm = (get_display_name(cid_n) if customers_available else "") or ""
             except Exception:
                 nm = ""
-            # Defensive: if a dict leaks through from any upstream helper/session state, avoid raw JSON UI labels.
             if isinstance(nm, dict):
                 nm = (
                     (nm.get("individual") or {}).get("name")
@@ -476,6 +479,14 @@ def render_statements_ui(
                 )
             nm_s = str(nm or "").strip()
             return nm_s if nm_s else f"Customer #{cid_n}"
+
+        def _customer_label_by_id(cid: int) -> str:
+            try:
+                nm = (get_display_name(cid) if customers_available else "") or ""
+            except Exception:
+                nm = ""
+            nm_s = str(nm or "").strip()
+            return nm_s if nm_s else f"Customer #{cid}"
     
         _stmt_sections = ["Customer loan statement", "General Ledger"]
         st.session_state.setdefault("statements_subnav", _stmt_sections[0])
@@ -512,7 +523,6 @@ button[aria-label="Generate"]{
             )
             st.markdown("##### Customer loan statement")
 
-            customers = list_customers() if customers_available else []
             fc0, fc1, fc2 = st.columns([1.05, 1.2, 1.2], gap="xsmall")
             with fc0:
                 _stmt_search_raw = st.text_input(
@@ -526,27 +536,48 @@ button[aria-label="Generate"]{
             preselect_cust_id = None
             preselect_loan_id = None
 
+            from customers.core import search_customers_by_name
             from loan_management import get_loan
 
-            if search:
-                if _loan_id_token.isdigit():
+            customers: list = []
+            if customers_available:
+                if not search:
+                    customers = list_customers()
+                elif _loan_id_token.isdigit():
                     lid = int(_loan_id_token)
                     loan = get_loan(lid)
                     if loan and loan.get("customer_id"):
                         preselect_cust_id = _normalize_customer_id(loan["customer_id"])
                         preselect_loan_id = lid
+                        cid = preselect_cust_id
+                        if cid is not None:
+                            dn = _customer_label_by_id(cid)
+                            customers = [
+                                {
+                                    "id": cid,
+                                    "display_name": dn,
+                                    "type": "",
+                                    "status": "",
+                                }
+                            ]
                     else:
                         st.warning(f"No loan found with ID **{lid}**.")
-                if preselect_loan_id is None and not _loan_id_token.isdigit():
-                    search_lower = search.lower()
-                    customers = [
-                        c for c in customers if search_lower in _customer_label(c.get("id")).lower()
-                    ]
-    
+                        customers = list_customers()
+                else:
+                    customers = search_customers_by_name(search, limit=800)
+
+            if search and customers_available and not _loan_id_token.isdigit():
+                st.caption(
+                    "Name search loads up to **800** matches from the database. "
+                    "Use a more specific name, or enter a **Loan ID** to jump directly."
+                )
+
             if not customers and preselect_cust_id is None:
                 st.info("No customers found. Create a customer or enter a valid Loan ID.")
             else:
-                cust_options = [(_normalize_customer_id(c.get("id")), _customer_label(c.get("id"))) for c in customers]
+                cust_options = [
+                    (_normalize_customer_id(c.get("id")), _customer_row_label(c)) for c in customers
+                ]
                 cust_options = [t for t in cust_options if t[0] is not None]
                 cust_labels = [t[1] for t in cust_options]
                 default_idx = 0
@@ -554,7 +585,7 @@ button[aria-label="Generate"]{
                     try:
                         default_idx = next(i for i, t in enumerate(cust_options) if t[0] == preselect_cust_id)
                     except StopIteration:
-                        cust_options.insert(0, (preselect_cust_id, _customer_label(preselect_cust_id)))
+                        cust_options.insert(0, (preselect_cust_id, _customer_label_by_id(preselect_cust_id)))
                         cust_labels.insert(0, cust_options[0][1])
                         default_idx = 0
                 # Drive selectbox only via session_state (never mix index= with Session State API).

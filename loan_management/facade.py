@@ -98,6 +98,7 @@ from .schedules import (
 from .serialization import _date_conv
 from .unapplied_eod import apply_unapplied_funds_to_arrears_eod
 from .unapplied_queries import (
+    get_loan_ids_with_unapplied_balance_and_arrears_for_eod,
     get_loans_with_unapplied_balance,
     get_unapplied_ledger_entries_for_statement,
 )

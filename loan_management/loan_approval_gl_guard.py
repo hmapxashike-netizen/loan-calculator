@@ -43,11 +43,11 @@ def should_defer_loan_approval_gl_at_capture(details: dict[str, Any]) -> bool:
     return ed > system_business_date_for_guard()
 
 
-def loan_has_active_loan_approval_journal(loan_id: int) -> bool:
+def loan_has_active_loan_approval_journal(loan_id: int, *, conn=None) -> bool:
     from .db import _connection
 
-    with _connection() as conn:
-        with conn.cursor() as cur:
+    def _run(c) -> bool:
+        with c.cursor() as cur:
             cur.execute(
                 """
                 SELECT 1 FROM journal_entries
@@ -58,10 +58,15 @@ def loan_has_active_loan_approval_journal(loan_id: int) -> bool:
             )
             return cur.fetchone() is not None
 
+    if conn is not None:
+        return _run(conn)
+    with _connection() as c:
+        return _run(c)
 
-def require_loan_approval_gl_before_repayment(loan_id: int) -> None:
+
+def require_loan_approval_gl_before_repayment(loan_id: int, *, conn=None) -> None:
     """Raise if the loan has no active LOAN_APPROVAL journal (e.g. future disbursement not yet reached)."""
-    if loan_has_active_loan_approval_journal(int(loan_id)):
+    if loan_has_active_loan_approval_journal(int(loan_id), conn=conn):
         return
     raise ValueError(
         f"Loan {int(loan_id)} has no active LOAN_APPROVAL journal yet. "

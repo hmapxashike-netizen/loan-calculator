@@ -6,6 +6,7 @@ UI (Streamlit) collects inputs, calls these functions, renders outcomes.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
@@ -22,6 +23,8 @@ from loan_management import (
     record_repayments_batch,
     reverse_repayment,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def build_batch_upload_template_excel_bytes(*, sample_system_date_iso: str) -> bytes:
@@ -128,6 +131,7 @@ def record_repayment_with_allocation(
     system_date: datetime,
 ) -> int:
     """Insert repayment row and run waterfall allocation with current system config."""
+    t0 = datetime.now().timestamp()
     rid = record_repayment(
         loan_id=loan_id,
         amount=amount,
@@ -140,6 +144,23 @@ def record_repayment_with_allocation(
     )
     cfg = load_system_config_from_db() or {}
     allocate_repayment_waterfall(rid, system_config=cfg)
+    # Optional high-level timing trace (fine-grained trace is inside allocate_repayment_waterfall).
+    # Enabled via env var to avoid noisy logs by default.
+    try:
+        import os
+
+        if os.environ.get("FARNDACRED_TRACE_TELLER", "").strip().lower() in ("1", "true", "yes", "on"):
+            dt_s = max(0.0, datetime.now().timestamp() - t0)
+            _logger.info(
+                "TRACE teller.record_repayment_with_allocation repayment_id=%s loan_id=%s amount=%s value_date=%s wall_s=%.3f",
+                rid,
+                loan_id,
+                amount,
+                getattr(value_date, "isoformat", lambda: str(value_date))(),
+                dt_s,
+            )
+    except Exception:
+        pass
     return rid
 
 

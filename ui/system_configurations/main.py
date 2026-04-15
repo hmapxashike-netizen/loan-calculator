@@ -78,6 +78,11 @@ def render_system_configurations_ui(
     eod_tasks["loan_engine_log_timing"] = bool(
         existing_tasks.get("loan_engine_log_timing", False)
     )
+    try:
+        _repay_slice = int(existing_tasks.get("repayment_batch_slice_size", 100))
+    except (TypeError, ValueError):
+        _repay_slice = 100
+    eod_tasks["repayment_batch_slice_size"] = max(1, min(500, _repay_slice))
     policy_cfg = eod_cfg.get("stage_policy", {}) or {}
     policy_mode = str(policy_cfg.get("mode") or "hybrid")
     blocking_stage_default = [
@@ -245,6 +250,13 @@ def render_system_configurations_ui(
                     eod_tasks.get("loan_engine_commit_batch_size", 250)
                 ),
                 "loan_engine_log_timing": bool(eod_tasks.get("loan_engine_log_timing", False)),
+                "repayment_batch_slice_size": max(
+                    1,
+                    min(
+                        500,
+                        int(eod_tasks.get("repayment_batch_slice_size", 100) or 100),
+                    ),
+                ),
             },
             "stage_policy": {
                 "mode": policy_mode,

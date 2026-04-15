@@ -21,6 +21,16 @@ def _get_conn():
     return psycopg2.connect(get_database_url())
 
 
+def connect_loan_management():
+    """
+    Raw psycopg2 connection for callers that manage commit/rollback/close explicitly.
+
+    Used by high-volume batch paths (e.g. repayment upload slices) to reuse one TCP
+    connection for many rows while still committing per row.
+    """
+    return _get_conn()
+
+
 @contextlib.contextmanager
 def _connection():
     conn = _get_conn()

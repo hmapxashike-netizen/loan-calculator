@@ -685,10 +685,34 @@ def list_customers(
     status: str | None = None,
     customer_type: str | None = None,
 ) -> list[dict]:
-    """List customers; filter by status ('active'/'inactive') and/or type ('individual'/'corporate')."""
+    """
+    List customers; filter by status ('active'/'inactive') and/or type ('individual'/'corporate').
+
+    Returns core customer fields plus a best-effort `display_name` resolved via joins so UI dropdowns
+    don't have to call `get_display_name()` N times (which would be 1–2 queries per customer).
+    """
     with _connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            q = "SELECT id, type, status, sector_id, subsector_id, created_at, updated_at FROM customers WHERE 1=1"
+            q = """
+                SELECT
+                    c.id,
+                    c.type,
+                    c.status,
+                    c.sector_id,
+                    c.subsector_id,
+                    c.created_at,
+                    c.updated_at,
+                    CASE
+                        WHEN c.type = 'individual' THEN COALESCE(i.name, '')
+                        ELSE COALESCE(co.trading_name, co.legal_name, '')
+                    END AS display_name
+                FROM customers c
+                LEFT JOIN individuals i
+                    ON i.customer_id = c.id AND c.type = 'individual'
+                LEFT JOIN corporates co
+                    ON co.customer_id = c.id AND c.type = 'corporate'
+                WHERE 1=1
+            """
             params = []
             if status:
                 q += " AND status = %s"
@@ -696,8 +720,66 @@ def list_customers(
             if customer_type:
                 q += " AND type = %s"
                 params.append(customer_type)
-            q += " ORDER BY id"
+            q += " ORDER BY c.id"
             cur.execute(q, params or None)
+            return _rows(cur)
+
+
+def search_customers_by_name(
+    fragment: str,
+    *,
+    limit: int = 500,
+    status: str | None = None,
+) -> list[dict]:
+    """
+    Find customers whose display name (individual name or corporate trading/legal name)
+    matches ``fragment`` (case-insensitive substring), or whose numeric id equals the
+    fragment when it is all digits.
+
+    Same row shape as :func:`list_customers` (including ``display_name``). Intended for
+    UIs that must not load the full customer table into memory on every interaction.
+    """
+    frag = (fragment or "").strip()
+    if not frag:
+        return []
+    lim = max(1, min(int(limit), 10_000))
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            q = """
+                SELECT
+                    c.id,
+                    c.type,
+                    c.status,
+                    c.sector_id,
+                    c.subsector_id,
+                    c.created_at,
+                    c.updated_at,
+                    CASE
+                        WHEN c.type = 'individual' THEN COALESCE(i.name, '')
+                        ELSE COALESCE(co.trading_name, co.legal_name, '')
+                    END AS display_name
+                FROM customers c
+                LEFT JOIN individuals i
+                    ON i.customer_id = c.id AND c.type = 'individual'
+                LEFT JOIN corporates co
+                    ON co.customer_id = c.id AND c.type = 'corporate'
+                WHERE 1=1
+            """
+            params: list[Any] = []
+            if status:
+                q += " AND c.status = %s"
+                params.append(status)
+            if frag.isdigit():
+                q += " AND (c.id = %s OR COALESCE(i.name, '') ILIKE %s OR COALESCE(co.trading_name, '') ILIKE %s OR COALESCE(co.legal_name, '') ILIKE %s)"
+                pat = f"%{frag}%"
+                params.extend((int(frag), pat, pat, pat))
+            else:
+                pat = f"%{frag}%"
+                q += " AND (COALESCE(i.name, '') ILIKE %s OR COALESCE(co.trading_name, '') ILIKE %s OR COALESCE(co.legal_name, '') ILIKE %s)"
+                params.extend((pat, pat, pat))
+            q += " ORDER BY c.id LIMIT %s"
+            params.append(lim)
+            cur.execute(q, params)
             return _rows(cur)
 
 
