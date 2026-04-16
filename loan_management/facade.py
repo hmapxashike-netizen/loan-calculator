@@ -28,7 +28,11 @@ from .approval_drafts import (
     update_loan_approval_draft_staged,
 )
 from .approval_journal import build_loan_approval_journal_payload
-from .cash_gl import _merge_cash_gl_into_payload, get_cached_source_cash_account_entries
+from .cash_gl import (
+    _merge_cash_gl_into_payload,
+    _merge_creditor_cash_gl_into_payload,
+    get_cached_source_cash_account_entries,
+)
 from .daily_state import (
     get_loan_daily_state_balances,
     get_loan_daily_state_balances_for_recast_preview,
@@ -74,10 +78,19 @@ from .repayment_queries import (
     get_repayment_ids_for_loan_and_date,
     get_repayment_ids_for_value_date,
 )
-from .repayment_record import record_repayment, record_repayments_batch
+from .repayment_record import (
+    record_repayment,
+    record_repayments_batch,
+    record_scheduled_repayment,
+    record_scheduled_repayments_batch,
+)
 from .repayment_waterfall import allocate_repayment_waterfall
 from .repost_gl_range import repost_gl_for_loan_date_range
 from .reverse_repayment import reverse_repayment
+from .scheduled_receipts import (
+    cancel_scheduled_repayment,
+    list_scheduled_receipts_for_loan,
+)
 from .save_loan import save_loan
 from .schedules import (
     apply_schedule_version_bumps,

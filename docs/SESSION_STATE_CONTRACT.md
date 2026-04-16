@@ -167,10 +167,11 @@ Do not rename without checking nested widgets.
 - **`teller_rev_receipt_select`**: recent receipts selectbox  
 - **`teller_rev_button`**: reverse action button  
 
-### Payment of borrowings tab
+### Creditor loans — Receipts tab (`ui/creditor_loans.py`)
 
-- **`teller_borrowing_value_date`**, **`teller_borrowing_amount`**, **`teller_borrowing_ref`**, **`teller_borrowing_desc`**  
-- Form id: `teller_borrowing_payment_form`
+- Facility receipt: **`cr_fac`**, **`cr_amt`**, **`cr_pd`**, **`cr_vd`**, **`cr_cash`**, **`cr_ref`**, **`cr_post`**
+- GL-only borrowing repayment (expander form): **`cr_gl_vd`**, **`cr_gl_prin`**, **`cr_gl_int`**, **`cr_gl_ref`**, **`cr_gl_desc`**, **`cr_gl_cash`** — form id: `cr_gl_borrowing_form`  
+  (Replaces the former Teller **Payment of borrowings** tab; postings use **BORROWING_REPAYMENT** with explicit principal / interest.)
 
 ### Write-off recovery tab
 

@@ -257,6 +257,16 @@ def get_amortization_schedule(
     return pd.DataFrame(schedule)
 
 
+def consumer_level_payment(total_facility: float, monthly_rate: float, term: int) -> float:
+    """
+    Constant instalment for consumer-style schedules (same as loan calculator / capture).
+    Uses numpy_financial.pmt; returns 0 when inputs are non-positive.
+    """
+    if total_facility <= 0 or term <= 0 or monthly_rate <= 0:
+        return 0.0
+    return float(npf.pmt(float(monthly_rate), int(term), -float(total_facility)))
+
+
 # --- Term loan (Actual/360) ---
 
 

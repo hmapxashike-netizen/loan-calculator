@@ -50,6 +50,7 @@ def get_amount_due_summary(loan_id: int, as_of: date | None = None) -> dict:
                 SELECT COALESCE(SUM(amount), 0)
                 FROM loan_repayments
                 WHERE loan_id = %s
+                  AND status IN ('posted', 'reversed')
                   AND COALESCE(value_date, payment_date) <= %s
                 """,
                 (loan_id, as_of),

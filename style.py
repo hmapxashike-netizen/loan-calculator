@@ -1664,7 +1664,6 @@ def inject_farnda_global_styles_once() -> None:
 NAV_LABEL_ICONS: dict[str, str] = {
     "Home": "\U0001F3E0",
     "Admin Dashboard": "\U0001F6E1",
-    "Officer Dashboard": "\U0001F4BC",
     "Customers": "\U0001F464",
     "Loan management": "\U0001F4B0",
     "Loan Capture": "\U0001F4DD",
@@ -1680,6 +1679,7 @@ NAV_LABEL_ICONS: dict[str, str] = {
     "System configurations": "\u2699\uFE0F",
     "Subscription": "\U0001F4B3",
     "View Schedule": "\U0001F4C5",
+    "Schedules & repayments": "\U0001F4C5",
     "Loan Calculators": "\U0001F9EE",
     "Update Loans": "\U0001F504",
     "Interest In Suspense": "\u23F3",

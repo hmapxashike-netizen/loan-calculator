@@ -679,9 +679,9 @@ def compute_consumer_schedule(
         amount_display = loan_required
     base_monthly = (base_rate / 12.0) if rate_basis == "Per annum" else base_rate
     total_monthly_rate = base_monthly + additional_monthly_rate
-    import numpy_financial as npf
+    from loans import consumer_level_payment
 
-    monthly_installment = float(npf.pmt(total_monthly_rate, loan_term, -total_facility))
+    monthly_installment = consumer_level_payment(total_facility, total_monthly_rate, int(loan_term))
 
     if first_repayment_date is not None:
         schedule_dates = repayment_dates(start_date, first_repayment_date, int(loan_term), use_anniversary)
@@ -895,6 +895,9 @@ def approve_loans_ui():
 
 
 def batch_loans_ui():
+    if not _user_can_loan_batch_capture_tab():
+        st.error("You do not have permission for batch loan capture (migration).")
+        st.stop()
     from customers.core import list_customers_for_loan_batch_link
     from ui.loan_management import render_batch_loan_capture_ui
 
@@ -999,9 +1002,67 @@ def _user_is_admin() -> bool:
         return False
 
 
+def _user_is_superadmin() -> bool:
+    """True when the signed-in user is SUPERADMIN."""
+    try:
+        from middleware import get_current_user
+
+        u = get_current_user()
+        if not u:
+            return False
+        role = str(u.get("role") or "").strip().upper()
+        return role == "SUPERADMIN"
+    except Exception:
+        return False
+
+
+def _user_can_loan_approve_tab() -> bool:
+    """Approve Loans sub-tab: admins always; others need ``loan_management.approve_loans`` when RBAC is on."""
+    if _user_is_admin():
+        return True
+    try:
+        from middleware import get_current_user
+        from rbac.service import rbac_tables_ready, get_permission_keys_for_role_key
+
+        u = get_current_user()
+        if not u:
+            return False
+        role = str(u.get("role") or "").strip().upper()
+        if not rbac_tables_ready():
+            return role in ("LOAN_OFFICER", "LOAN_SUPERVISOR", "ADMIN", "SUPERADMIN")
+        return "loan_management.approve_loans" in get_permission_keys_for_role_key(role)
+    except Exception:
+        return True
+
+
+def _user_can_loan_schedules_repayments_tab() -> bool:
+    """Schedules & repayments (stored schedule lines): explicit key or legacy nav.loan_management."""
+    try:
+        from rbac.subfeature_access import loan_management_can_schedules_repayments
+
+        return loan_management_can_schedules_repayments()
+    except Exception:
+        return True
+
+
+def _user_can_loan_batch_capture_tab() -> bool:
+    """Batch loan migration tab: explicit loan_management.batch_capture or SUPERADMIN when RBAC is on."""
+    try:
+        from rbac.subfeature_access import loan_management_can_batch_capture
+
+        return loan_management_can_batch_capture()
+    except Exception:
+        return _user_is_superadmin()
+
+
 def _user_can_reamort_direct_principal_tab() -> bool:
-    """Direct principal recast (no unapplied): admin-only extra tab."""
-    return _user_is_admin()
+    """Direct principal recast (no unapplied): admin / explicit permission."""
+    try:
+        from rbac.subfeature_access import reamort_can_direct_principal
+
+        return reamort_can_direct_principal()
+    except Exception:
+        return _user_is_admin()
 
 
 def _reamod_created_by() -> str:
@@ -1182,6 +1243,7 @@ def main():
 LOAN_APP_SECTIONS = [
     "Customers",
     "Loan management",
+    "Creditor loans",
     "Portfolio reports",
     "Teller",
     "Reamortisation",
@@ -1229,21 +1291,36 @@ def render_loan_app_section(nav: str) -> None:
         from reporting.portfolio_reports_ui import render_portfolio_reports_ui
 
         render_portfolio_reports_ui()
+    elif nav == "Creditor loans":
+        from ui.creditor_loans import render_creditor_loans_ui
+
+        render_creditor_loans_ui(
+            get_system_date=_get_system_date,
+            get_cached_source_cash_account_entries=get_cached_source_cash_account_entries,
+        )
     elif nav == "Loan management":
         # Single subnav + one active branch: avoids ``st.tabs`` running every tab body on each rerun.
-        _lm_sections = [
-            "Loan Capture",
-            "Batch Capture",
-            "View Schedule",
-            "Loan Calculators",
-            "Update Loans",
-            "Interest In Suspense",
-            "Approve Loans",
-        ]
+        _lm_sections = ["Loan Capture"]
+        if _user_can_loan_schedules_repayments_tab():
+            _lm_sections.append("Schedules & repayments")
+        _lm_sections.extend(
+            [
+                "Loan Calculators",
+                "Update Loans",
+                "Interest In Suspense",
+            ]
+        )
+        if _user_can_loan_approve_tab():
+            _lm_sections.append("Approve Loans")
+        if _user_can_loan_batch_capture_tab():
+            _lm_sections.insert(1, "Batch Capture")
         _lm_legacy = {
             "Loan capture": "Loan Capture",
             "Batch capture": "Batch Capture",
-            "View schedule": "View Schedule",
+            "View schedule": "Schedules & repayments",
+            "View Schedule": "Schedules & repayments",
+            "Schedules repayments": "Schedules & repayments",
+            "Schedules & repayments": "Schedules & repayments",
             "Loan calculators": "Loan Calculators",
             "Update loans": "Update Loans",
             "Interest in suspense": "Interest In Suspense",
@@ -1317,9 +1394,15 @@ def render_loan_app_section(nav: str) -> None:
                 capture_loan_ui()
 
         elif _lm_active == "Batch Capture":
+            if not _user_can_loan_batch_capture_tab():
+                st.error("You do not have permission for batch loan capture (migration).")
+                st.stop()
             batch_loans_ui()
 
-        elif _lm_active == "View Schedule":
+        elif _lm_active == "Schedules & repayments":
+            if not _user_can_loan_schedules_repayments_tab():
+                st.warning("You do not have permission to open Schedules & repayments.")
+                st.stop()
             view_schedule_ui()
 
         elif _lm_active == "Loan Calculators":

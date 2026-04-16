@@ -1655,6 +1655,31 @@ def _reallocate_receipts_after_reversals(as_of_date: date, sys_cfg: Dict[str, An
     return reallocated
 
 
+def _activate_scheduled_receipts_stage(
+    as_of_date: date,
+    sys_cfg: Dict[str, Any],
+    *,
+    allow_system_date_eod: bool,
+) -> int:
+    """Post loan_engine: flip scheduled → posted and allocate (GL on value date only)."""
+    from loan_management.scheduled_receipts import activate_scheduled_receipts_for_eod_date
+
+    n, errs = activate_scheduled_receipts_for_eod_date(
+        as_of_date,
+        sys_cfg,
+        allow_system_date_eod=allow_system_date_eod,
+    )
+    if errs:
+        raise RuntimeError("activate_scheduled_receipts failed: " + "; ".join(errs[:25]))
+    if n:
+        _logger.info(
+            "EOD activate_scheduled_receipts as_of=%s activated=%s receipt(s).",
+            as_of_date,
+            n,
+        )
+    return n
+
+
 def _replay_refresh_allocations_for_date(as_of_date: date, sys_cfg: Dict[str, Any]) -> int:
     """
     Replay/backfill only: refresh allocation rows and GL for every posted receipt on as_of_date.
@@ -1865,6 +1890,218 @@ def _run_eom_regular_interest_income_recognition(
     return len(bulk_items)
 
 
+def _run_eom_creditor_interest_expense_accrual(
+    as_of_date: date,
+    period_cfg: Any,
+    events_to_run: set[str],
+    svc: Any,
+) -> int:
+    """
+    Month-end creditor interest expense:
+    - ``daily_mirror``: SUM(regular_interest_daily) from ``creditor_loan_daily_state`` in the month.
+    - ``periodic_schedule``: scheduled interest for installments dated in the month.
+    """
+    if "INTEREST_EXPENSE_ACCRUAL" not in events_to_run:
+        return 0
+    bounds = get_month_period_bounds(as_of_date, period_cfg)
+    period_key = bounds.end_date.strftime("%Y-%m")
+    from creditor_loans.creditor_eom_interest import periodic_scheduled_interest_in_calendar_month
+
+    bulk_items: List[Dict[str, Any]] = []
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT cds.creditor_drawdown_id,
+                       cl.creditor_facility_id,
+                       SUM(COALESCE(cds.regular_interest_daily, 0)) AS reg_mtd
+                FROM creditor_loan_daily_state cds
+                INNER JOIN creditor_drawdowns cl ON cl.id = cds.creditor_drawdown_id
+                WHERE cds.as_of_date >= %s
+                  AND cds.as_of_date <= %s
+                  AND cl.status = 'active'
+                  AND cl.accrual_mode = 'daily_mirror'
+                GROUP BY cds.creditor_drawdown_id, cl.creditor_facility_id
+                HAVING SUM(COALESCE(cds.regular_interest_daily, 0)) > 0
+                """,
+                (bounds.start_date, bounds.end_date),
+            )
+            m_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT id, creditor_facility_id
+                FROM creditor_drawdowns
+                WHERE status = 'active' AND accrual_mode = 'periodic_schedule'
+                """
+            )
+            periodic_rows = cur.fetchall()
+
+        with conn.cursor() as cur:
+            for pr in periodic_rows:
+                dd_id = int(pr["id"])
+                cf_id = int(pr["creditor_facility_id"])
+                amt = periodic_scheduled_interest_in_calendar_month(
+                    cur, dd_id, bounds.start_date, bounds.end_date
+                )
+                if amt <= 0:
+                    continue
+                event_id = f"EOM-INTEXP-{period_key}-CL-{dd_id}-PER"
+                bulk_items.append(
+                    {
+                        "event_type": "INTEREST_EXPENSE_ACCRUAL",
+                        "reference": f"EOM-{as_of_date}-CL-{dd_id}-INTEXP",
+                        "description": (
+                            f"EOM interest expense (periodic schedule) drawdown {dd_id} ({period_key})"
+                        ),
+                        "event_id": event_id,
+                        "created_by": "system",
+                        "entry_date": as_of_date,
+                        "amount": amt,
+                        "creditor_drawdown_id": dd_id,
+                        "creditor_facility_id": cf_id,
+                    }
+                )
+
+    for r in m_rows:
+        dd_id = int(r["creditor_drawdown_id"])
+        cf_id = int(r["creditor_facility_id"])
+        amt = Decimal(str(r["reg_mtd"] or 0))
+        if amt <= 0:
+            continue
+        event_id = f"EOM-INTEXP-{period_key}-CL-{dd_id}-DM"
+        bulk_items.append(
+            {
+                "event_type": "INTEREST_EXPENSE_ACCRUAL",
+                "reference": f"EOM-{as_of_date}-CL-{dd_id}-INTEXP",
+                "description": (
+                    f"EOM interest expense accrual (daily mirror) drawdown {dd_id} ({period_key})"
+                ),
+                "event_id": event_id,
+                "created_by": "system",
+                "entry_date": as_of_date,
+                "amount": amt,
+                "creditor_drawdown_id": dd_id,
+                "creditor_facility_id": cf_id,
+            }
+        )
+    if bulk_items:
+        svc.bulk_post_events(bulk_items)
+    return len(bulk_items)
+
+
+def _run_eom_creditor_borrowing_fees_amortisation(
+    as_of_date: date,
+    period_cfg: Any,
+    events_to_run: set[str],
+    svc: Any,
+) -> int:
+    """Straight-line monthly amortisation of drawdown fees (BORROWING_FEES_AMORTISATION)."""
+    if "BORROWING_FEES_AMORTISATION" not in events_to_run:
+        return 0
+    bounds = get_month_period_bounds(as_of_date, period_cfg)
+    period_key = bounds.end_date.strftime("%Y-%m")
+    bulk_items: List[Dict[str, Any]] = []
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, creditor_facility_id, drawdown_fee_amount,
+                       COALESCE(NULLIF(term, 0), 1) AS term_m
+                FROM creditor_drawdowns
+                WHERE status = 'active' AND drawdown_fee_amount > 0
+                """
+            )
+            rows = cur.fetchall()
+    for r in rows:
+        dd_id = int(r["id"])
+        cf_id = int(r["creditor_facility_id"])
+        fee = Decimal(str(r["drawdown_fee_amount"] or 0))
+        term_m = max(1, int(r["term_m"] or 1))
+        monthly = (fee / Decimal(term_m)).quantize(Decimal("0.0000000001"))
+        if monthly <= 0:
+            continue
+        event_id = f"EOM-BFA-{period_key}-CL-{dd_id}"
+        bulk_items.append(
+            {
+                "event_type": "BORROWING_FEES_AMORTISATION",
+                "reference": f"EOM-{as_of_date}-CL-{dd_id}-FEE",
+                "description": f"Creditor drawdown fee amortisation CL-{dd_id} ({period_key})",
+                "event_id": event_id,
+                "created_by": "system",
+                "entry_date": as_of_date,
+                "amount": monthly,
+                "creditor_drawdown_id": dd_id,
+                "creditor_facility_id": cf_id,
+            }
+        )
+    if bulk_items:
+        svc.bulk_post_events(bulk_items)
+    return len(bulk_items)
+
+
+def _run_eom_creditor_facility_fee_amortisation(
+    as_of_date: date,
+    period_cfg: Any,
+    events_to_run: set[str],
+    svc: Any,
+) -> int:
+    """Amortise facility-level deferred fees (uses same templates as drawdown fee amort)."""
+    if "BORROWING_FEES_AMORTISATION" not in events_to_run:
+        return 0
+
+    bounds = get_month_period_bounds(as_of_date, period_cfg)
+    period_key = bounds.end_date.strftime("%Y-%m")
+    bulk_items: List[Dict[str, Any]] = []
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, facility_fee_amount, facility_expiry_date, created_at::date AS started
+                FROM creditor_facilities
+                WHERE status = 'active' AND facility_fee_amount > 0
+                """
+            )
+            rows = cur.fetchall()
+    for r in rows:
+        fid = int(r["id"])
+        fee = Decimal(str(r["facility_fee_amount"] or 0))
+        start_d = r["started"]
+        exp = r["facility_expiry_date"]
+        if not exp or not start_d:
+            continue
+        if isinstance(exp, str):
+            from datetime import datetime as _dt
+
+            exp = _dt.fromisoformat(str(exp)[:10]).date()
+        if hasattr(start_d, "date"):
+            start_d = start_d.date()
+        months = max(
+            1,
+            (exp.year - start_d.year) * 12 + (exp.month - start_d.month) + 1,
+        )
+        monthly = (fee / Decimal(months)).quantize(Decimal("0.0000000001"))
+        if monthly <= 0:
+            continue
+        event_id = f"EOM-BFF-{period_key}-CF-{fid}"
+        bulk_items.append(
+            {
+                "event_type": "BORROWING_FEES_AMORTISATION",
+                "reference": f"EOM-{as_of_date}-CF-{fid}-FEE",
+                "description": f"Creditor facility fee amortisation CF-{fid} ({period_key})",
+                "event_id": event_id,
+                "created_by": "system",
+                "entry_date": as_of_date,
+                "amount": monthly,
+                "creditor_facility_id": fid,
+                "creditor_drawdown_id": None,
+            }
+        )
+    if bulk_items:
+        svc.bulk_post_events(bulk_items)
+    return len(bulk_items)
+
+
 def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     """
     Posts accounting journals for end of day activities based on transaction_templates.
@@ -2012,6 +2249,29 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
                 as_of_date, period_cfg, events_to_run, svc
             )
             t_eom_regint_s = time.perf_counter() - t_eom0
+            t_eom_cl0 = time.perf_counter()
+            n_eom_creditor = _run_eom_creditor_interest_expense_accrual(
+                as_of_date, period_cfg, events_to_run, svc
+            )
+            t_eom_creditor_s = time.perf_counter() - t_eom_cl0
+            t_eom_cl_fee0 = time.perf_counter()
+            n_eom_creditor_dd_fee = _run_eom_creditor_borrowing_fees_amortisation(
+                as_of_date, period_cfg, events_to_run, svc
+            )
+            n_eom_creditor_cf_fee = _run_eom_creditor_facility_fee_amortisation(
+                as_of_date, period_cfg, events_to_run, svc
+            )
+            t_eom_creditor_fee_s = time.perf_counter() - t_eom_cl_fee0
+            _logger.info(
+                "EOD accounting_events eom_creditor as_of=%s intexp_items=%s intexp_t_s=%.3f "
+                "dd_fee_items=%s facility_fee_items=%s fee_t_s=%.3f",
+                as_of_date.isoformat(),
+                n_eom_creditor,
+                t_eom_creditor_s,
+                n_eom_creditor_dd_fee,
+                n_eom_creditor_cf_fee,
+                t_eom_creditor_fee_s,
+            )
         _logger.info(
             "EOD accounting_events detail as_of=%s is_month_end=%s events_to_run=%s rows=%s posted_items=%s "
             "t_events_s=%.3f t_fetch_s=%.3f t_build_s=%.3f t_post_s=%.3f wall_s=%.3f",
@@ -2269,6 +2529,21 @@ def _run_notification_batch(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
     _ = (as_of_date, sys_cfg)
 
 
+def _run_creditor_loan_engine_stage(
+    as_of_date: date,
+    sys_cfg: Dict[str, Any],
+    *,
+    allow_system_date_eod: bool,
+) -> int:
+    """Persist creditor mirror daily state (separate connection; commits with caller policy)."""
+    from creditor_loans.eod_engine import run_creditor_loans_engine_for_date
+
+    with _get_conn() as conn:
+        return run_creditor_loans_engine_for_date(
+            conn, as_of_date, sys_cfg, allow_system_date_eod=allow_system_date_eod
+        )
+
+
 def run_eod_for_date(
     as_of_date: date,
     *,
@@ -2321,6 +2596,7 @@ def run_eod_for_date(
         tasks_cfg = (eod_settings.get("tasks") or {}) if isinstance(eod_settings, dict) else {}
     
         run_loan_engine = bool(tasks_cfg.get("run_loan_engine", True))
+        run_creditor_loan_engine = bool(tasks_cfg.get("run_creditor_loan_engine", True))
         reallocate_after_reversals = (
             bool(tasks_cfg.get("reallocate_after_reversals", True))
             and not skip_reallocate_after_reversals
@@ -2331,6 +2607,7 @@ def run_eod_for_date(
         snapshot_financial_statements = bool(tasks_cfg.get("snapshot_financial_statements", True))
         send_notifications = bool(tasks_cfg.get("send_notifications", False))
         apply_unapplied = bool(tasks_cfg.get("apply_unapplied_to_arrears", True))
+        activate_scheduled_receipts = bool(tasks_cfg.get("activate_scheduled_receipts", True))
     
         # Stage policy (config-driven)
         policy_cfg = eod_settings.get("stage_policy", {}) if isinstance(eod_settings, dict) else {}
@@ -2340,6 +2617,8 @@ def run_eod_for_date(
         blocking_default = [
             "replay_refresh_allocations",
             "loan_engine",
+            "creditor_loan_engine",
+            "activate_scheduled_receipts",
             "reallocate_after_reversals",
             "apply_unapplied_to_arrears",
             "accounting_events",
@@ -2469,6 +2748,24 @@ def run_eod_for_date(
                         sys_cfg,
                         allow_system_date_eod=allow_system_date_eod,
                         replay_refresh_allocations=replay_refresh_allocations,
+                    ),
+                )
+                _stage(
+                    "creditor_loan_engine",
+                    run_creditor_loan_engine,
+                    lambda: _run_creditor_loan_engine_stage(
+                        as_of_date,
+                        sys_cfg,
+                        allow_system_date_eod=allow_system_date_eod,
+                    ),
+                )
+                _stage(
+                    "activate_scheduled_receipts",
+                    run_loan_engine and activate_scheduled_receipts,
+                    lambda: _activate_scheduled_receipts_stage(
+                        as_of_date,
+                        sys_cfg,
+                        allow_system_date_eod=allow_system_date_eod,
                     ),
                 )
                 _stage(

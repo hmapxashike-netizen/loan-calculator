@@ -134,6 +134,11 @@ class RbacRepository:
         *,
         actor_is_superadmin: bool,
     ) -> None:
+        target = self.get_role_by_id(int(role_id))
+        if target and str(target.get("role_key") or "").strip().upper() == "ADMIN" and not actor_is_superadmin:
+            raise PermissionError(
+                "Only a super administrator may change the Administrator role's permissions."
+            )
         meta = permission_by_key()
         for key in permission_keys:
             if key not in meta:
@@ -158,5 +163,10 @@ class RbacRepository:
         self.conn.commit()
 
     def clone_permissions_from_role(self, target_role_id: int, source_role_key: str, *, actor_is_superadmin: bool) -> None:
+        sk = str(source_role_key or "").strip().upper()
+        if sk == "ADMIN" and not actor_is_superadmin:
+            raise PermissionError(
+                "Only a super administrator may copy permissions from the Administrator role."
+            )
         keys = self.get_permission_keys_for_role_key(source_role_key)
         self.replace_role_permissions(target_role_id, keys, actor_is_superadmin=actor_is_superadmin)

@@ -488,7 +488,22 @@ def render_statements_ui(
             nm_s = str(nm or "").strip()
             return nm_s if nm_s else f"Customer #{cid}"
     
-        _stmt_sections = ["Customer loan statement", "General Ledger"]
+        from rbac.subfeature_access import (
+            statements_can_creditor,
+            statements_can_debtor,
+            statements_can_gl,
+        )
+
+        _stmt_sections: list[str] = []
+        if statements_can_debtor():
+            _stmt_sections.append("Customer loan statement")
+        if statements_can_creditor():
+            _stmt_sections.append("Creditor loan statement")
+        if statements_can_gl():
+            _stmt_sections.append("General Ledger")
+        if not _stmt_sections:
+            st.warning("No statement areas are enabled for your role.")
+            return
         st.session_state.setdefault("statements_subnav", _stmt_sections[0])
         if st.session_state["statements_subnav"] not in _stmt_sections:
             st.session_state["statements_subnav"] = _stmt_sections[0]
@@ -506,6 +521,9 @@ def render_statements_ui(
         _stmt_active = st.session_state["statements_subnav"]
 
         if _stmt_active == "Customer loan statement":
+            if not statements_can_debtor():
+                st.warning("You do not have permission for debtor loan statements.")
+                return
             st.markdown(
                 """
 <style>
@@ -1016,7 +1034,49 @@ button[aria-label="Generate"]{
                             st.error(str(ex))
                             st.exception(ex)
     
+        elif _stmt_active == "Creditor loan statement":
+            if not statements_can_creditor():
+                st.warning("You do not have permission for creditor loan statements.")
+                return
+            st.markdown("##### Creditor loan statement")
+            st.caption(
+                "Drawdown-level borrowing snapshot; capture and receipts live under **Creditor loans**."
+            )
+            try:
+                from loan_management import _connection
+                from psycopg2.extras import RealDictCursor
+
+                with _connection() as conn:
+                    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                        cur.execute(
+                            """
+                            SELECT cl.id, cp.name AS lender, cl.principal::text AS principal,
+                                   cl.status, cl.disbursement_date::text AS disbursement_date,
+                                   cf.id AS creditor_facility_id
+                            FROM creditor_drawdowns cl
+                            JOIN creditor_facilities cf ON cf.id = cl.creditor_facility_id
+                            JOIN creditor_counterparties cp ON cp.id = cf.creditor_counterparty_id
+                            ORDER BY cl.id DESC
+                            LIMIT 500
+                            """
+                        )
+                        crows = cur.fetchall()
+                if crows:
+                    st.dataframe(
+                        pd.DataFrame([dict(r) for r in crows]),
+                        hide_index=True,
+                        width="stretch",
+                        height=360,
+                    )
+                else:
+                    st.info("No creditor facilities found (or creditor module not migrated).")
+            except Exception as ex:
+                st.error(f"Creditor statement list failed: {ex}")
+
         elif _stmt_active == "General Ledger":
+            if not statements_can_gl():
+                st.warning("You do not have permission for GL statements.")
+                return
             from decimal import Decimal
     
             from decimal_utils import as_10dp

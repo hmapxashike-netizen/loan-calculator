@@ -53,7 +53,13 @@ def render_eod_ui(
             unsafe_allow_html=True,
         )
 
-    _tab_advance, _tab_fix = st.tabs(["EOD Date advance", "Fix EOD issues"])
+    from rbac.subfeature_access import eod_can_advance, eod_can_fix_issues
+
+    _adv = eod_can_advance()
+    _fix = eod_can_fix_issues()
+    if not _adv and not _fix:
+        st.warning("You do not have permission for any End of day actions.")
+        return
 
     def _eod_date_advance_body() -> None:
         cfg = get_system_config()
@@ -377,7 +383,15 @@ def render_eod_ui(
                 except Exception as ex:
                     st.error(str(ex))
 
-    with _tab_advance:
+    if _adv and _fix:
+        _tab_advance, _tab_fix = st.tabs(["EOD Date advance", "Fix EOD issues"])
+        with _tab_advance:
+            _eod_date_advance_body()
+        with _tab_fix:
+            _eod_fix_issues_body()
+    elif _adv:
+        render_sub_sub_header("EOD Date advance")
         _eod_date_advance_body()
-    with _tab_fix:
+    else:
+        render_sub_sub_header("Fix EOD issues")
         _eod_fix_issues_body()

@@ -41,6 +41,7 @@ def allocate_repayment_waterfall(
     event_type: str = "new_allocation",
     conn=None,
     skip_loan_approval_guard: bool = False,
+    eod_allow_system_date: bool = False,
 ) -> None:
     """
     Allocate a repayment across loan buckets using the configured waterfall
@@ -80,7 +81,8 @@ def allocate_repayment_waterfall(
             cur.execute(
                 """
                 SELECT lr.id, lr.loan_id, lr.amount, lr.source_cash_gl_account_id,
-                       COALESCE(lr.value_date, lr.payment_date) AS eff_date
+                       COALESCE(lr.value_date, lr.payment_date) AS eff_date,
+                       lr.status
                 FROM loan_repayments lr
                 WHERE lr.id = %s
                 """,
@@ -90,6 +92,13 @@ def allocate_repayment_waterfall(
             if not row:
                 raise ValueError(f"Repayment {repayment_id} not found.")
             t_fetch_s = time.perf_counter() - t_fetch0
+
+            st = str(row.get("status") or "").strip().lower()
+            if st != "posted":
+                raise ValueError(
+                    f"Repayment {repayment_id} has status {row.get('status')!r}; "
+                    "only posted receipts can be allocated (activate scheduled receipts via EOD first)."
+                )
 
             amount = float(row["amount"])
             if amount <= 0:
@@ -117,7 +126,12 @@ def allocate_repayment_waterfall(
                 (loan_id, prev_cal),
             )
             if cur.fetchone() is None:
-                run_single_loan_eod(loan_id, prev_cal, sys_cfg=system_config)
+                run_single_loan_eod(
+                    loan_id,
+                    prev_cal,
+                    sys_cfg=system_config,
+                    allow_system_date_eod=eod_allow_system_date,
+                )
             t_prev_s = time.perf_counter() - t_prev0
 
             # Serialize same-loan allocation (multiple receipts / concurrent saves).

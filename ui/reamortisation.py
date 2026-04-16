@@ -76,7 +76,25 @@ def render_reamortisation_ui(
         st.error(f"Reamortisation module not available: {e}")
         return
     
-    _ream_tab_labels = ["Loan Modification", "Loan Recast", "Approve Modifications", "Unapplied Funds"]
+    try:
+        from rbac.subfeature_access import (
+            reamort_can_approve_modifications,
+            reamort_can_general,
+        )
+
+        _ream_tab_labels = []
+        if reamort_can_general():
+            _ream_tab_labels.extend(["Loan Modification", "Loan Recast", "Unapplied Funds"])
+        if reamort_can_approve_modifications():
+            if not _ream_tab_labels:
+                _ream_tab_labels.append("Approve Modifications")
+            elif "Approve Modifications" not in _ream_tab_labels:
+                _ream_tab_labels.insert(2, "Approve Modifications")
+        if not _ream_tab_labels:
+            st.warning("You do not have permission to use Reamortisation workspaces for this role.")
+            return
+    except Exception:
+        _ream_tab_labels = ["Loan Modification", "Loan Recast", "Approve Modifications", "Unapplied Funds"]
     if direct_principal_tab:
         _ream_tab_labels.append("Direct principal (admin)")
     st.session_state.setdefault("reamortisation_subnav", _ream_tab_labels[0])

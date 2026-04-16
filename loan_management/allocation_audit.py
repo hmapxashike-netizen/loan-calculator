@@ -47,3 +47,27 @@ def _log_allocation_audit(
                 _do_insert(c)
     except Exception:
         pass  # Table may not exist; do not fail the main operation
+
+
+def log_allocation_audit_event(
+    event_type: str,
+    loan_id: int,
+    as_of_date: date,
+    *,
+    repayment_id: int | None = None,
+    original_repayment_id: int | None = None,
+    narration: str | None = None,
+    details: dict | None = None,
+    conn: Any = None,
+) -> None:
+    """Public wrapper for scheduled-receipt lifecycle and other non-allocation audits."""
+    _log_allocation_audit(
+        event_type,
+        loan_id,
+        as_of_date,
+        repayment_id=repayment_id,
+        original_repayment_id=original_repayment_id,
+        narration=narration,
+        details=details,
+        conn=conn,
+    )

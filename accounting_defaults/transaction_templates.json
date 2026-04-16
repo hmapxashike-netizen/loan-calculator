@@ -784,6 +784,34 @@
       "direction": "CREDIT",
       "description": "Payment of borrowings - cash outflow",
       "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "CREDITOR_PRINCIPAL_WRITEOFF",
+      "system_tag": "borrowings_loan_principal",
+      "direction": "DEBIT",
+      "description": "Creditor facility principal write-off / forgiveness",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "CREDITOR_PRINCIPAL_WRITEOFF",
+      "system_tag": "creditor_loan_forgiveness_income",
+      "direction": "CREDIT",
+      "description": "Creditor facility principal write-off / forgiveness",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "CREDITOR_INTEREST_WRITEOFF",
+      "system_tag": "interest_payable",
+      "direction": "DEBIT",
+      "description": "Creditor facility interest payable write-off",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "CREDITOR_INTEREST_WRITEOFF",
+      "system_tag": "creditor_loan_forgiveness_income",
+      "direction": "CREDIT",
+      "description": "Creditor facility interest payable write-off",
+      "trigger_type": "EVENT"
     }
   ]
 }

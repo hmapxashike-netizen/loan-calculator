@@ -201,6 +201,15 @@ def render_eod_config_tab(
             "FARNDACRED_REPAYMENT_BATCH_SLICE_SIZE. Default 100."
         ),
     )
+    eod_tasks["activate_scheduled_receipts"] = st.checkbox(
+        "Activate scheduled receipts on value date (runs after loan engine)",
+        value=bool(eod_tasks.get("activate_scheduled_receipts", True)),
+        key="syscfg_eod_activate_scheduled",
+        help=(
+            "Scheduled (data take-on) receipts have no allocation until this step. "
+            "When enabled, EOD sets each matching receipt to posted and runs the normal waterfall for that date."
+        ),
+    )
 
     st.markdown("**Stage failure policy**")
     st.caption(
@@ -216,7 +225,9 @@ def render_eod_config_tab(
         key="syscfg_eod_policy_mode",
     )
     stage_options = [
+        "replay_refresh_allocations",
         "loan_engine",
+        "activate_scheduled_receipts",
         "reallocate_after_reversals",
         "apply_unapplied_to_arrears",
         "accounting_events",

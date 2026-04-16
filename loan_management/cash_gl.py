@@ -137,6 +137,61 @@ def _merge_cash_gl_into_payload(
     return payload
 
 
+def _merge_creditor_cash_gl_into_payload(
+    creditor_drawdown_id: int | None,
+    repayment_id: int | None,
+    payload: dict | None,
+) -> dict:
+    """
+    If payload does not already set account_overrides['cash_operating'], fill from:
+    1) creditor_repayments.source_cash_gl_account_id when repayment_id is set, else
+    2) creditor_drawdowns.cash_gl_account_id for the drawdown.
+    """
+    payload = dict(payload or {})
+    ao = dict(payload.get("account_overrides") or {})
+    if "cash_operating" in ao:
+        return payload
+    if creditor_drawdown_id is None:
+        return payload
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor as _RDC
+
+        from config import get_database_url as _gdb
+    except ImportError:
+        return payload
+    src: str | None = None
+    conn = psycopg2.connect(_gdb())
+    try:
+        with conn.cursor(cursor_factory=_RDC) as cur:
+            if repayment_id is not None:
+                cur.execute(
+                    """
+                    SELECT source_cash_gl_account_id FROM creditor_repayments WHERE id = %s
+                    """,
+                    (int(repayment_id),),
+                )
+                r = cur.fetchone()
+                if r and r.get("source_cash_gl_account_id"):
+                    src = str(r["source_cash_gl_account_id"])
+            if src is None:
+                cur.execute(
+                    "SELECT cash_gl_account_id FROM creditor_drawdowns WHERE id = %s",
+                    (int(creditor_drawdown_id),),
+                )
+                lr = cur.fetchone()
+                if lr and lr.get("cash_gl_account_id"):
+                    src = str(lr["cash_gl_account_id"])
+    except Exception:
+        src = None
+    finally:
+        conn.close()
+    if src:
+        ao["cash_operating"] = src
+        payload["account_overrides"] = ao
+    return payload
+
+
 def _post_event_for_loan(
     svc,
     loan_id: int | None,

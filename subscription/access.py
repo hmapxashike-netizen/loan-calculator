@@ -223,7 +223,15 @@ def filter_menu_for_subscription(
     """Apply restricted-nav and Basic-tier exclusions to sidebar menu."""
     if role == "BORROWER" or snapshot is None or snapshot.enforcement_skipped:
         return menu
-    if role not in ("ADMIN", "LOAN_OFFICER", "SUPERADMIN"):
+    if role not in (
+        "ADMIN",
+        "LOAN_OFFICER",
+        "LOAN_SUPERVISOR",
+        "SUPERADMIN",
+        "ACCOUNTS_OFFICER",
+        "ACCOUNTS_SUPERVISOR",
+        "VIEWER",
+    ):
         return menu
 
     out = dict(menu)

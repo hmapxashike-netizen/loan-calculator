@@ -7,6 +7,7 @@ UI (Streamlit) collects inputs, calls these functions, renders outcomes.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
@@ -16,11 +17,14 @@ import pandas as pd
 
 from loan_management import (
     allocate_repayment_waterfall,
+    cancel_scheduled_repayment,
     get_repayments_with_allocations,
     get_teller_amount_due_today,
+    list_scheduled_receipts_for_loan,
     load_system_config_from_db,
     record_repayment,
     record_repayments_batch,
+    record_scheduled_repayments_batch,
     reverse_repayment,
 )
 
@@ -119,6 +123,52 @@ def run_batch_repayments(valid_rows: list[dict[str, Any]]) -> tuple[int, int, li
     return record_repayments_batch(valid_rows)
 
 
+def build_scheduled_batch_upload_template_excel_bytes(*, sample_future_value_date_iso: str) -> bytes:
+    """Excel template for scheduled (future value date) batch upload — same columns as normal batch."""
+    template_df = pd.DataFrame(
+        columns=[
+            "loan_id",
+            "amount",
+            "payment_date",
+            "value_date",
+            "customer_reference",
+            "company_reference",
+            "source_cash_gl_account_id",
+        ]
+    )
+    template_df.loc[0] = [
+        1,
+        100.00,
+        sample_future_value_date_iso,
+        sample_future_value_date_iso,
+        "Scheduled-001",
+        "GL-001",
+        "",
+    ]
+    buf = BytesIO()
+    template_df.to_excel(buf, index=False, engine="openpyxl")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def run_batch_scheduled_repayments(valid_rows: list[dict[str, Any]]) -> tuple[int, int, list[str]]:
+    """Persist scheduled receipts (no allocation until EOD on each row's value date)."""
+    return record_scheduled_repayments_batch(valid_rows)
+
+
+def list_scheduled_rows_for_loan(loan_id: int, *, limit: int = 200) -> list[dict[str, Any]]:
+    return list_scheduled_receipts_for_loan(loan_id, limit=limit)
+
+
+def execute_cancel_scheduled_repayment(
+    repayment_id: int,
+    *,
+    reason: str,
+    cancelled_by: str,
+) -> None:
+    cancel_scheduled_repayment(repayment_id, reason=reason, cancelled_by=cancelled_by)
+
+
 def record_repayment_with_allocation(
     *,
     loan_id: int,
@@ -194,20 +244,44 @@ def post_borrowing_repayment_journal(
     accounting_service: Any,
     *,
     value_date: date,
-    amount: Decimal,
+    principal: Decimal,
+    interest: Decimal,
     reference: str | None,
     description: str,
     created_by: str,
+    account_overrides: dict | None = None,
 ) -> None:
+    """
+    Post BORROWING_REPAYMENT with explicit principal / interest lines (balanced to cash).
+
+    ``account_overrides`` should include ``cash_operating`` = leaf UUID when the chart
+    requires a leaf for cash (same as Teller source-cash list).
+    """
+    from decimal_utils import as_10dp
+
+    p = as_10dp(Decimal(str(principal)))
+    i = as_10dp(Decimal(str(interest)))
+    if p < 0 or i < 0:
+        raise ValueError("principal and interest must be non-negative.")
+    if p + i <= 0:
+        raise ValueError("At least one of principal or interest must be positive.")
+    cash = as_10dp(p + i)
+    payload: dict[str, Any] = {
+        "borrowings_loan_principal": p,
+        "interest_payable": i,
+        "cash_operating": cash,
+    }
+    if account_overrides:
+        payload["account_overrides"] = dict(account_overrides)
     accounting_service.post_event(
         event_type="BORROWING_REPAYMENT",
         reference=(reference or "").strip() or None,
         description=description.strip() or "Payment of borrowings",
-        event_id="BORROWING",
+        event_id=f"BORROWING-MANUAL-{uuid.uuid4().hex}",
         created_by=created_by,
         entry_date=value_date,
-        amount=amount,
-        payload=None,
+        amount=None,
+        payload=payload,
         is_reversal=False,
     )
 

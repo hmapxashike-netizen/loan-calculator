@@ -25,7 +25,31 @@ def render_journals_ui(*, get_system_date) -> None:
     # Light path first: section switcher only needs Streamlit + style (no pandas / psycopg2 / accounting yet).
     from style import render_sub_sub_header
 
-    _jnav = ["Manual Journals", "Balance Adjustments"]
+    from middleware import get_current_user
+    from rbac.journals_access import journals_subfeature_allowed
+    from rbac.service import get_permission_keys_for_role_key, rbac_tables_ready
+
+    user = get_current_user() or {}
+    role = str(user.get("role") or "").strip().upper()
+    if rbac_tables_ready() and role:
+        _pkeys = frozenset(get_permission_keys_for_role_key(role))
+    else:
+        _pkeys = frozenset()
+
+    _tab_defs: list[tuple[str, str]] = []
+    if (not rbac_tables_ready()) or journals_subfeature_allowed(_pkeys, "manual"):
+        _tab_defs.append(("Manual Journals", "manual"))
+    if (not rbac_tables_ready()) or journals_subfeature_allowed(_pkeys, "balance_adjustment"):
+        _tab_defs.append(("Balance Adjustments", "bal"))
+    if (not rbac_tables_ready()) or journals_subfeature_allowed(_pkeys, "approvals"):
+        _tab_defs.append(("Journal approvals", "appr"))
+
+    if not _tab_defs:
+        st.error("You do not have permission for any Journals sub-area.")
+        st.stop()
+
+    _jnav = [t[0] for t in _tab_defs]
+    _jnav_to_kind = {t[0]: t[1] for t in _tab_defs}
     st.session_state.setdefault("journals_subnav", _jnav[0])
     if st.session_state["journals_subnav"] not in _jnav:
         st.session_state["journals_subnav"] = _jnav[0]
@@ -41,6 +65,7 @@ def render_journals_ui(*, get_system_date) -> None:
         label_visibility="collapsed",
     )
     _j_act = st.session_state["journals_subnav"]
+    _j_kind = _jnav_to_kind.get(_j_act, "manual")
 
     svc = _journals_accounting_service()
 
@@ -78,7 +103,15 @@ def render_journals_ui(*, get_system_date) -> None:
     except Exception as ex:
         st.caption(f"Could not check journal double-entry integrity: {ex}")
 
-    if _j_act == "Manual Journals":
+    if _j_kind == "appr":
+        render_sub_sub_header("Journal approvals")
+        st.info(
+            "Reserved for organisation policy (e.g. approval queues for manual journals). "
+            "No workflow is wired here yet; assign **Journals — journal approvals** to prepare roles."
+        )
+        return
+
+    if _j_kind == "manual":
         from datetime import datetime
         from decimal import Decimal
 
@@ -301,7 +334,7 @@ def render_journals_ui(*, get_system_date) -> None:
                         except Exception as e:
                             st.error(f"Error posting journal: {e}")
 
-    elif _j_act == "Balance Adjustments":
+    elif _j_kind == "bal":
         from decimal import Decimal
 
         import psycopg2

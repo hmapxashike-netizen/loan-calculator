@@ -94,6 +94,38 @@ def _journal_entries_loan_id_column_exists(cur) -> bool:
     return cur.fetchone() is not None
 
 
+def _journal_entries_creditor_loan_id_column_exists(cur) -> bool:
+    """Legacy: ``journal_entries.creditor_loan_id`` before migration 90."""
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_catalog = current_database()
+          AND table_schema = ANY (current_schemas(false))
+          AND table_name = 'journal_entries'
+          AND column_name = 'creditor_loan_id'
+        LIMIT 1
+        """
+    )
+    return cur.fetchone() is not None
+
+
+def _journal_entries_creditor_drawdown_id_column_exists(cur) -> bool:
+    """True after migration 90 (``creditor_drawdown_id`` / ``creditor_facility_id`` on journal headers)."""
+    cur.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_catalog = current_database()
+          AND table_schema = ANY (current_schemas(false))
+          AND table_name = 'journal_entries'
+          AND column_name = 'creditor_drawdown_id'
+        LIMIT 1
+        """
+    )
+    return cur.fetchone() is not None
+
+
 def journal_entry_loan_product_predicate_sql(
     je_alias: str,
     loan_id: int | None,
@@ -1581,13 +1613,21 @@ class AccountingRepository:
         gl_anchor_date: date | datetime | None = None,
         do_commit: bool = True,
         loan_id: int | None = None,
+        creditor_loan_id: int | None = None,
+        creditor_facility_id: int | None = None,
+        creditor_drawdown_id: int | None = None,
     ):
         if lines:
             assert_journal_lines_balanced(
                 lines,
                 context=f"journal save (reference={reference!r}, event_tag={event_tag!r})",
             )
+        hdr_dd = creditor_drawdown_id if creditor_drawdown_id is not None else creditor_loan_id
+        hdr_cf = creditor_facility_id
         with self.conn.cursor() as cur:
+            _je_has_creditor_dd = _journal_entries_creditor_drawdown_id_column_exists(cur)
+            _je_has_creditor_loan_id = _journal_entries_creditor_loan_id_column_exists(cur)
+
             def _insert_header_and_lines(
                 *,
                 hdr_entry_date,
@@ -1599,26 +1639,73 @@ class AccountingRepository:
                 hdr_created_by,
                 journal_lines,
                 hdr_loan_id=None,
+                hdr_creditor_loan_id=None,
+                hdr_creditor_facility_id=None,
+                hdr_creditor_drawdown_id=None,
             ):
-                cur.execute(
-                    """
-                    INSERT INTO journal_entries (
-                        entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active, loan_id
+                if _je_has_creditor_dd:
+                    cur.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active, loan_id, creditor_facility_id, creditor_drawdown_id
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (
+                            hdr_entry_date,
+                            hdr_reference,
+                            hdr_description,
+                            hdr_event_id,
+                            hdr_event_tag,
+                            hdr_entry_type,
+                            hdr_created_by,
+                            hdr_loan_id,
+                            hdr_creditor_facility_id,
+                            hdr_creditor_drawdown_id,
+                        ),
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s)
-                    RETURNING id
-                    """,
-                    (
-                        hdr_entry_date,
-                        hdr_reference,
-                        hdr_description,
-                        hdr_event_id,
-                        hdr_event_tag,
-                        hdr_entry_type,
-                        hdr_created_by,
-                        hdr_loan_id,
-                    ),
-                )
+                elif _je_has_creditor_loan_id:
+                    cur.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active, loan_id, creditor_loan_id
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s)
+                        RETURNING id
+                        """,
+                        (
+                            hdr_entry_date,
+                            hdr_reference,
+                            hdr_description,
+                            hdr_event_id,
+                            hdr_event_tag,
+                            hdr_entry_type,
+                            hdr_created_by,
+                            hdr_loan_id,
+                            hdr_creditor_loan_id,
+                        ),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO journal_entries (
+                            entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active, loan_id
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s)
+                        RETURNING id
+                        """,
+                        (
+                            hdr_entry_date,
+                            hdr_reference,
+                            hdr_description,
+                            hdr_event_id,
+                            hdr_event_tag,
+                            hdr_entry_type,
+                            hdr_created_by,
+                            hdr_loan_id,
+                        ),
+                    )
                 new_id = cur.fetchone()["id"]
                 if journal_lines:
                     sql = """
@@ -1839,6 +1926,9 @@ class AccountingRepository:
                         hdr_created_by=created_by,
                         journal_lines=delta_lines,
                         hdr_loan_id=loan_id,
+                        hdr_creditor_loan_id=hdr_dd,
+                        hdr_creditor_facility_id=hdr_cf,
+                        hdr_creditor_drawdown_id=hdr_dd,
                     )
                     if existing_adj is not None:
                         cur.execute(
@@ -1888,6 +1978,9 @@ class AccountingRepository:
                         hdr_created_by=created_by,
                         journal_lines=lines,
                         hdr_loan_id=loan_id,
+                        hdr_creditor_loan_id=hdr_dd,
+                        hdr_creditor_facility_id=hdr_cf,
+                        hdr_creditor_drawdown_id=hdr_dd,
                     )
                     cur.execute("RELEASE SAVEPOINT je_open_replace_sp")
                     if existing_entry_id is not None:
@@ -1908,30 +2001,87 @@ class AccountingRepository:
                     cur.execute("ROLLBACK TO SAVEPOINT je_open_replace_sp")
                     if existing_entry_id is None:
                         raise
-                    cur.execute(
-                        """
-                        UPDATE journal_entries
-                        SET entry_date = %s,
-                            reference = %s,
-                            description = %s,
-                            entry_type = %s,
-                            created_by = %s,
-                            loan_id = %s,
-                            is_active = TRUE,
-                            superseded_at = NULL,
-                            superseded_by_id = NULL
-                        WHERE id = %s
-                        """,
-                        (
-                            effective_entry_date,
-                            reference,
-                            description,
-                            "EVENT",
-                            created_by,
-                            loan_id,
-                            existing_entry_id,
-                        ),
-                    )
+                    if _je_has_creditor_dd:
+                        cur.execute(
+                            """
+                            UPDATE journal_entries
+                            SET entry_date = %s,
+                                reference = %s,
+                                description = %s,
+                                entry_type = %s,
+                                created_by = %s,
+                                loan_id = %s,
+                                creditor_facility_id = %s,
+                                creditor_drawdown_id = %s,
+                                is_active = TRUE,
+                                superseded_at = NULL,
+                                superseded_by_id = NULL
+                            WHERE id = %s
+                            """,
+                            (
+                                effective_entry_date,
+                                reference,
+                                description,
+                                "EVENT",
+                                created_by,
+                                loan_id,
+                                hdr_cf,
+                                hdr_dd,
+                                existing_entry_id,
+                            ),
+                        )
+                    elif _je_has_creditor_loan_id:
+                        cur.execute(
+                            """
+                            UPDATE journal_entries
+                            SET entry_date = %s,
+                                reference = %s,
+                                description = %s,
+                                entry_type = %s,
+                                created_by = %s,
+                                loan_id = %s,
+                                creditor_loan_id = %s,
+                                is_active = TRUE,
+                                superseded_at = NULL,
+                                superseded_by_id = NULL
+                            WHERE id = %s
+                            """,
+                            (
+                                effective_entry_date,
+                                reference,
+                                description,
+                                "EVENT",
+                                created_by,
+                                loan_id,
+                                hdr_dd,
+                                existing_entry_id,
+                            ),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            UPDATE journal_entries
+                            SET entry_date = %s,
+                                reference = %s,
+                                description = %s,
+                                entry_type = %s,
+                                created_by = %s,
+                                loan_id = %s,
+                                is_active = TRUE,
+                                superseded_at = NULL,
+                                superseded_by_id = NULL
+                            WHERE id = %s
+                            """,
+                            (
+                                effective_entry_date,
+                                reference,
+                                description,
+                                "EVENT",
+                                created_by,
+                                loan_id,
+                                existing_entry_id,
+                            ),
+                        )
                     _replace_lines_for_entry(existing_entry_id, lines)
                     cur.execute("RELEASE SAVEPOINT je_open_replace_sp")
             else:
@@ -1969,6 +2119,9 @@ class AccountingRepository:
                         hdr_created_by=created_by,
                         journal_lines=delta_lines,
                         hdr_loan_id=loan_id,
+                        hdr_creditor_loan_id=hdr_dd,
+                        hdr_creditor_facility_id=hdr_cf,
+                        hdr_creditor_drawdown_id=hdr_dd,
                     )
                     if existing_adj is not None:
                         cur.execute(
@@ -2461,12 +2614,18 @@ class AccountingRepository:
                     gl_anchor_date=gl_anchor_date,
                     do_commit=False,
                     loan_id=e.get("loan_id"),
+                    creditor_loan_id=e.get("creditor_loan_id"),
+                    creditor_facility_id=e.get("creditor_facility_id"),
+                    creditor_drawdown_id=e.get("creditor_drawdown_id"),
                 )
             if do_commit:
                 self.conn.commit()
             return
 
         with self.conn.cursor() as cur:
+            je_has_creditor_dd = _journal_entries_creditor_drawdown_id_column_exists(cur)
+            je_has_creditor_loan_id = _journal_entries_creditor_loan_id_column_exists(cur)
+            je_has_creditor = je_has_creditor_dd or je_has_creditor_loan_id
             # If any entry needs calendar-month adjustment / closed-period logic, fall back
             # to the canonical (slower) per-entry function so policy remains unchanged.
             if posting_policy == "standard":
@@ -2496,6 +2655,9 @@ class AccountingRepository:
                                 gl_anchor_date=gl_anchor_date,
                                 do_commit=False,
                                 loan_id=ee.get("loan_id"),
+                                creditor_loan_id=ee.get("creditor_loan_id"),
+                                creditor_facility_id=ee.get("creditor_facility_id"),
+                                creditor_drawdown_id=ee.get("creditor_drawdown_id"),
                             )
                         if do_commit:
                             self.conn.commit()
@@ -2541,36 +2703,96 @@ class AccountingRepository:
                     )
 
             # Insert headers in bulk and return new ids.
-            header_rows = [
-                (
-                    e["entry_date"],
-                    e["reference"],
-                    e["description"],
-                    str(e["event_id"]),
-                    str(e["event_tag"]),
-                    "EVENT",
-                    e.get("created_by") or "system",
-                    True,
-                    e.get("loan_id"),
+            if je_has_creditor_dd:
+                header_rows = [
+                    (
+                        e["entry_date"],
+                        e["reference"],
+                        e["description"],
+                        str(e["event_id"]),
+                        str(e["event_tag"]),
+                        "EVENT",
+                        e.get("created_by") or "system",
+                        True,
+                        e.get("loan_id"),
+                        e.get("creditor_facility_id"),
+                        e.get("creditor_drawdown_id") or e.get("creditor_loan_id"),
+                    )
+                    for e in entries
+                ]
+                inserted = execute_values(
+                    cur,
+                    """
+                    INSERT INTO journal_entries (
+                        entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active, loan_id, creditor_facility_id, creditor_drawdown_id
+                    )
+                    VALUES %s
+                    RETURNING id, event_id, event_tag
+                    """,
+                    header_rows,
+                    fetch=True,
+                    page_size=2000,
                 )
-                for e in entries
-            ]
+            elif je_has_creditor_loan_id:
+                header_rows = [
+                    (
+                        e["entry_date"],
+                        e["reference"],
+                        e["description"],
+                        str(e["event_id"]),
+                        str(e["event_tag"]),
+                        "EVENT",
+                        e.get("created_by") or "system",
+                        True,
+                        e.get("loan_id"),
+                        e.get("creditor_drawdown_id") or e.get("creditor_loan_id"),
+                    )
+                    for e in entries
+                ]
+                inserted = execute_values(
+                    cur,
+                    """
+                    INSERT INTO journal_entries (
+                        entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active, loan_id, creditor_loan_id
+                    )
+                    VALUES %s
+                    RETURNING id, event_id, event_tag
+                    """,
+                    header_rows,
+                    fetch=True,
+                    page_size=2000,
+                )
+            else:
+                header_rows = [
+                    (
+                        e["entry_date"],
+                        e["reference"],
+                        e["description"],
+                        str(e["event_id"]),
+                        str(e["event_tag"]),
+                        "EVENT",
+                        e.get("created_by") or "system",
+                        True,
+                        e.get("loan_id"),
+                    )
+                    for e in entries
+                ]
+                inserted = execute_values(
+                    cur,
+                    """
+                    INSERT INTO journal_entries (
+                        entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active, loan_id
+                    )
+                    VALUES %s
+                    RETURNING id, event_id, event_tag
+                    """,
+                    header_rows,
+                    fetch=True,
+                    page_size=2000,
+                )
             # execute_values paginates (default page_size=100). Without fetch=True it does not
             # aggregate RETURNING rows; cur.fetchall() would only see the last page, so most
             # headers would be inserted with no journal_items (id_by_key incomplete).
-            inserted = execute_values(
-                cur,
-                """
-                INSERT INTO journal_entries (
-                    entry_date, reference, description, event_id, event_tag, entry_type, created_by, is_active, loan_id
-                )
-                VALUES %s
-                RETURNING id, event_id, event_tag
-                """,
-                header_rows,
-                fetch=True,
-                page_size=2000,
-            )
             id_by_key = {(str(r["event_id"]), str(r["event_tag"])): r["id"] for r in inserted}
 
             # Back-fill superseded_by_id to point to the new headers (best effort if columns exist).

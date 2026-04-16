@@ -183,6 +183,55 @@ def _df_download(df: pd.DataFrame, filename: str, *, button_key: str) -> None:
     )
 
 
+def _report_creditor_maturity_profile(as_of: date) -> None:
+    """Creditor-side outstanding by facility (``creditor_*`` tables only; no debtor mix)."""
+    render_sub_sub_header("Creditor maturity profile")
+    st.caption(
+        "Latest **creditor_loan_daily_state** on or before as-of, by facility. "
+        "Principal not due / arrears and interest buckets mirror the liability engine."
+    )
+    try:
+        cur_cls = _portfolio_real_dict_cursor()
+        with _connection() as conn:
+            with conn.cursor(cursor_factory=cur_cls) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        cl.id,
+                        cp.name AS lender,
+                        cl.principal AS facility_principal,
+                        st.principal_not_due,
+                        st.principal_arrears,
+                        st.interest_accrued_balance,
+                        st.interest_arrears_balance,
+                        st.total_exposure,
+                        st.as_of_date AS state_as_of
+                    FROM creditor_drawdowns cl
+                    JOIN creditor_facilities cf ON cf.id = cl.creditor_facility_id
+                    JOIN creditor_counterparties cp ON cp.id = cf.creditor_counterparty_id
+                    LEFT JOIN LATERAL (
+                        SELECT d.*
+                        FROM creditor_loan_daily_state d
+                        WHERE d.creditor_drawdown_id = cl.id AND d.as_of_date <= %s
+                        ORDER BY d.as_of_date DESC
+                        LIMIT 1
+                    ) st ON TRUE
+                    WHERE cl.status = 'active'
+                    ORDER BY cl.id
+                    """,
+                    (as_of,),
+                )
+                rows = cur.fetchall()
+        if not rows:
+            st.info("No active creditor drawdowns or daily state yet (run EOD after migrations 84 / 90).")
+            return
+        df = pd.DataFrame([dict(r) for r in rows])
+        st.dataframe(df, hide_index=True, width="stretch", height=360)
+        _df_download(df, f"creditor_maturity_profile_{as_of.isoformat()}.csv", button_key="port_cl_mat_csv")
+    except Exception as ex:
+        st.error(f"Creditor maturity report failed: {ex}")
+
+
 def _shell_report(title: str, planned: list[str]) -> None:
     render_sub_sub_header(title)
     st.info("**Planned — not implemented yet.** See scope notes below.")
@@ -1119,7 +1168,28 @@ def render_portfolio_reports_ui() -> None:
     except Exception:
         pass
 
-    st.session_state.setdefault("portfolio_nav_group", "g_perf")
+    try:
+        from rbac.subfeature_access import portfolio_can_data_exports, portfolio_can_view_reports
+    except Exception:
+
+        def portfolio_can_view_reports(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+        def portfolio_can_data_exports(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+    groups_visible = [
+        g
+        for g in _PORTFOLIO_GROUPS
+        if (g[1] == "g_export" and portfolio_can_data_exports())
+        or (g[1] != "g_export" and portfolio_can_view_reports())
+    ]
+    if not groups_visible:
+        st.warning("No portfolio report areas are enabled for your role.")
+        return
+    _gid_to_reports_live: dict[str, list[tuple[str, str]]] = {g[1]: g[2] for g in groups_visible}
+
+    st.session_state.setdefault("portfolio_nav_group", groups_visible[0][1])
     st.session_state.setdefault("portfolio_sel_rk", "")
 
     _legacy_pick = st.session_state.pop("portfolio_report_pick", None)
@@ -1136,7 +1206,10 @@ def render_portfolio_reports_ui() -> None:
         st.session_state["portfolio_sel_rk"] = ""
 
     _group_id = st.session_state["portfolio_nav_group"]
-    _items_cur = _GROUP_ID_TO_REPORTS.get(_group_id, [])
+    if _group_id not in _gid_to_reports_live:
+        _group_id = groups_visible[0][1]
+        st.session_state["portfolio_nav_group"] = _group_id
+    _items_cur = _gid_to_reports_live.get(_group_id, [])
     _valid_rks = {b for _a, b in _items_cur}
     _sr = (st.session_state.get("portfolio_sel_rk") or "").strip()
     if _group_id == "g_export" and _sr:
@@ -1146,8 +1219,8 @@ def render_portfolio_reports_ui() -> None:
         st.session_state["portfolio_sel_rk"] = ""
         _sr = ""
 
-    _gopts = [g[1] for g in _PORTFOLIO_GROUPS]
-    _gfmt = {g[1]: g[0] for g in _PORTFOLIO_GROUPS}
+    _gopts = [g[1] for g in groups_visible]
+    _gfmt = {g[1]: g[0] for g in groups_visible}
     st.caption("Report area")
     st.radio(
         "Report area",
@@ -1160,7 +1233,7 @@ def render_portfolio_reports_ui() -> None:
     )
 
     _group_id = st.session_state["portfolio_nav_group"]
-    _items_cur = _GROUP_ID_TO_REPORTS.get(_group_id, [])
+    _items_cur = _gid_to_reports_live.get(_group_id, [])
 
     as_of_default = _default_as_of()
     as_of = as_of_default
@@ -1259,12 +1332,7 @@ def render_portfolio_reports_ui() -> None:
     elif rk == "reg_mat":
         _report_regulatory_maturity_profile(as_of, active_only, restructure_scope)
     elif rk == "shell_12":
-        _shell_report(
-            "Creditor loans maturity profile",
-            [
-                "Mirror of debtor maturity for **liabilities you owe** — needs an outbound / creditor product model (not in this LMS yet).",
-            ],
-        )
+        _report_creditor_maturity_profile(as_of)
     elif rk == "shell_gap":
         _shell_report(
             "Gap analysis (debtor vs creditor timing)",

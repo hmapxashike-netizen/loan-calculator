@@ -100,17 +100,35 @@ def record_repayment(
         raise ValueError(
             "Negative or zero amounts are not allowed. Use reverse_repayment() for reversals."
         )
+    st = (status or "posted").strip().lower()
+    if st != "posted":
+        raise ValueError(
+            "record_repayment only supports status='posted'. "
+            "For future value dates use record_scheduled_repayment (Scheduled receipts / data take-on)."
+        )
+    status = "posted"
     pdate = _date_conv(payment_date) if payment_date else None
     if not pdate:
         raise ValueError("payment_date is required")
     vdate = _date_conv(value_date) if value_date else pdate
+    try:
+        from eod.system_business_date import get_effective_date
+
+        _biz = get_effective_date()
+    except Exception:
+        from datetime import date as _date
+
+        _biz = _date.today()
+    if vdate > _biz:
+        raise ValueError(
+            "Value date is after the system business date. "
+            "For intentional future-dated receipts use **Teller → Scheduled receipts (data take-on)**."
+        )
     sdate = system_date
     if sdate is None:
         try:
-            from eod.system_business_date import get_effective_date
-
-            sdate = datetime.combine(get_effective_date(), datetime.now().time())
-        except ImportError:
+            sdate = datetime.combine(_biz, datetime.now().time())
+        except Exception:
             sdate = datetime.now()
     elif isinstance(sdate, str):
         sdate = datetime.fromisoformat(sdate.replace("Z", "+00:00"))
@@ -203,6 +221,153 @@ def record_repayments_batch(rows: list[dict]) -> tuple[int, int, list[str]]:
                         repayment_id,
                         system_config=cfg,
                         conn=conn,
+                        skip_loan_approval_guard=True,
+                    )
+                    conn.commit()
+                    success += 1
+                except Exception as e:
+                    conn.rollback()
+                    fail += 1
+                    errors.append(f"Row {i + 1}: {e}")
+        finally:
+            conn.close()
+        base += slice_n
+    return success, fail, errors
+
+
+def record_scheduled_repayment(
+    loan_id: int,
+    amount: float,
+    payment_date: date | str,
+    source_cash_gl_account_id: str,
+    customer_reference: str | None = None,
+    company_reference: str | None = None,
+    value_date: date | str | None = None,
+    system_date: datetime | str | None = None,
+    reference: str | None = None,
+    *,
+    conn=None,
+    system_config: dict | None = None,
+    skip_loan_approval_guard: bool = False,
+) -> int:
+    """
+    Data take-on: insert a future value-dated receipt without allocation or GL until EOD on value date.
+    Requires COALESCE(value_date, payment_date) strictly after system business date.
+    """
+    from loan_management.allocation_audit import log_allocation_audit_event
+
+    if amount <= 0:
+        raise ValueError("Scheduled receipts must have a positive amount.")
+    pdate = _date_conv(payment_date) if payment_date else None
+    if not pdate:
+        raise ValueError("payment_date is required")
+    vdate = _date_conv(value_date) if value_date else pdate
+    try:
+        from eod.system_business_date import get_effective_date
+
+        _biz = get_effective_date()
+    except Exception:
+        from datetime import date as _date
+
+        _biz = _date.today()
+    if vdate <= _biz:
+        raise ValueError(
+            "Scheduled receipt value date must be strictly after the system business date. "
+            "Use normal Teller for on-time or back-dated receipts."
+        )
+    sdate = system_date
+    if sdate is None:
+        try:
+            from eod.system_business_date import get_effective_date
+
+            sdate = datetime.combine(get_effective_date(), datetime.now().time())
+        except ImportError:
+            sdate = datetime.now()
+    elif isinstance(sdate, str):
+        sdate = datetime.fromisoformat(sdate.replace("Z", "+00:00"))
+    ref = customer_reference or reference
+    if not skip_loan_approval_guard:
+        require_loan_approval_gl_before_repayment(loan_id, conn=conn)
+    src_cash = validate_source_cash_gl_account_id_for_new_posting(
+        source_cash_gl_account_id,
+        field_label="source_cash_gl_account_id",
+        system_config=system_config,
+    )
+
+    def _insert_sched(_conn) -> int:
+        with _conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO loan_repayments (
+                    loan_id, schedule_line_id, period_number, amount, payment_date,
+                    reference, customer_reference, company_reference, value_date, system_date, status,
+                    source_cash_gl_account_id
+                ) VALUES (%s, NULL, NULL, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (
+                    loan_id,
+                    float(as_10dp(amount)),
+                    pdate,
+                    ref,
+                    customer_reference,
+                    company_reference,
+                    vdate,
+                    sdate,
+                    "scheduled",
+                    src_cash,
+                ),
+            )
+            return cur.fetchone()[0]
+
+    if conn is not None:
+        rid = _insert_sched(conn)
+    else:
+        with _connection() as _conn:
+            rid = _insert_sched(_conn)
+    log_allocation_audit_event(
+        "scheduled_created",
+        loan_id,
+        vdate,
+        repayment_id=rid,
+        narration="Scheduled receipt captured (no allocation until value date)",
+        details={"repayment_id": rid, "amount": float(as_10dp(amount))},
+        conn=conn,
+    )
+    return rid
+
+
+def record_scheduled_repayments_batch(rows: list[dict]) -> tuple[int, int, list[str]]:
+    """Batch scheduled receipts: insert only; EOD activates on each row's value date."""
+    success = 0
+    fail = 0
+    errors: list[str] = []
+    cfg = load_system_config_from_db() or {}
+    batch_loans_guarded: set[int] = set()
+    slice_n = _repayment_batch_slice_size(cfg)
+    nrows = len(rows)
+    base = 0
+    while base < nrows:
+        conn = connect_loan_management()
+        try:
+            for offset in range(slice_n):
+                i = base + offset
+                if i >= nrows:
+                    break
+                row = rows[i]
+                try:
+                    lid = int(row["loan_id"])
+                    if lid not in batch_loans_guarded:
+                        require_loan_approval_gl_before_repayment(lid, conn=conn)
+                        batch_loans_guarded.add(lid)
+                    record_scheduled_repayment(
+                        loan_id=lid,
+                        amount=float(row["amount"]),
+                        payment_date=row["payment_date"],
+                        source_cash_gl_account_id=row["source_cash_gl_account_id"],
+                        customer_reference=row.get("customer_reference"),
+                        company_reference=row.get("company_reference"),
+                        value_date=row.get("value_date"),
+                        system_date=row.get("system_date"),
+                        conn=conn,
+                        system_config=cfg,
                         skip_loan_approval_guard=True,
                     )
                     conn.commit()

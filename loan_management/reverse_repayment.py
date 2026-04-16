@@ -69,6 +69,17 @@ def reverse_repayment(
             if row["status"] == "reversed":
                 raise ValueError(f"Repayment {original_repayment_id} is already reversed.")
 
+            if str(row.get("status") or "").lower() == "scheduled":
+                raise ValueError(
+                    f"Repayment {original_repayment_id} is scheduled (not yet posted). "
+                    "Cancel it from **Teller → Scheduled receipts** before its value date, "
+                    "or wait for EOD to post it; reversal applies only to posted receipts."
+                )
+            if str(row.get("status") or "").lower() == "cancelled":
+                raise ValueError(
+                    f"Repayment {original_repayment_id} is cancelled; it cannot be reversed."
+                )
+
             loan_id = int(row["loan_id"])
             eff_date = row.get("value_date") or row["payment_date"]
             if hasattr(eff_date, "date"):

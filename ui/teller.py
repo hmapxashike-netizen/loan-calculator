@@ -82,13 +82,39 @@ def render_teller_ui(
     from accounting.service import AccountingService
     from services import teller_service
 
-    _teller_sections = [
-        "Single repayment",
-        "Batch payments",
-        "Reverse receipt",
-        "Payment of borrowings",
-        "Receipt from fully written-off loan",
-    ]
+    try:
+        from rbac.subfeature_access import (
+            teller_can_batch_and_reverse,
+            teller_can_scheduled_receipts,
+            teller_can_single_receipt,
+        )
+    except Exception:
+
+        def teller_can_single_receipt(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+        def teller_can_batch_and_reverse(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+        def teller_can_scheduled_receipts(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+    _teller_sections: list[str] = []
+    if teller_can_single_receipt():
+        _teller_sections.append("Single repayment")
+    if teller_can_batch_and_reverse():
+        _teller_sections.extend(
+            [
+                "Batch payments",
+                "Reverse receipt",
+                "Receipt from fully written-off loan",
+            ]
+        )
+    if teller_can_scheduled_receipts():
+        _teller_sections.append("Scheduled receipts (data take-on)")
+    if not _teller_sections:
+        st.warning("You do not have permission for any Teller areas for this role.")
+        return
     st.session_state.setdefault("teller_subnav", _teller_sections[0])
     if st.session_state["teller_subnav"] not in _teller_sections:
         st.session_state["teller_subnav"] = _teller_sections[0]
@@ -592,80 +618,6 @@ def render_teller_ui(
                                     )
                                     st.exception(e)
 
-    elif _teller_active == "Payment of borrowings":
-        acct_svc = AccountingService()
-        render_sub_sub_header("Payment of borrowings")
-        st.caption(
-            "Use this tab to post payments made to external lenders/borrowings. "
-            "This uses the configured 'BORROWING_REPAYMENT' journal template."
-        )
-
-        _sys = get_system_date()
-
-        with st.form("teller_borrowing_payment_form"):
-            st.caption("Posting uses the configured **system date** as the journal entry date.")
-            br1, br2, br3 = st.columns(3, gap="small")
-            with br1:
-                st.caption("Payment value date")
-                value_date = st.date_input(
-                    "Payment value date",
-                    value=_sys,
-                    key="teller_borrowing_value_date",
-                    label_visibility="collapsed",
-                )
-            with br2:
-                st.caption("Payment amount")
-                amount = st.number_input(
-                    "Payment amount",
-                    min_value=0.01,
-                    value=1000.00,
-                    step=100.00,
-                    format="%.2f",
-                    key="teller_borrowing_amount",
-                    label_visibility="collapsed",
-                )
-            with br3:
-                st.caption("Reference")
-                reference = st.text_input(
-                    "Reference",
-                    placeholder="e.g. Borrowing repayment ref",
-                    key="teller_borrowing_ref",
-                    label_visibility="collapsed",
-                )
-            br4, br5, br6 = st.columns(3, gap="small")
-            with br4:
-                st.caption("Narration (description)")
-                description = st.text_input(
-                    "Narration (Description)",
-                    placeholder="e.g. Payment of borrowing to financier X",
-                    key="teller_borrowing_desc",
-                    label_visibility="collapsed",
-                )
-            with br5:
-                st.empty()
-            with br6:
-                st.empty()
-
-            submitted = st.form_submit_button("Post borrowing payment", type="primary")
-            if submitted:
-                try:
-
-                    def _post_borrowing():
-                        teller_service.post_borrowing_repayment_journal(
-                            acct_svc,
-                            value_date=value_date,
-                            amount=Decimal(str(amount)),
-                            reference=reference,
-                            description=description.strip() or "Payment of borrowings",
-                            created_by="teller_ui",
-                        )
-
-                    run_with_spinner("Posting borrowing payment…", _post_borrowing)
-                    st.success("Borrowing payment journal posted successfully.")
-                except Exception as e:
-                    st.error(f"Error posting borrowing payment journal: {e}")
-                    st.exception(e)
-
     elif _teller_active == "Receipt from fully written-off loan":
         acct_svc = AccountingService()
         render_sub_sub_header("Receipt from a fully written-off loan")
@@ -791,6 +743,129 @@ def render_teller_ui(
                                 except Exception as e:
                                     st.error(f"Error posting recovery receipt journal: {e}")
                                     st.exception(e)
+
+    elif _teller_active == "Scheduled receipts (data take-on)":
+        render_sub_sub_header("Scheduled receipts (data take-on)")
+        st.warning(
+            "**Reserved for migration / data take-on.** Each row must have **value date strictly after** "
+            "the system business date. No allocation or repayment GL until **EOD on that value date** "
+            "(enable *Activate scheduled receipts* under System configurations → EOD). "
+            "Use **Cancel** below if you captured a row in error before its value date."
+        )
+        _sys = get_system_date()
+        _sample_vd = (_sys + timedelta(days=1)).isoformat()
+        st.caption(
+            "Upload the same columns as **Batch payments** (`loan_id`, `amount`, `payment_date`, `value_date`, "
+            "references, `source_cash_gl_account_id`). Template uses a sample **future** value date."
+        )
+        tpl_b = teller_service.build_scheduled_batch_upload_template_excel_bytes(
+            sample_future_value_date_iso=_sample_vd
+        )
+        dl_col, up_col = st.columns(2)
+        with dl_col:
+            st.download_button(
+                "Download scheduled batch template (Excel)",
+                data=tpl_b,
+                file_name="teller_scheduled_batch_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="teller_scheduled_download_template",
+            )
+        with up_col:
+            sched_up = st.file_uploader(
+                "Upload scheduled receipts (Excel)", type=["xlsx", "xls"], key="teller_scheduled_upload"
+            )
+        st.checkbox(
+            "I confirm these are intentional future-dated scheduled receipts (not normal Teller mistakes).",
+            key="teller_scheduled_confirm",
+        )
+        if sched_up:
+            try:
+                sdf = pd.read_excel(sched_up, engine="openpyxl")
+                st.dataframe(sdf.head(20), width="stretch", hide_index=True)
+                if len(sdf.index) > 20:
+                    st.caption(f"Showing first 20 of {len(sdf.index)} rows.")
+                if st.button("Process scheduled batch", type="primary", key="teller_scheduled_process"):
+                    if not st.session_state.get("teller_scheduled_confirm"):
+                        st.error("Confirm the checkbox above before processing.")
+                    else:
+                        valid_s, parse_err_s = teller_service.parse_batch_repayment_rows_from_dataframe(
+                            sdf,
+                            fallback_payment_date_iso=_sys.isoformat(),
+                        )
+                        if parse_err_s:
+                            st.warning(f"Parse issues: {len(parse_err_s)} row(s) skipped.")
+                            with st.expander("Parse errors"):
+                                for err in parse_err_s:
+                                    st.text(err)
+                        if not valid_s:
+                            st.error("No valid rows. Check loan_id, amount, and source_cash_gl_account_id.")
+                        else:
+
+                            def _run_sched_batch():
+                                return teller_service.run_batch_scheduled_repayments(valid_s)
+
+                            ok_s, fail_s, err_s = run_with_spinner(
+                                "Recording scheduled receipts…",
+                                _run_sched_batch,
+                            )
+                            st.success(f"Scheduled batch: **{ok_s}** recorded, **{fail_s}** failed.")
+                            if err_s:
+                                with st.expander("Processing errors"):
+                                    for err in err_s:
+                                        st.text(err)
+            except Exception as e:
+                st.error(f"Could not read file: {e}")
+                st.exception(e)
+
+        st.divider()
+        render_sub_sub_header("List scheduled receipts for a loan")
+        ls1, ls2 = st.columns(2)
+        with ls1:
+            list_loan = st.number_input("Loan ID", min_value=1, step=1, value=1, key="teller_sched_list_loan")
+        with ls2:
+            st.caption("Shows rows with status **scheduled** only.")
+        if st.button("Refresh list", key="teller_sched_list_btn"):
+            try:
+                rows = teller_service.list_scheduled_rows_for_loan(int(list_loan))
+                if not rows:
+                    st.info("No scheduled receipts for this loan.")
+                else:
+                    st.dataframe(rows, width="stretch", hide_index=True)
+            except Exception as e:
+                st.error(str(e))
+
+        st.divider()
+        render_sub_sub_header("Cancel scheduled receipt (before value date)")
+        c1, c2, c3 = st.columns(3, gap="small")
+        with c1:
+            can_rid = st.number_input("Repayment ID", min_value=1, step=1, value=1, key="teller_sched_cancel_rid")
+        with c2:
+            can_reason = st.text_input(
+                "Reason (required)",
+                placeholder="e.g. Duplicate capture",
+                key="teller_sched_cancel_reason",
+                label_visibility="collapsed",
+            )
+        with c3:
+            st.caption("Requires reason; audit trail retained.")
+        if st.button("Cancel scheduled receipt", type="secondary", key="teller_sched_cancel_btn"):
+            try:
+                from middleware import get_current_user
+
+                u = get_current_user()
+                who = str((u or {}).get("email") or (u or {}).get("username") or (u or {}).get("id") or "teller_ui")
+
+                def _do_cancel():
+                    teller_service.execute_cancel_scheduled_repayment(
+                        int(can_rid),
+                        reason=can_reason.strip(),
+                        cancelled_by=who,
+                    )
+
+                run_with_spinner("Cancelling…", _do_cancel)
+                st.success(f"Repayment **{int(can_rid)}** cancelled (status set to cancelled).")
+            except Exception as e:
+                st.error(str(e))
 
     if _trace_ui_enabled():
         _logger.info("TRACE teller.ui overall wall_s=%.3f active=%s", time.perf_counter() - t_ui0, _teller_active)

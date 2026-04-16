@@ -8,7 +8,11 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from config import get_database_url
 from decimal_utils import as_10dp, as_2dp
-from loan_management import load_system_config_from_db, _merge_cash_gl_into_payload
+from loan_management import (
+    load_system_config_from_db,
+    _merge_cash_gl_into_payload,
+    _merge_creditor_cash_gl_into_payload,
+)
 
 from .core import suggest_next_grandchild_account_code
 from .dal import (
@@ -1238,6 +1242,9 @@ class AccountingService:
         loan_id: int | None = None,
         repayment_id: int | None = None,
         posting_policy: str | None = None,
+        creditor_loan_id: int | None = None,
+        creditor_facility_id: int | None = None,
+        creditor_drawdown_id: int | None = None,
     ):
         policy = posting_policy or get_gl_posting_policy()
         anchor_date = _get_system_business_date_strict() if policy == "standard" else None
@@ -1247,8 +1254,23 @@ class AccountingService:
         if payload is None:
             payload = {}
         payload = dict(payload)
+        dd_id = creditor_drawdown_id if creditor_drawdown_id is not None else creditor_loan_id
+        cf_id = creditor_facility_id
+        if dd_id is not None and cf_id is None:
+            try:
+                from creditor_loans.persistence import get_creditor_loan
+
+                row = get_creditor_loan(int(dd_id))
+                if row and row.get("creditor_facility_id") is not None:
+                    cf_id = int(row["creditor_facility_id"])
+            except Exception:
+                pass
         if loan_id is not None:
             payload = _merge_cash_gl_into_payload(int(loan_id), repayment_id, payload)
+        elif dd_id is not None:
+            payload = _merge_creditor_cash_gl_into_payload(
+                int(dd_id), repayment_id, payload
+            )
         overrides = payload.get("account_overrides")
         if not isinstance(overrides, dict):
             overrides = {}
@@ -1336,6 +1358,9 @@ class AccountingService:
                     gl_anchor_date=anchor_date,
                     do_commit=False,
                     loan_id=loan_id,
+                    creditor_loan_id=creditor_loan_id,
+                    creditor_facility_id=cf_id,
+                    creditor_drawdown_id=dd_id,
                 )
             conn.commit()
         except Exception:
@@ -1387,6 +1412,9 @@ class AccountingService:
                     payload = {}
                 payload = dict(payload)
                 loan_id = item.get("loan_id")
+                creditor_loan_id = item.get("creditor_loan_id")
+                creditor_drawdown_id_item = item.get("creditor_drawdown_id")
+                dd_for_merge = creditor_drawdown_id_item if creditor_drawdown_id_item is not None else creditor_loan_id
                 repayment_id = item.get("repayment_id")
                 is_reversal = bool(item.get("is_reversal", False))
                 overrides = payload.get("account_overrides")
@@ -1407,6 +1435,13 @@ class AccountingService:
                 if need_cash and loan_id is not None:
                     # Only do the extra DB lookup when templates actually require cash_operating.
                     payload = _merge_cash_gl_into_payload(int(loan_id), repayment_id, payload)
+                    overrides = payload.get("account_overrides")
+                    if not isinstance(overrides, dict):
+                        overrides = {}
+                elif need_cash and dd_for_merge is not None:
+                    payload = _merge_creditor_cash_gl_into_payload(
+                        int(dd_for_merge), repayment_id, payload
+                    )
                     overrides = payload.get("account_overrides")
                     if not isinstance(overrides, dict):
                         overrides = {}
@@ -1490,6 +1525,9 @@ class AccountingService:
                             "created_by": created_by,
                             "lines": lines,
                             "loan_id": loan_id,
+                            "creditor_loan_id": creditor_loan_id,
+                            "creditor_facility_id": item.get("creditor_facility_id"),
+                            "creditor_drawdown_id": item.get("creditor_drawdown_id") or creditor_loan_id,
                         }
                     )
             if journal_entries:

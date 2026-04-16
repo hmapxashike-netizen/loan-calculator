@@ -118,6 +118,10 @@ TRANSACTION_TEMPLATE_TUPLES: list[tuple[str, str, str, str, str]] = [
     ("BORROWING_REPAYMENT", "borrowings_loan_principal", "DEBIT", "Payment of borrowings", "EVENT"),
     ("BORROWING_REPAYMENT", "interest_payable", "DEBIT", "Payment of borrowings - interest component", "EVENT"),
     ("BORROWING_REPAYMENT", "cash_operating", "CREDIT", "Payment of borrowings - cash outflow", "EVENT"),
+    ("CREDITOR_PRINCIPAL_WRITEOFF", "borrowings_loan_principal", "DEBIT", "Creditor facility principal write-off / forgiveness", "EVENT"),
+    ("CREDITOR_PRINCIPAL_WRITEOFF", "creditor_loan_forgiveness_income", "CREDIT", "Creditor facility principal write-off / forgiveness", "EVENT"),
+    ("CREDITOR_INTEREST_WRITEOFF", "interest_payable", "DEBIT", "Creditor facility interest payable write-off", "EVENT"),
+    ("CREDITOR_INTEREST_WRITEOFF", "creditor_loan_forgiveness_income", "CREDIT", "Creditor facility interest payable write-off", "EVENT"),
 ]
 
 # (code, name, category, system_tag, parent_code) — same order as seed_accounting.ACCOUNTS
@@ -168,6 +172,7 @@ CHART_ACCOUNT_TUPLES: list[tuple[str, str, str, str | None, str | None]] = [
     ("R400003", "PENALTY INTEREST INCOME", "INCOME", "penalty_interest_income", "R400000"),
     ("R400004", "DEFAULT INTEREST INCOME", "INCOME", "default_interest_income", "R400000"),
     ("R400005", "BAD DEBTS RECOVERED", "INCOME", "bad_debts_recovered", "R400000"),
+    ("R400006", "CREDITOR LOAN FORGIVENESS INCOME", "INCOME", "creditor_loan_forgiveness_income", "R400000"),
     ("E500000", "FINANCIAL & LENDING EXPENSES", "EXPENSE", None, None),
     ("E500001", "INTEREST EXPENSE", "EXPENSE", "interest_expense", "E500000"),
     ("E500002", "IMPAIRMENT LOSS EXPENSE", "EXPENSE", "impairment_loss_expense", "E500000"),

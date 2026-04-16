@@ -56,15 +56,40 @@ def render_accounting_ui(
 
     _render_bundled_accounting_defaults_downloads()
 
-    tab_labels = [
-        "Chart of Accounts",
-        "Transaction Templates",
-        "Receipt → GL Mapping",
-        "Manual Journals",
-        "Financial Reports",
-    ]
-    if show_bank_reconciliation_tab:
+    try:
+        from rbac.subfeature_access import (
+            accounting_can_bank_reconciliation,
+            accounting_can_chart_templates_mapping,
+            accounting_can_financial_reports,
+        )
+    except Exception:
+
+        def accounting_can_chart_templates_mapping(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+        def accounting_can_financial_reports(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+        def accounting_can_bank_reconciliation(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+    tab_labels: list[str] = []
+    if accounting_can_chart_templates_mapping():
+        tab_labels.extend(
+            [
+                "Chart of Accounts",
+                "Transaction Templates",
+                "Receipt → GL Mapping",
+                "Manual Journals",
+            ]
+        )
+    if accounting_can_financial_reports():
+        tab_labels.append("Financial Reports")
+    if show_bank_reconciliation_tab and accounting_can_bank_reconciliation():
         tab_labels.append("Bank reconciliation")
+    if not tab_labels:
+        st.warning("You do not have permission for any Accounting areas for this role.")
+        return
 
     st.session_state.setdefault("accounting_subnav", tab_labels[0])
     if st.session_state["accounting_subnav"] not in tab_labels:

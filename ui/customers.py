@@ -1613,7 +1613,24 @@ def render_customers_ui(
 
     inject_tertiary_hyperlink_css_once()
 
-    _cust_nav = [
+    try:
+        from rbac.subfeature_access import (
+            customers_can_approve,
+            customers_can_view_only,
+            customers_can_workspace,
+        )
+    except Exception:
+
+        def customers_can_approve(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+        def customers_can_view_only(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+        def customers_can_workspace(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+    _order = [
         "Add Individual",
         "Add Corporate",
         "View & Manage",
@@ -1621,6 +1638,17 @@ def render_customers_ui(
         "Approvals",
         "Batch Capture",
     ]
+    _cand: list[str] = []
+    if customers_can_workspace():
+        _cand.extend(["Add Individual", "Add Corporate", "Agents", "Batch Capture"])
+    if customers_can_view_only():
+        _cand.append("View & Manage")
+    if customers_can_approve():
+        _cand.append("Approvals")
+    _cust_nav = [x for x in _order if x in _cand]
+    if not _cust_nav:
+        st.warning("You do not have permission for any Customers areas for this role.")
+        return
     st.session_state.setdefault("customers_subnav", _cust_nav[0])
     if st.session_state["customers_subnav"] not in _cust_nav:
         st.session_state["customers_subnav"] = _cust_nav[0]

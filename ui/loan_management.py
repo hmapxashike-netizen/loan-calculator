@@ -236,6 +236,15 @@ def render_batch_loan_capture_ui(
     source_cash_gl_cached_labels_and_ids: Callable[[], tuple[list[str], list[str]]] | None = None,
 ) -> None:
         """Batch loan migration: preview CSVs, then commit loans directly to the database."""
+        try:
+            from rbac.subfeature_access import loan_management_can_batch_capture
+
+            if not loan_management_can_batch_capture():
+                st.error("You do not have permission for batch loan capture (migration).")
+                st.stop()
+        except Exception:
+            st.error("You do not have permission for batch loan capture (migration).")
+            st.stop()
         render_sub_sub_header("Batch Loan Capture (Migration)")
         st.caption(
             "Upload a loan header CSV and schedule CSV, preview the rows, then **Commit loans to database** "

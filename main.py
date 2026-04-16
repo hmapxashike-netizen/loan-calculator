@@ -93,7 +93,17 @@ def _assignable_roles_for_ui(
     except Exception:
         keys = []
     if not keys:
-        keys = ["ADMIN", "LOAN_OFFICER", "BORROWER", "SUPERADMIN", "VENDOR"]
+        keys = [
+            "ADMIN",
+            "LOAN_OFFICER",
+            "LOAN_SUPERVISOR",
+            "ACCOUNTS_OFFICER",
+            "ACCOUNTS_SUPERVISOR",
+            "VIEWER",
+            "BORROWER",
+            "SUPERADMIN",
+            "VENDOR",
+        ]
     if ar == "SUPERADMIN":
         return sorted(keys, key=str)
     blocked = frozenset({"SUPERADMIN", "VENDOR", "ADMIN"})
@@ -324,7 +334,6 @@ def render_sidebar_user_meta(user: dict, system_date) -> None:
 _OPTION_MENU_ICON_BY_SECTION: dict[str, str] = {
     "Home": "house",
     "Admin Dashboard": "shield-lock",
-    "Officer Dashboard": "briefcase",
     "Customers": "people",
     "Loan management": "cash-coin",
     "Loan Capture": "clipboard-plus",
@@ -340,6 +349,7 @@ _OPTION_MENU_ICON_BY_SECTION: dict[str, str] = {
     "System configurations": "gear",
     "Subscription": "credit-card",
     "View Schedule": "calendar3",
+    "Schedules & repayments": "calendar3",
     "Loan Calculators": "calculator",
     "Update Loans": "arrow-clockwise",
     "Interest In Suspense": "hourglass-split",
@@ -437,11 +447,6 @@ def render_sidebar_option_menu(menu_keys: list[str], current_choice: str) -> str
 def borrower_home():
     render_main_page_title("Home")
     st.write("Borrower self-service pages can go here (loan applications, statements, etc.).")
-
-
-def officer_home():
-    render_main_page_title("Officer Dashboard")
-    st.write("Loan officer workspace. Use the 'FarndaCred App' entry for full calculators.")
 
 
 def admin_home():
@@ -882,7 +887,7 @@ def _build_menu_for_role_legacy(role: str) -> dict[str, callable]:
 
     if role == "LOAN_OFFICER":
         allowed = [s for s in loan_sections if s != "System configurations"]
-        menu: dict[str, callable] = {"Officer Dashboard": officer_home}
+        menu: dict[str, callable] = {}
         for section in allowed:
             menu[section] = lambda section_name=section: get_loan_app().render_loan_app_section(
                 section_name
@@ -890,7 +895,7 @@ def _build_menu_for_role_legacy(role: str) -> dict[str, callable]:
         return menu
 
     if role == "ADMIN":
-        menu = {"Admin Dashboard": admin_home}
+        menu: dict[str, callable] = {"Admin Dashboard": admin_home}
         for section in loan_sections:
             menu[section] = lambda section_name=section: get_loan_app().render_loan_app_section(
                 section_name
@@ -911,16 +916,13 @@ def _build_menu_for_role_legacy(role: str) -> dict[str, callable]:
 def _build_menu_from_permission_keys(role: str, keys: frozenset[str]) -> dict[str, callable]:
     from auth.permission_catalog import (
         PERMISSION_DASHBOARD_ADMIN,
-        PERMISSION_DASHBOARD_OFFICER,
         nav_permission_key_for_section,
     )
 
     loan_sections = get_loan_app().get_loan_app_sections()
     menu: dict[str, callable] = {}
 
-    if PERMISSION_DASHBOARD_OFFICER in keys:
-        menu["Officer Dashboard"] = officer_home
-    elif PERMISSION_DASHBOARD_ADMIN in keys:
+    if PERMISSION_DASHBOARD_ADMIN in keys:
         menu["Admin Dashboard"] = admin_home
 
     for section in loan_sections:

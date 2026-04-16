@@ -622,6 +622,23 @@ def render_subscription_user_ui(*, get_current_user) -> None:
         return
 
     try:
+        from rbac.subfeature_access import (
+            subscription_can_platform_admin,
+            subscription_can_tenant_account,
+            subscription_can_vendor_console,
+        )
+    except Exception:
+
+        def subscription_can_tenant_account(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+        def subscription_can_vendor_console(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+        def subscription_can_platform_admin(user=None) -> bool:  # type: ignore[misc]
+            return True
+
+    try:
         row = sub_repo.get_tenant_subscription_row(tenant_schema)
     except Exception as e:
         st.error(f"Subscription load failed: {e}")
@@ -631,7 +648,14 @@ def render_subscription_user_ui(*, get_current_user) -> None:
         st.warning("No subscription row yet.")
         return
 
+    can_tenant = subscription_can_tenant_account(user)
+    can_vendor = subscription_can_vendor_console(user)
+    can_platform = subscription_can_platform_admin(user)
+
     if role == "VENDOR":
+        if not can_vendor:
+            st.warning("You do not have permission for vendor subscription tools.")
+            return
         st.caption("Platform vendor access: you manage subscription terms for the **working tenant** below.")
         _render_vendor_tenant_switcher()
         st.divider()
@@ -639,19 +663,36 @@ def render_subscription_user_ui(*, get_current_user) -> None:
         return
 
     if role == "SUPERADMIN":
-        tab_vendor, tab_org = st.tabs(["Vendor", "Organisation account"])
-        with tab_vendor:
-            st.caption("Choose **working tenant**, then use vendor tools (same as vendor role).")
+        show_vendor_ui = can_vendor or can_platform
+        show_org_ui = can_tenant
+        if show_vendor_ui and show_org_ui:
+            tab_vendor, tab_org = st.tabs(["Vendor", "Organisation account"])
+            with tab_vendor:
+                st.caption("Choose **working tenant**, then use vendor tools (same as vendor role).")
+                _render_vendor_tenant_switcher()
+                st.divider()
+                _render_vendor_subscription_tab(tenant_schema, user, row)
+            with tab_org:
+                _render_org_subscription_tab(tenant_schema, user, row, key_prefix="sub_org")
+        elif show_vendor_ui:
+            st.caption("Choose **working tenant**, then use vendor tools.")
             _render_vendor_tenant_switcher()
             st.divider()
             _render_vendor_subscription_tab(tenant_schema, user, row)
-        with tab_org:
+        elif show_org_ui:
             _render_org_subscription_tab(tenant_schema, user, row, key_prefix="sub_org")
+        else:
+            st.warning("No subscription permissions are enabled for your role.")
         return
 
     if role == "LOAN_OFFICER":
+        if not can_tenant:
+            st.warning("You do not have permission to view the organisation subscription.")
+            return
         _render_org_subscription_tab(tenant_schema, user, row, key_prefix="sub_org")
         return
 
-    # ADMIN: organisation account only (POP upload, summary); vendor tools require role VENDOR or SUPERADMIN.
+    if not can_tenant:
+        st.warning("You do not have permission to view the organisation subscription.")
+        return
     _render_org_subscription_tab(tenant_schema, user, row, key_prefix="sub_org")
