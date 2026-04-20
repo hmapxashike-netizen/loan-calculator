@@ -67,42 +67,6 @@ def render_journals_ui(*, get_system_date) -> None:
     _j_act = st.session_state["journals_subnav"]
     _j_kind = _jnav_to_kind.get(_j_act, "manual")
 
-    svc = _journals_accounting_service()
-
-    try:
-        bad_journals = svc.list_unbalanced_journal_entries()
-        if bad_journals:
-            import pandas as pd
-
-            st.error(
-                f"**Data integrity:** {len(bad_journals)} journal header(s) are **materially** unbalanced "
-                "(per-line 10dp, then totals compared at **2dp**; sub–2dp drift is ignored). "
-                "**Avoid:** unbalanced journals cannot be saved. "
-                "**Flag:** listed here + **Balanced** in Statements. "
-                "Use **Repair LOAN_APPROVAL** when applicable."
-            )
-            with st.expander("Unbalanced journal headers (detail) & repair"):
-                st.dataframe(pd.DataFrame([dict(r) for r in bad_journals]), width="stretch")
-                st.caption(
-                    "**imbalance_2dp** = rounded total debits minus rounded total credits (each total = sum of 10dp line amounts). "
-                    "Classic LOAN_APPROVAL bug: principal debit too small vs cash + deferred fees — re-post fixes when supported."
-                )
-                repair_id = st.number_input(
-                    "Loan ID (LOAN_APPROVAL repair)",
-                    min_value=1,
-                    step=1,
-                    key="journals_repair_loan_id",
-                )
-                if st.button("Re-post LOAN_APPROVAL from loan record", key="journals_repair_loan_btn"):
-                    try:
-                        svc.repost_loan_approval_journal(int(repair_id), created_by="ui_user")
-                        st.success(f"Re-posted LOAN_APPROVAL for loan {int(repair_id)}.")
-                        st.rerun()
-                    except Exception as ex:
-                        st.error(str(ex))
-    except Exception as ex:
-        st.caption(f"Could not check journal double-entry integrity: {ex}")
-
     if _j_kind == "appr":
         render_sub_sub_header("Journal approvals")
         st.info(
@@ -110,6 +74,43 @@ def render_journals_ui(*, get_system_date) -> None:
             "No workflow is wired here yet; assign **Journals — journal approvals** to prepare roles."
         )
         return
+
+    svc = _journals_accounting_service()
+
+    if _j_kind in ("manual", "bal"):
+        try:
+            bad_journals = svc.list_unbalanced_journal_entries()
+            if bad_journals:
+                import pandas as pd
+
+                st.error(
+                    f"**Data integrity:** {len(bad_journals)} journal header(s) are **materially** unbalanced "
+                    "(per-line 10dp, then totals compared at **2dp**; sub–2dp drift is ignored). "
+                    "**Avoid:** unbalanced journals cannot be saved. "
+                    "**Flag:** listed here + **Balanced** in Statements. "
+                    "Use **Repair LOAN_APPROVAL** when applicable."
+                )
+                with st.expander("Unbalanced journal headers (detail) & repair"):
+                    st.dataframe(pd.DataFrame([dict(r) for r in bad_journals]), width="stretch")
+                    st.caption(
+                        "**imbalance_2dp** = rounded total debits minus rounded total credits (each total = sum of 10dp line amounts). "
+                        "Classic LOAN_APPROVAL bug: principal debit too small vs cash + deferred fees — re-post fixes when supported."
+                    )
+                    repair_id = st.number_input(
+                        "Loan ID (LOAN_APPROVAL repair)",
+                        min_value=1,
+                        step=1,
+                        key="journals_repair_loan_id",
+                    )
+                    if st.button("Re-post LOAN_APPROVAL from loan record", key="journals_repair_loan_btn"):
+                        try:
+                            svc.repost_loan_approval_journal(int(repair_id), created_by="ui_user")
+                            st.success(f"Re-posted LOAN_APPROVAL for loan {int(repair_id)}.")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(str(ex))
+        except Exception as ex:
+            st.caption(f"Could not check journal double-entry integrity: {ex}")
 
     if _j_kind == "manual":
         from datetime import datetime

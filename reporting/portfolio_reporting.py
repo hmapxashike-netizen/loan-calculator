@@ -1,7 +1,11 @@
 """
-Read-only portfolio analytics: debtor arrears ageing buckets and principal maturity profile.
+Read-only portfolio analytics: debtor arrears ageing buckets and principal maturity profile;
+**creditor arrears ageing** reuses the same schedule + daily-state vintage logic on creditor drawdowns;
+**creditor maturity profile** buckets **scheduled** future principal (or P+I) from `creditor_schedule_lines`
+only (no daily-state weighting).
 
-Uses latest `loan_schedules` version + `schedule_lines` and latest `loan_daily_state` on/before as-of.
+Uses latest `loan_schedules` version + `schedule_lines` and latest `loan_daily_state` on/before as-of
+(debtor); latest `creditor_loan_schedules` + `creditor_schedule_lines` per drawdown (creditor schedule maturity).
 Does not modify allocations, EOD, or engine persistence.
 
 Arrears ageing methodology (credit-style vintage by obligation):
@@ -21,12 +25,18 @@ Arrears ageing methodology (credit-style vintage by obligation):
   **due date < as-of**). There is **no** arrears “unallocated” bucket: if arrears > 0 but no past-due schedule
   lines are available, the report raises.
 
-Maturity: `principal_not_due` spread across **future** instalments by scheduled **principal** weights;
-buckets by **days to due**. If there is no future principal (or cash-flow basis has no principal weights)
-to spread against, the full amount is reported in the **360+ days** bucket (no separate unallocated column).
+Debtor maturity: ``principal_not_due`` from ``loan_daily_state`` spread across **future** instalments by
+scheduled **principal** weights; buckets by **days to due**. If there is no future principal (or cash-flow basis
+has no principal weights) to spread against, the full amount is reported in the **360+ days** bucket.
+
+Creditor maturity (schedule-only): each **future** line’s scheduled amount goes to the bucket for its due date;
+``scheduled_future_total`` equals the sum of bucket columns.
 
 Regulatory maturity profile: same allocation as maturity, re-bucketed into finer bands (0–7, 8–14, 15–30, …, 360+)
 via ``bucket_regulatory_maturity_for_loan`` / ``build_regulatory_maturity_summary_table``.
+
+**Gap analysis** (``build_debtor_creditor_maturity_gap_summary``): sums debtor and creditor **standard** maturity
+bucket columns at the same as-of and view type, then net and cumulative net by tenor.
 """
 from __future__ import annotations
 
@@ -501,6 +511,38 @@ def bucket_maturity_for_loan(
     return buckets
 
 
+def bucket_maturity_from_future_scheduled_cashflows(
+    as_of: date,
+    *,
+    schedule_lines: list[dict[str, Any]],
+    view_type: str = "principal",
+) -> dict[str, Decimal]:
+    """
+    Place **scheduled** future instalments into maturity tenor buckets by days from ``as_of`` to line due date.
+
+    **Principal** view: each future line contributes its scheduled **principal** to the bucket for that due date.
+    **Cash flow** view: each line contributes **principal + interest**. No weighting to ``principal_not_due`` or
+    other balances — pure schedule timing (creditor maturity profile).
+    """
+    buckets = _zero_maturity_buckets()
+    for row in sorted(schedule_lines, key=_row_period):
+        due = _row_schedule_date(row)
+        if due is None or due <= as_of:
+            continue
+        pr, int_amt = _line_principal_interest(row)
+        if view_type == "principal":
+            amt = as_10dp(pr)
+        else:
+            amt = as_10dp(pr + int_amt)
+        if amt <= 0:
+            continue
+        days_to = (due - as_of).days
+        idx = _maturity_bucket_index(days_to)
+        key = MATURITY_BUCKET_KEYS[idx]
+        buckets[key] = as_10dp(buckets[key] + amt)
+    return buckets
+
+
 def bucket_regulatory_maturity_for_loan(
     as_of: date,
     *,
@@ -591,6 +633,109 @@ def fetch_latest_schedule_lines_batch(loan_ids: list[int]) -> dict[int, list[dic
     return out
 
 
+def fetch_latest_creditor_schedule_lines_batch(
+    creditor_drawdown_ids: list[int],
+) -> dict[int, list[dict[str, Any]]]:
+    """Latest schedule version per creditor drawdown; lines ordered by Period (same shape as debtor lines)."""
+    out: dict[int, list[dict[str, Any]]] = {did: [] for did in creditor_drawdown_ids}
+    if not creditor_drawdown_ids:
+        return out
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                WITH latest AS (
+                    SELECT DISTINCT ON (creditor_drawdown_id)
+                        id AS schedule_id,
+                        creditor_drawdown_id
+                    FROM creditor_loan_schedules
+                    WHERE creditor_drawdown_id = ANY(%s)
+                    ORDER BY creditor_drawdown_id, version DESC
+                )
+                SELECT l.creditor_drawdown_id, csl.*
+                FROM latest l
+                JOIN creditor_schedule_lines csl ON csl.creditor_loan_schedule_id = l.schedule_id
+                ORDER BY l.creditor_drawdown_id, csl."Period"
+                """,
+                (creditor_drawdown_ids,),
+            )
+            for row in cur.fetchall() or []:
+                did = int(row["creditor_drawdown_id"])
+                if did not in out:
+                    continue
+                line = dict(row)
+                line.pop("creditor_drawdown_id", None)
+                out[did].append(line)
+    return out
+
+
+def fetch_creditor_schedule_maturity_drawdown_rows(
+    *,
+    active_only: bool = True,
+) -> list[dict[str, Any]]:
+    """
+    Creditor drawdowns in scope for **schedule-based** maturity (no daily-state balance filter).
+    """
+    status_clause = "AND cl.status = 'active'" if active_only else ""
+    sql = f"""
+        SELECT
+            cl.id AS creditor_drawdown_id,
+            cp.name AS lender_name,
+            cl.creditor_facility_id,
+            COALESCE(cl.creditor_loan_type_code, '') AS loan_type
+        FROM creditor_drawdowns cl
+        JOIN creditor_facilities cf ON cf.id = cl.creditor_facility_id
+        JOIN creditor_counterparties cp ON cp.id = cf.creditor_counterparty_id
+        WHERE 1=1 {status_clause}
+        ORDER BY cl.id
+    """
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql)
+            return [dict(r) for r in cur.fetchall() or []]
+
+
+def explain_creditor_maturity_profile_empty(as_of: date, *, active_only: bool) -> str:
+    """
+    Human-readable reason why :func:`build_creditor_maturity_profile_report` returned no rows
+    (read-only counts; schedule-based maturity).
+    """
+    status_clause = "AND cl.status = 'active'" if active_only else ""
+    with _connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*)::int FROM creditor_drawdowns cl WHERE 1=1 {status_clause}",
+            )
+            n_dd = int(cur.fetchone()[0] or 0)
+            if n_dd == 0:
+                return (
+                    "No creditor drawdowns match the current scope. If you expected rows here, try turning off "
+                    "**Active loans only**, or add facilities and drawdowns under **Creditor loans** first."
+                )
+            cur.execute(
+                f"""
+                SELECT COUNT(DISTINCT cl.id)::int
+                FROM creditor_drawdowns cl
+                WHERE EXISTS (
+                    SELECT 1 FROM creditor_loan_schedules s
+                    WHERE s.creditor_drawdown_id = cl.id
+                )
+                {status_clause}
+                """,
+            )
+            n_sch = int(cur.fetchone()[0] or 0)
+            if n_sch == 0:
+                return (
+                    f"There are **{n_dd}** drawdown(s) in scope, but none have a **creditor loan schedule** stored. "
+                    "Capture or rebuild a schedule under **Creditor loans** (Capture drawdown)."
+                )
+            return (
+                f"There are **{n_dd}** drawdown(s) with schedules, but no **future** instalments after **{as_of}** "
+                "have positive scheduled **principal** (principal-only view) or **principal + interest** "
+                "(cash-flow view). Try an earlier as-of or check schedule dates and amounts."
+            )
+
+
 def fetch_loan_daily_ancillary_series_batch(
     loan_ids: list[int], as_of: date
 ) -> dict[int, dict[str, list[tuple[date, Decimal, Decimal]]]]:
@@ -635,6 +780,52 @@ def fetch_loan_daily_ancillary_series_batch(
                 out[lid]["penalty"].append((d, p, p_d))
                 out[lid]["default"].append((d, di, di_d))
                 out[lid]["fees"].append((d, f, Decimal("0")))
+    return out
+
+
+def fetch_creditor_daily_ancillary_series_batch(
+    creditor_drawdown_ids: list[int], as_of: date
+) -> dict[int, dict[str, list[tuple[date, Decimal, Decimal]]]]:
+    """
+    Daily ``creditor_loan_daily_state`` for penalty, default, and fees (on or before ``as_of``),
+    ascending by date — same shape as :func:`fetch_loan_daily_ancillary_series_batch`.
+    """
+    if not creditor_drawdown_ids:
+        return {}
+    out: dict[int, dict[str, list[tuple[date, Decimal, Decimal]]]] = {
+        did: {"penalty": [], "default": [], "fees": []} for did in creditor_drawdown_ids
+    }
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT creditor_drawdown_id, as_of_date,
+                       penalty_interest_balance,
+                       COALESCE(penalty_interest_daily, 0) AS penalty_interest_daily,
+                       default_interest_balance,
+                       COALESCE(default_interest_daily, 0) AS default_interest_daily,
+                       fees_charges_balance
+                FROM creditor_loan_daily_state
+                WHERE creditor_drawdown_id = ANY(%s) AND as_of_date <= %s
+                ORDER BY creditor_drawdown_id, as_of_date
+                """,
+                (creditor_drawdown_ids, as_of),
+            )
+            for row in cur.fetchall() or []:
+                did = int(row["creditor_drawdown_id"])
+                if did not in out:
+                    continue
+                d = row["as_of_date"]
+                if isinstance(d, datetime):
+                    d = d.date()
+                p = as_10dp(row.get("penalty_interest_balance") or 0)
+                p_d = as_10dp(row.get("penalty_interest_daily") or 0)
+                di = as_10dp(row.get("default_interest_balance") or 0)
+                di_d = as_10dp(row.get("default_interest_daily") or 0)
+                f = as_10dp(row.get("fees_charges_balance") or 0)
+                out[did]["penalty"].append((d, p, p_d))
+                out[did]["default"].append((d, di, di_d))
+                out[did]["fees"].append((d, f, Decimal("0")))
     return out
 
 
@@ -774,6 +965,104 @@ def build_arrears_aging_report(
     return pd.DataFrame(rows_out)
 
 
+def fetch_creditor_arrears_base_rows(
+    as_of: date,
+    *,
+    active_only: bool,
+) -> list[dict[str, Any]]:
+    """
+    Creditor drawdowns with **days_overdue > 0** from latest ``creditor_loan_daily_state`` on/before ``as_of``
+    (same population idea as debtor arrears ageing).
+    """
+    status_clause = "AND cl.status = 'active'" if active_only else ""
+    sql = f"""
+        SELECT
+            cl.id AS creditor_drawdown_id,
+            cp.name AS lender_name,
+            cl.creditor_facility_id,
+            COALESCE(cl.creditor_loan_type_code, '') AS loan_type,
+            lds.as_of_date AS state_as_of,
+            lds.days_overdue,
+            lds.principal_arrears,
+            lds.interest_arrears_balance,
+            lds.fees_charges_balance,
+            lds.penalty_interest_balance,
+            lds.default_interest_balance,
+            COALESCE(lds.total_delinquency_arrears,
+                lds.principal_arrears + lds.interest_arrears_balance
+                + lds.default_interest_balance + lds.penalty_interest_balance + lds.fees_charges_balance
+            ) AS total_delinquency_arrears,
+            COALESCE(lds.total_exposure, 0) AS total_exposure
+        FROM creditor_drawdowns cl
+        JOIN creditor_facilities cf ON cf.id = cl.creditor_facility_id
+        JOIN creditor_counterparties cp ON cp.id = cf.creditor_counterparty_id
+        INNER JOIN LATERAL (
+            SELECT *
+            FROM creditor_loan_daily_state x
+            WHERE x.creditor_drawdown_id = cl.id AND x.as_of_date <= %s
+            ORDER BY x.as_of_date DESC
+            LIMIT 1
+        ) lds ON TRUE
+        WHERE lds.days_overdue > 0
+        {status_clause}
+        ORDER BY cl.id
+    """
+    with _connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (as_of,))
+            return [dict(r) for r in cur.fetchall() or []]
+
+
+def build_creditor_arrears_aging_report(
+    as_of: date,
+    *,
+    active_only: bool,
+) -> pd.DataFrame:
+    """
+    Creditor borrowings in arrears: same DPD bucket methodology as :func:`build_arrears_aging_report`,
+    using ``creditor_schedule_lines`` and ``creditor_loan_daily_state``.
+    """
+    base = fetch_creditor_arrears_base_rows(as_of, active_only=active_only)
+    if not base:
+        return pd.DataFrame()
+    dids = [int(r["creditor_drawdown_id"]) for r in base]
+    sched_map = fetch_latest_creditor_schedule_lines_batch(dids)
+    daily_map = fetch_creditor_daily_ancillary_series_batch(dids, as_of)
+
+    rows_out: list[dict[str, Any]] = []
+    for r in base:
+        did = int(r["creditor_drawdown_id"])
+        lines = sched_map.get(did) or []
+        try:
+            buckets = bucket_arrears_for_loan(
+                as_of,
+                principal_arrears=as_10dp(r.get("principal_arrears") or 0),
+                interest_arrears=as_10dp(r.get("interest_arrears_balance") or 0),
+                fees_charges=as_10dp(r.get("fees_charges_balance") or 0),
+                penalty=as_10dp(r.get("penalty_interest_balance") or 0),
+                default_int=as_10dp(r.get("default_interest_balance") or 0),
+                schedule_lines=lines,
+                daily_series=daily_map.get(did),
+            )
+        except ValueError as ex:
+            raise ValueError(f"Arrears ageing failed for creditor_drawdown_id={did}: {ex}") from ex
+        row = {
+            "creditor_drawdown_id": did,
+            "lender_name": r.get("lender_name"),
+            "creditor_facility_id": r.get("creditor_facility_id"),
+            "loan_type": r.get("loan_type"),
+            "state_as_of": r.get("state_as_of"),
+            "days_overdue": r.get("days_overdue"),
+            "total_outstanding_balance": float(as_10dp(r.get("total_exposure") or 0)),
+            "total_delinquency_arrears": float(as_10dp(r.get("total_delinquency_arrears") or 0)),
+        }
+        for k in ARREARS_BUCKET_KEYS:
+            row[k] = float(buckets[k])
+        rows_out.append(row)
+
+    return pd.DataFrame(rows_out)
+
+
 def build_maturity_profile_report(
     as_of: date,
     *,
@@ -815,6 +1104,119 @@ def build_maturity_profile_report(
             row[k] = float(buckets[k])
         rows_out.append(row)
 
+    return pd.DataFrame(rows_out)
+
+
+def build_creditor_maturity_profile_report(
+    as_of: date,
+    *,
+    active_only: bool = True,
+    view_type: str = "principal",
+) -> pd.DataFrame:
+    """
+    Creditor-side maturity from **schedule lines only**: each future instalment’s scheduled principal (or
+    principal + interest in cash-flow view) is placed in the tenor bucket for its due date. Same bucket
+    boundaries as :func:`build_maturity_profile_report`, but **no** reconciliation to ``principal_not_due``
+    or other daily-state balances.
+    """
+    base = fetch_creditor_schedule_maturity_drawdown_rows(active_only=active_only)
+    if not base:
+        return pd.DataFrame()
+    dids = [int(r["creditor_drawdown_id"]) for r in base]
+    sched_map = fetch_latest_creditor_schedule_lines_batch(dids)
+
+    rows_out: list[dict[str, Any]] = []
+    for r in base:
+        did = int(r["creditor_drawdown_id"])
+        lines = sched_map.get(did) or []
+        buckets = bucket_maturity_from_future_scheduled_cashflows(
+            as_of, schedule_lines=lines, view_type=view_type
+        )
+        bucket_sum = as_10dp(sum(buckets[k] for k in MATURITY_BUCKET_KEYS))
+        if bucket_sum <= 0:
+            continue
+
+        row = {
+            "creditor_drawdown_id": did,
+            "lender_name": r.get("lender_name"),
+            "creditor_facility_id": r.get("creditor_facility_id"),
+            "loan_type": r.get("loan_type"),
+            "scheduled_future_total": float(bucket_sum),
+            "bucket_sum": float(bucket_sum),
+        }
+        for k in MATURITY_BUCKET_KEYS:
+            row[k] = float(buckets[k])
+        rows_out.append(row)
+
+    return pd.DataFrame(rows_out)
+
+
+def build_debtor_creditor_maturity_gap_summary(
+    as_of: date,
+    *,
+    active_only: bool,
+    view_type: str = "principal",
+    restructure_scope: frozenset[str] | None = None,
+) -> pd.DataFrame:
+    """
+    **Liquidity gap (timing):** sum debtor maturity bucket amounts (daily-state weighted schedule) vs sum
+    creditor maturity bucket amounts (**scheduled** future cashflows only) at the same as-of, using the same
+    tenor band labels. Debtor methodology: :func:`build_maturity_profile_report`; creditor: :func:`build_creditor_maturity_profile_report`.
+
+    Rows are tenor buckets (shortest first), then **TOTAL**. ``net_position`` = inflows − outflows per bucket;
+    ``cumulative_position`` is the running sum of ``net_position`` down the buckets (excludes the TOTAL row
+    in the cumulative logic — TOTAL repeats the final cumulative for convenience).
+    """
+    df_d = build_maturity_profile_report(
+        as_of,
+        active_only=active_only,
+        view_type=view_type,
+        restructure_scope=restructure_scope,
+    )
+    df_c = build_creditor_maturity_profile_report(
+        as_of, active_only=active_only, view_type=view_type
+    )
+
+    sums_d: dict[str, Decimal] = {k: Decimal("0") for k in MATURITY_BUCKET_KEYS}
+    sums_c: dict[str, Decimal] = {k: Decimal("0") for k in MATURITY_BUCKET_KEYS}
+    if not df_d.empty:
+        for k in MATURITY_BUCKET_KEYS:
+            if k in df_d.columns:
+                sums_d[k] = as_10dp(df_d[k].sum())
+    if not df_c.empty:
+        for k in MATURITY_BUCKET_KEYS:
+            if k in df_c.columns:
+                sums_c[k] = as_10dp(df_c[k].sum())
+
+    rows_out: list[dict[str, Any]] = []
+    cum = Decimal("0")
+    tot_d = Decimal("0")
+    tot_c = Decimal("0")
+    for k, lbl in zip(MATURITY_BUCKET_KEYS, MATURITY_BUCKET_LABELS, strict=True):
+        d_amt = sums_d[k]
+        c_amt = sums_c[k]
+        net = as_10dp(d_amt - c_amt)
+        cum = as_10dp(cum + net)
+        tot_d = as_10dp(tot_d + d_amt)
+        tot_c = as_10dp(tot_c + c_amt)
+        rows_out.append(
+            {
+                "bucket": lbl,
+                "debtor_cash_inflows": float(d_amt),
+                "creditor_cash_outflows": float(c_amt),
+                "net_position": float(net),
+                "cumulative_position": float(cum),
+            }
+        )
+    rows_out.append(
+        {
+            "bucket": "TOTAL",
+            "debtor_cash_inflows": float(tot_d),
+            "creditor_cash_outflows": float(tot_c),
+            "net_position": float(as_10dp(tot_d - tot_c)),
+            "cumulative_position": float(cum),
+        }
+    )
     return pd.DataFrame(rows_out)
 
 

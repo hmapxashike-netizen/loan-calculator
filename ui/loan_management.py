@@ -104,9 +104,20 @@ def render_update_loans_ui(
         loan_id = next(t[0] for t in loan_options if t[1] == loan_sel_label)
         loan = next(l for l in loans_active if l["id"] == loan_id)
     
-        tab_edit, tab_term = st.tabs(["Edit Safe Details", "Terminate Loan Request"])
-    
-        with tab_edit:
+        _upd_sub_labels = ["Edit Safe Details", "Terminate Loan Request"]
+        st.session_state.setdefault("update_loans_subtab", _upd_sub_labels[0])
+        if st.session_state["update_loans_subtab"] not in _upd_sub_labels:
+            st.session_state["update_loans_subtab"] = _upd_sub_labels[0]
+        st.radio(
+            "Update loans panel",
+            _upd_sub_labels,
+            key="update_loans_subtab",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        _upd_panel = st.session_state["update_loans_subtab"]
+
+        if _upd_panel == "Edit Safe Details":
             st.markdown("**Update Non-Financial Details**")
             st.caption("Changes here apply immediately and do not affect schedules or GL postings.")
     
@@ -176,7 +187,7 @@ def render_update_loans_ui(
                 except Exception as e:
                     st.error(f"Failed to update details: {e}")
     
-        with tab_term:
+        else:
             st.markdown("**Request Loan Termination**")
             st.caption(
                 "If a mistake was made that affects schedules or accruals, the loan must be terminated. "
@@ -1063,19 +1074,28 @@ def render_approve_loans_ui(
                         while len(dfs_use) < n_legs:
                             dfs_use.append(pd.DataFrame())
                         if any(not d.empty for d in dfs_use):
-                            tabs = st.tabs(tab_labels)
-                            for ti, tlab in enumerate(tabs):
-                                with tlab:
-                                    st.caption(f"Loan {chr(ord('A') + ti)}")
-                                    if ti < len(dfs_use) and not dfs_use[ti].empty:
-                                        st.dataframe(
-                                            format_schedule_df(dfs_use[ti]),
-                                            width="stretch",
-                                            hide_index=True,
-                                            height=220,
-                                        )
-                                    else:
-                                        st.info("No schedule rows for this leg.")
+                            _leg_key = f"approve_split_schedule_leg_{int(selected_id)}"
+                            st.session_state.setdefault(_leg_key, tab_labels[0])
+                            if st.session_state.get(_leg_key) not in tab_labels:
+                                st.session_state[_leg_key] = tab_labels[0]
+                            st.radio(
+                                "Schedule leg",
+                                tab_labels,
+                                key=_leg_key,
+                                horizontal=True,
+                                label_visibility="collapsed",
+                            )
+                            ti = tab_labels.index(st.session_state[_leg_key])
+                            st.caption(f"Loan {chr(ord('A') + ti)}")
+                            if ti < len(dfs_use) and not dfs_use[ti].empty:
+                                st.dataframe(
+                                    format_schedule_df(dfs_use[ti]),
+                                    width="stretch",
+                                    hide_index=True,
+                                    height=220,
+                                )
+                            else:
+                                st.info("No schedule rows for this leg.")
                         elif df_schedule.empty:
                             st.info("No schedule found for this draft.")
                         else:

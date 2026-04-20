@@ -218,21 +218,22 @@ def _render_subscription_summary(row: dict, *, key_prefix: str) -> tuple[str, st
     if cycle not in ("Monthly", "Quarterly"):
         cycle = "Monthly"
 
+    today = date.today()
+
     c1, c2, c3 = st.columns([1, 1, 1], gap="small")
     with c1:
         st.metric("Tier", tier)
     with c2:
         st.metric("Billing cycle", cycle)
     with c3:
-        today = date.today()
         if pe is None:
-            st.metric("Period end", "-")
+            st.metric("Days to expiry", "—")
         elif today > pe:
             st.metric("Days overdue", (today - pe).days)
         else:
-            st.metric("Days until due", (pe - today).days)
+            st.metric("Days to expiry", (pe - today).days)
 
-    st.write(f"**Period:** {ps or '-'} -> **{pe or '-'}**")
+    st.write(f"**Period:** {ps or '-'} → **{pe or '-'}**")
     return tier, cycle, pe
 
 
@@ -480,7 +481,11 @@ def _render_vendor_subscription_tab(tenant_schema: str, user: dict, row: dict) -
     today = date.today()
     ac1, ac2 = st.columns(2, gap="small")
     with ac1:
-        tier_opts = ["Basic", "Premium"]
+        try:
+            vts = sub_repo.list_vendor_tiers()
+            tier_opts = [str(x["tier_name"]) for x in vts] or ["Basic", "Premium"]
+        except Exception:
+            tier_opts = ["Basic", "Premium"]
         st.selectbox(
             "Tier",
             tier_opts,

@@ -561,8 +561,9 @@ def render_loan_modification_tab(
         st.caption("Rework")
         st.write("")
         if st.button("See loans for rework", type="secondary", key="reamod_open_rework_top"):
-            st.session_state["farnda_main_nav_choice"] = "Loan management"
-            st.session_state["loan_mgmt_subnav"] = "Loan Capture"
+            from ui.loan_applications import queue_main_nav_after_widgets
+
+            queue_main_nav_after_widgets("Loan management", loan_mgmt_subnav="Loan Capture")
             st.session_state["capture_open_draft_panel"] = "rework"
             if loan_id is not None:
                 st.session_state["cap_rework_search"] = str(int(loan_id))

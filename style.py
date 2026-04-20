@@ -1665,6 +1665,7 @@ NAV_LABEL_ICONS: dict[str, str] = {
     "Home": "\U0001F3E0",
     "Admin Dashboard": "\U0001F6E1",
     "Customers": "\U0001F464",
+    "Loan pipeline": "\U0001F4CB",
     "Loan management": "\U0001F4B0",
     "Loan Capture": "\U0001F4DD",
     "Portfolio reports": "\U0001F4CA",

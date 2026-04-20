@@ -98,11 +98,11 @@ def render_accounting_ui(
         '<p class="farnda-acco-section-nav" aria-hidden="true"></p>',
         unsafe_allow_html=True,
     )
-    st.caption("Section")
-    st.selectbox(
+    st.radio(
         "Accounting section",
         tab_labels,
         key="accounting_subnav",
+        horizontal=True,
         label_visibility="collapsed",
     )
     _acco_active = st.session_state["accounting_subnav"]

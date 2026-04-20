@@ -18,6 +18,10 @@ from style import render_sub_sub_header
 _RBAC_UI_AREAS: tuple[tuple[str, Callable[[str], bool]], ...] = (
     ("Customers", lambda pk: pk == "nav.customers" or pk.startswith("customers.")),
     (
+        "Loan pipeline",
+        lambda pk: pk == "nav.loan_applications" or pk.startswith("loan_applications."),
+    ),
+    (
         "Loan management",
         lambda pk: pk == "nav.loan_management" or pk.startswith("loan_management."),
     ),
@@ -102,6 +106,7 @@ _SUBGROUP_BY_PK: dict[str, tuple[int, str]] = {
     "portfolio_reports.view_reports": (1, "1 · Reports (view-only analyses)"),
     "portfolio_reports.data_exports": (2, "2 · Data exports"),
     "nav.customers": (0, "Sidebar — open Customers"),
+    "nav.loan_applications": (0, "Sidebar — open Loan pipeline"),
     "customers.approve": (1, "1 · Approvals"),
     "customers.view_only": (2, "2 · View only (read-oriented)"),
     "customers.workspace": (3, "3 · Capture, agents & batch"),

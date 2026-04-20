@@ -405,7 +405,6 @@ def render_sidebar_option_menu(menu_keys: list[str], current_choice: str) -> str
             icons=[_section_option_menu_icon(section) for section in menu_keys],
             default_index=menu_keys.index(current_choice),
             orientation="vertical",
-            key="farnda_main_option_menu",
             styles={
                 "container": {
                     "padding": "0 !important",
@@ -1004,6 +1003,9 @@ def main():
         st.stop()
 
     # Logged in: show role-filtered sidebar
+    from ui.loan_applications import consume_loan_app_navigation_intent
+
+    consume_loan_app_navigation_intent()
     try:
         from eod.system_business_date import get_effective_date
 
@@ -1012,6 +1014,7 @@ def main():
         system_date = datetime.now().date()
 
     menu = build_menu_for_role(user["role"])
+    menu_before_subscription_filter = dict(menu)
     if user["role"] in ("ADMIN", "LOAN_OFFICER", "VENDOR", "SUPERADMIN"):
         from subscription.access import (
             filter_menu_for_subscription,
@@ -1038,6 +1041,22 @@ def main():
     nav_key = "farnda_main_nav_choice"
     menu_keys = list(menu.keys())
     current_choice = st.session_state.get(nav_key)
+    # Tier matrix may omit e.g. Loan management while programmatic nav (Jump to Loan Capture) already
+    # set session to that section — do not snap to menu_keys[0] (often Loan pipeline) on every rerun.
+    if (
+        current_choice
+        and current_choice not in menu
+        and current_choice in menu_before_subscription_filter
+    ):
+        try:
+            from rbac.guards import user_can_open_nav_section
+
+            if user_can_open_nav_section(user, current_choice):
+                menu = dict(menu)
+                menu[current_choice] = menu_before_subscription_filter[current_choice]
+                menu_keys = list(menu.keys())
+        except Exception:
+            pass
     if current_choice not in menu:
         current_choice = menu_keys[0]
         st.session_state[nav_key] = current_choice
@@ -1045,6 +1064,10 @@ def main():
     choice = render_sidebar_option_menu(menu_keys=menu_keys, current_choice=current_choice)
     st.session_state[nav_key] = choice
     render_sidebar_user_meta(user=user, system_date=system_date)
+    if user["role"] in ("ADMIN", "LOAN_OFFICER", "VENDOR", "SUPERADMIN"):
+        from subscription.access import get_subscription_snapshot, render_subscription_account_sidebar_status
+
+        render_subscription_account_sidebar_status(get_subscription_snapshot())
     from auth.ui import render_totp_recovery_regeneration_sidebar
 
     render_totp_recovery_regeneration_sidebar(user)

@@ -7,15 +7,21 @@ from __future__ import annotations
 import unittest
 from datetime import date
 from decimal import Decimal
+from unittest import mock
+
+import pandas as pd
 
 from reporting.portfolio_reporting import (
     ARREARS_BUCKET_KEYS,
+    MATURITY_BUCKET_KEYS,
     RESTRUCTURE_SCOPE_REMODIFIED,
     RESTRUCTURE_SCOPE_SPLIT,
     buckets_from_daily_balance_series,
     buckets_from_daily_flow_or_balance,
     bucket_arrears_for_loan,
     bucket_maturity_for_loan,
+    bucket_maturity_from_future_scheduled_cashflows,
+    build_debtor_creditor_maturity_gap_summary,
     restructure_scope_sql,
 )
 
@@ -175,6 +181,29 @@ def test_maturity_residual_goes_to_360p_when_no_future_principal():
     assert sum(b[k] for k in MATURITY_BUCKET_KEYS if k != "bkt_360p") == Decimal("0")
 
 
+def test_creditor_schedule_only_maturity_buckets_sum_line_amounts():
+    as_of = date(2026, 1, 15)
+    lines = [
+        {"Period": 1, "Date": "15-Feb-2026", "principal": 40, "interest": 1},
+        {"Period": 2, "Date": "15-Mar-2026", "principal": 60, "interest": 2},
+    ]
+    b_pr = bucket_maturity_from_future_scheduled_cashflows(as_of, schedule_lines=lines, view_type="principal")
+    assert sum(b_pr.values(), Decimal("0")) == Decimal("100")
+    b_cf = bucket_maturity_from_future_scheduled_cashflows(as_of, schedule_lines=lines, view_type="cash_flow")
+    assert sum(b_cf.values(), Decimal("0")) == Decimal("103")
+
+
+def test_maturity_creditor_schedule_line_column_names():
+    """``creditor_schedule_lines`` use lowercase principal/interest; maturity engine accepts them."""
+    as_of = date(2026, 1, 15)
+    lines = [
+        {"Period": 1, "Date": "15-Feb-2026", "principal": 50, "interest": 2},
+        {"Period": 2, "Date": "15-Mar-2026", "principal": 50, "interest": 2},
+    ]
+    b = bucket_maturity_for_loan(as_of, principal_not_due=Decimal("100"), schedule_lines=lines)
+    assert sum(b.values(), Decimal("0")) == Decimal("100")
+
+
 def test_regulatory_maturity_splits_8_14_vs_15_30():
     from reporting.portfolio_reporting import (
         REGULATORY_MATURITY_BUCKET_KEYS,
@@ -281,6 +310,21 @@ def test_arrears_fees_on_newest_past_due_when_no_pi_allocated():
     assert sum(b[k] for k in ARREARS_BUCKET_KEYS) == Decimal("10")
 
 
+def test_debtor_creditor_gap_summary_empty_sources():
+    as_of = date(2026, 1, 1)
+    with mock.patch(
+        "reporting.portfolio_reporting.build_maturity_profile_report", return_value=pd.DataFrame()
+    ), mock.patch(
+        "reporting.portfolio_reporting.build_creditor_maturity_profile_report",
+        return_value=pd.DataFrame(),
+    ):
+        df = build_debtor_creditor_maturity_gap_summary(as_of, active_only=True)
+    assert len(df) == len(MATURITY_BUCKET_KEYS) + 1
+    assert df.iloc[-1]["bucket"] == "TOTAL"
+    assert df.iloc[-1]["debtor_cash_inflows"] == 0.0
+    assert df.iloc[-1]["creditor_cash_outflows"] == 0.0
+
+
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
     for fn in (
@@ -299,8 +343,11 @@ def load_tests(loader, tests, pattern):
         test_arrears_penalty_uses_daily_series_when_provided,
         test_maturity_scales_to_principal_not_due,
         test_maturity_residual_goes_to_360p_when_no_future_principal,
+        test_creditor_schedule_only_maturity_buckets_sum_line_amounts,
+        test_maturity_creditor_schedule_line_column_names,
         test_regulatory_maturity_splits_8_14_vs_15_30,
         test_arrears_fees_on_newest_past_due_when_no_pi_allocated,
+        test_debtor_creditor_gap_summary_empty_sources,
     ):
         suite.addTest(unittest.FunctionTestCase(fn))
     return suite

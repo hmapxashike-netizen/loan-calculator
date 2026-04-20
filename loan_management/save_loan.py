@@ -10,6 +10,7 @@ import pandas as pd
 from decimal_utils import as_10dp
 
 from .approval_journal import build_loan_approval_journal_payload
+from .application_pipeline import ensure_agent_commission_accrual_for_loan
 from .cash_gl import (
     _post_event_for_loan,
     get_cached_source_cash_account_entries,
@@ -300,5 +301,22 @@ def save_loan(
             )
         except Exception as e:
             _logger.warning("Failed to post LOAN_APPROVAL journal for loan %s: %s", loan_id, e)
+
+    try:
+        _app_raw = details.get("source_application_id")
+        _app_id = None
+        if _app_raw is not None and str(_app_raw).strip() != "":
+            try:
+                _app_id = int(_app_raw)
+            except (TypeError, ValueError):
+                _app_id = None
+        ensure_agent_commission_accrual_for_loan(
+            int(loan_id),
+            application_id=_app_id,
+            created_by="save_loan",
+            post_gl=True,
+        )
+    except Exception as e:
+        _logger.warning("Failed to accrue agent commission for loan %s: %s", loan_id, e)
 
     return loan_id

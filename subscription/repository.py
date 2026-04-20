@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -11,12 +12,132 @@ from psycopg2.extras import RealDictCursor
 
 from config import get_database_url
 from db.tenant_session import validate_tenant_schema_name
+from subscription.nav_sections import LOAN_APP_SIDEBAR_SECTIONS
 
 _GRACE_UNSET = object()
+
+_NAV_ORDER: tuple[str, ...] = LOAN_APP_SIDEBAR_SECTIONS
+_NAV_SET: frozenset[str] = frozenset(_NAV_ORDER)
+
+_ALLOWED_NAV = "allowed_sidebar_sections"
+_BANK_RECON = "bank_reconciliation"
+
+_LEGACY_EXCLUDED = "excluded_sidebar_sections"
+_LEGACY_LOAN_CAPTURE = "loan_capture"
+
+
+def _canonical_allowed_list(candidate: list[str]) -> list[str]:
+    """Preserve global nav order; drop unknown labels."""
+    chosen = {str(x).strip() for x in candidate if str(x).strip() in _NAV_SET}
+    return [s for s in _NAV_ORDER if s in chosen]
+
+
+def merge_vendor_tier_features(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Normalised tier entitlements stored in vendor_subscription_tiers.features:
+
+    - ``allowed_sidebar_sections``: nav labels the tier may see (subset of LOAN_APP_SIDEBAR_SECTIONS).
+      Loan Capture is available iff **Loan management** is in this list.
+    - ``bank_reconciliation``: accounting bank-reconciliation tooling.
+
+    Migrates legacy keys ``excluded_sidebar_sections`` / ``loan_capture``.
+    """
+    full_allow = list(_NAV_ORDER)
+    default_out: dict[str, Any] = {
+        _ALLOWED_NAV: list(full_allow),
+        _BANK_RECON: True,
+    }
+    if not raw:
+        return dict(default_out)
+
+    r = dict(raw)
+
+    # New format takes precedence when key exists (even if []).
+    if _ALLOWED_NAV in r:
+        raw_list = r.get(_ALLOWED_NAV)
+        allowed = _canonical_allowed_list(raw_list if isinstance(raw_list, list) else [])
+        bank = bool(r.get(_BANK_RECON, True))
+        return {_ALLOWED_NAV: allowed, _BANK_RECON: bank}
+
+    # Legacy: exclusions + optional loan_capture / bank flags
+    excl_raw = r.get(_LEGACY_EXCLUDED)
+    excluded: set[str] = set()
+    if isinstance(excl_raw, list):
+        excluded = {str(x).strip() for x in excl_raw if str(x).strip() in _NAV_SET}
+
+    allowed = [s for s in _NAV_ORDER if s not in excluded]
+
+    bank = bool(r.get(_BANK_RECON, True))
+    # Legacy loan_capture=false did not remove Loan management from the sidebar list; capture used a
+    # separate gate. Matrix model ties capture to Loan management — migration keeps LM allowed here.
+    return {_ALLOWED_NAV: allowed, _BANK_RECON: bank}
 
 
 def _conn():
     return psycopg2.connect(get_database_url(), cursor_factory=RealDictCursor)
+
+
+def _normalize_vendor_catalog_single_active(cur) -> None:
+    """At most one tier may be catalog-active; prefer Premium if multiple legacy TRUE rows."""
+    cur.execute(
+        """
+        SELECT tier_name FROM public.vendor_subscription_tiers
+        WHERE is_active = TRUE
+        ORDER BY tier_name ASC
+        """
+    )
+    rows = cur.fetchall()
+    names = [str(r["tier_name"]) for r in rows] if rows else []
+    if len(names) <= 1:
+        return
+    preferred = "Premium" if "Premium" in names else names[-1]
+    cur.execute("UPDATE public.vendor_subscription_tiers SET is_active = FALSE")
+    cur.execute(
+        "UPDATE public.vendor_subscription_tiers SET is_active = TRUE WHERE tier_name = %s",
+        (preferred,),
+    )
+
+
+def _seed_default_tier_features_if_empty(cur) -> None:
+    """Legacy rows: empty JSON becomes catalog defaults for Basic / Premium (non-destructive)."""
+    basic_allow = [
+        s
+        for s in _NAV_ORDER
+        if s
+        not in (
+            "Notifications",
+            "Document Management",
+            "Portfolio reports",
+        )
+    ]
+    basic = json.dumps(
+        {
+            _ALLOWED_NAV: basic_allow,
+            _BANK_RECON: False,
+        }
+    )
+    premium = json.dumps(
+        {
+            _ALLOWED_NAV: list(_NAV_ORDER),
+            _BANK_RECON: True,
+        }
+    )
+    cur.execute(
+        """
+        UPDATE public.vendor_subscription_tiers
+        SET features = %s::jsonb
+        WHERE lower(trim(tier_name)) = 'basic' AND features = '{}'::jsonb
+        """,
+        (basic,),
+    )
+    cur.execute(
+        """
+        UPDATE public.vendor_subscription_tiers
+        SET features = %s::jsonb
+        WHERE lower(trim(tier_name)) = 'premium' AND features = '{}'::jsonb
+        """,
+        (premium,),
+    )
 
 
 def ensure_public_vendor_subscription_tiers(conn) -> None:
@@ -29,6 +150,7 @@ def ensure_public_vendor_subscription_tiers(conn) -> None:
                 monthly_fee    NUMERIC(20, 10) NOT NULL DEFAULT 0,
                 quarterly_fee  NUMERIC(20, 10) NOT NULL DEFAULT 0,
                 is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+                features       JSONB NOT NULL DEFAULT '{}'::jsonb,
                 updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT vendor_subscription_tiers_tier_name_nonempty
                     CHECK (length(trim(tier_name)) > 0)
@@ -37,11 +159,22 @@ def ensure_public_vendor_subscription_tiers(conn) -> None:
         )
         cur.execute(
             """
-            INSERT INTO public.vendor_subscription_tiers (tier_name, monthly_fee, quarterly_fee, is_active)
-            VALUES ('Basic', 0, 0, TRUE), ('Premium', 0, 0, TRUE)
+            ALTER TABLE public.vendor_subscription_tiers
+                ADD COLUMN IF NOT EXISTS features JSONB NOT NULL DEFAULT '{}'::jsonb;
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO public.vendor_subscription_tiers
+                (tier_name, monthly_fee, quarterly_fee, is_active, features)
+            VALUES
+                ('Basic', 0, 0, FALSE, '{}'::jsonb),
+                ('Premium', 0, 0, TRUE, '{}'::jsonb)
             ON CONFLICT (tier_name) DO NOTHING;
             """
         )
+        _seed_default_tier_features_if_empty(cur)
+        _normalize_vendor_catalog_single_active(cur)
     conn.commit()
 
 
@@ -114,7 +247,7 @@ def list_vendor_tiers() -> list[dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT tier_name, monthly_fee, quarterly_fee, is_active, updated_at
+                SELECT tier_name, monthly_fee, quarterly_fee, is_active, features, updated_at
                 FROM public.vendor_subscription_tiers
                 ORDER BY tier_name
                 """
@@ -125,30 +258,81 @@ def list_vendor_tiers() -> list[dict[str, Any]]:
         conn.close()
 
 
-def upsert_vendor_tier(
-    *,
-    tier_name: str,
-    monthly_fee: Decimal,
-    quarterly_fee: Decimal,
-    is_active: bool,
-) -> None:
+def get_vendor_tier_features(tier_name: str) -> dict[str, Any]:
+    """Merged entitlements for a vendor tier name (defaults to full access if tier row missing)."""
+    name = str(tier_name or "").strip()
+    if not name:
+        return merge_vendor_tier_features(None)
     conn = _conn()
     try:
         ensure_public_vendor_subscription_tiers(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO public.vendor_subscription_tiers
-                    (tier_name, monthly_fee, quarterly_fee, is_active, updated_at)
-                VALUES (%s, %s, %s, %s, NOW())
-                ON CONFLICT (tier_name) DO UPDATE SET
-                    monthly_fee = EXCLUDED.monthly_fee,
-                    quarterly_fee = EXCLUDED.quarterly_fee,
-                    is_active = EXCLUDED.is_active,
-                    updated_at = NOW()
+                SELECT features FROM public.vendor_subscription_tiers WHERE tier_name = %s
                 """,
-                (tier_name.strip(), monthly_fee, quarterly_fee, is_active),
+                (name,),
             )
+            row = cur.fetchone()
+        raw: dict[str, Any] | None = None
+        if row:
+            fv = row.get("features")
+            if isinstance(fv, dict):
+                raw = fv
+            elif isinstance(fv, str) and fv.strip():
+                try:
+                    raw = json.loads(fv)
+                except json.JSONDecodeError:
+                    raw = {}
+            elif fv is None:
+                raw = {}
+        return merge_vendor_tier_features(raw)
+    finally:
+        conn.close()
+
+
+def upsert_vendor_tier(
+    *,
+    tier_name: str,
+    monthly_fee: Decimal,
+    quarterly_fee: Decimal,
+    is_active: bool,
+    features: dict[str, Any] | None = None,
+) -> None:
+    conn = _conn()
+    try:
+        ensure_public_vendor_subscription_tiers(conn)
+        with conn.cursor() as cur:
+            merged_f = merge_vendor_tier_features(features) if features is not None else None
+            if merged_f is not None:
+                cur.execute(
+                    """
+                    INSERT INTO public.vendor_subscription_tiers
+                        (tier_name, monthly_fee, quarterly_fee, is_active, features, updated_at)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, NOW())
+                    ON CONFLICT (tier_name) DO UPDATE SET
+                        monthly_fee = EXCLUDED.monthly_fee,
+                        quarterly_fee = EXCLUDED.quarterly_fee,
+                        is_active = EXCLUDED.is_active,
+                        features = EXCLUDED.features,
+                        updated_at = NOW()
+                    """,
+                    (tier_name.strip(), monthly_fee, quarterly_fee, is_active, json.dumps(merged_f)),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO public.vendor_subscription_tiers
+                        (tier_name, monthly_fee, quarterly_fee, is_active, updated_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (tier_name) DO UPDATE SET
+                        monthly_fee = EXCLUDED.monthly_fee,
+                        quarterly_fee = EXCLUDED.quarterly_fee,
+                        is_active = EXCLUDED.is_active,
+                        updated_at = NOW()
+                    """,
+                    (tier_name.strip(), monthly_fee, quarterly_fee, is_active),
+                )
         conn.commit()
     finally:
         conn.close()

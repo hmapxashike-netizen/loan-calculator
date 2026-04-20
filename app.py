@@ -47,6 +47,14 @@ from style import (
     render_sub_header,
 )
 from ui.components import inject_tertiary_hyperlink_css_once
+from subscription.nav_sections import LOAN_APP_SIDEBAR_SECTIONS
+
+LOAN_APP_SECTIONS = list(LOAN_APP_SIDEBAR_SECTIONS)
+
+
+def get_loan_app_sections() -> list[str]:
+    return list(LOAN_APP_SECTIONS)
+
 
 try:
     from customers.core import (
@@ -54,6 +62,7 @@ try:
         create_corporate,
         create_corporate_with_entities,
         list_customers,
+        search_customers_by_name,
         get_customer,
         update_individual,
         update_corporate,
@@ -258,133 +267,62 @@ def _get_fx_rates() -> list[dict]:
     return _core_get_fx_rates(key="accounting_fx_rates")
 
 
+def _consumer_scheme_rate_basis(product_cfg: dict | None) -> str:
+    gls = (product_cfg or {}).get("global_loan_settings") or {}
+    rb = gls.get("rate_basis")
+    return rb if rb in {"Per month", "Per annum"} else "Per annum"
+
+
 def _get_consumer_schemes() -> list[dict]:
-    """Consumer schemes from system config (managed in System configurations)."""
-    return _get_system_config().get("consumer_schemes", [
-        {"name": "SSB", "interest_rate_pct": 7.0, "admin_fee_pct": 7.0},
-        {"name": "TPC", "interest_rate_pct": 7.0, "admin_fee_pct": 5.0},
-    ])
-
-
-def _consumer_schemes_admin_editor_ui(*, key_prefix: str) -> None:
     """
-    Admin editor for `system_config.consumer_schemes`.
+    Labels + rate pairs for consumer schedule matching (capture, calculators, modification).
 
-    Kept off by default and only shown on consumer-loan add/edit screens
-    to avoid cluttering the rest of the UI.
+    Built from each **active consumer-loan product**'s ``default_rates.consumer_loan`` and
+    ``global_loan_settings.rate_basis`` — configure under **System configurations → Products**,
+    not system-wide JSON.
     """
-    expander_label = "Manage consumer loan schemes (admin)"
-    with st.expander(expander_label, expanded=False):
-        schemes_current = _get_consumer_schemes()
-        draft_key = f"{key_prefix}_consumer_schemes_draft"
-        if draft_key not in st.session_state:
-            st.session_state[draft_key] = list(schemes_current) if schemes_current else []
-
-        draft: list[dict] = st.session_state.get(draft_key, []) or []
-
-        st.caption("Each scheme is used as a predefined interest/admin rate pair.")
-
-        cs_add_name = st.text_input("Scheme name", key=f"{key_prefix}_cs_add_name")
-        cs_add_interest = st.number_input(
-            "Interest rate (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=7.0,
-            step=0.1,
-            key=f"{key_prefix}_cs_add_interest",
+    if not _loan_management_available:
+        return []
+    rows: list[dict] = []
+    try:
+        products = list_products(active_only=True) or []
+    except Exception:
+        products = []
+    for p in products:
+        lt = str(p.get("loan_type") or "").strip().lower()
+        if lt != "consumer_loan":
+            continue
+        code = str(p.get("code") or "").strip()
+        if not code:
+            continue
+        try:
+            cfg = get_product_config_from_db(code) or {}
+        except Exception:
+            cfg = {}
+        dr = (cfg.get("default_rates") or {}).get("consumer_loan") or {}
+        ip = dr.get("interest_pct")
+        af = dr.get("admin_fee_pct")
+        if ip is None or af is None:
+            continue
+        try:
+            prb = _consumer_scheme_rate_basis(cfg)
+            ip_m = _pct_to_monthly(float(ip), prb)
+        except (TypeError, ValueError):
+            continue
+        if ip_m is None:
+            continue
+        pname = str(p.get("name") or code).strip() or code
+        label = f"{pname} ({code})"
+        rows.append(
+            {
+                "name": label,
+                "product_code": code,
+                "interest_rate_pct": float(ip_m),
+                "admin_fee_pct": float(af),
+            }
         )
-        cs_add_admin = st.number_input(
-            "Admin fee (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=5.0,
-            step=0.1,
-            key=f"{key_prefix}_cs_add_admin",
-        )
-
-        if st.button("Add / Update scheme", key=f"{key_prefix}_cs_add_update_btn"):
-            name = (cs_add_name or "").strip()
-            if not name:
-                st.error("Scheme name is required.")
-            elif name.lower() == "other":
-                st.error("Scheme name 'Other' is reserved by the UI.")
-            else:
-                entry = {
-                    "name": name,
-                    "interest_rate_pct": float(cs_add_interest),
-                    "admin_fee_pct": float(cs_add_admin),
-                }
-                replaced = False
-                for i, s in enumerate(draft):
-                    if (s or {}).get("name") == name:
-                        draft[i] = entry
-                        replaced = True
-                        break
-                if not replaced:
-                    draft.append(entry)
-
-                # De-dup by name while preserving order.
-                seen: set[str] = set()
-                deduped: list[dict] = []
-                for s in draft:
-                    n = (s or {}).get("name")
-                    if n and n not in seen:
-                        deduped.append(s)
-                        seen.add(n)
-                st.session_state[draft_key] = deduped
-                st.success(f"Draft updated for scheme '{name}'.")
-                st.rerun()
-
-        if st.button("Reload from DB", key=f"{key_prefix}_cs_reload_btn"):
-            st.session_state[draft_key] = list(schemes_current) if schemes_current else []
-            st.success("Reloaded schemes from system config.")
-            st.rerun()
-
-        st.markdown("**Configured schemes:**")
-        if not draft:
-            st.info("No consumer schemes configured yet.")
-        else:
-            for s in draft:
-                name = (s or {}).get("name") or ""
-                if not name:
-                    continue
-                interest_pct = float((s or {}).get("interest_rate_pct", 0.0) or 0.0)
-                admin_fee_pct = float((s or {}).get("admin_fee_pct", 0.0) or 0.0)
-                cols = st.columns([3, 2, 2, 1])
-                cols[0].markdown(f"**{name}**")
-                cols[1].markdown(f"{interest_pct:.2f}%")
-                cols[2].markdown(f"{admin_fee_pct:.2f}%")
-                if cols[3].button("Remove", key=f"{key_prefix}_cs_remove_{name}"):
-                    st.session_state[draft_key] = [x for x in draft if (x or {}).get("name") != name]
-                    st.rerun()
-
-        if st.button("Save schemes to system config (DB)", type="primary", key=f"{key_prefix}_cs_save_btn"):
-            try:
-                clean: list[dict] = []
-                for s in st.session_state.get(draft_key, []) or []:
-                    n = (s or {}).get("name")
-                    if not n:
-                        continue
-                    clean.append(
-                        {
-                            "name": str(n),
-                            "interest_rate_pct": float((s or {}).get("interest_rate_pct", 0.0) or 0.0),
-                            "admin_fee_pct": float((s or {}).get("admin_fee_pct", 0.0) or 0.0),
-                        }
-                    )
-
-                from loan_management import save_system_config_to_db
-
-                sys_cfg_new = dict(_get_system_config())
-                sys_cfg_new["consumer_schemes"] = clean
-                if save_system_config_to_db(sys_cfg_new):
-                    st.session_state["system_config"] = sys_cfg_new
-                    st.success("Consumer schemes saved.")
-                    st.rerun()
-                else:
-                    st.error("Failed to save consumer schemes.")
-            except Exception as e:
-                st.error(f"Failed to save: {e}")
+    rows.sort(key=lambda r: str(r.get("name") or ""))
+    return rows
 
 
 def _get_global_loan_settings() -> dict:
@@ -549,7 +487,6 @@ def system_configurations_ui():
 
     render_system_configurations_ui(
         get_system_config=_get_system_config,
-        consumer_schemes_admin_editor_ui=_consumer_schemes_admin_editor_ui,
         parse_display_substrings_csv=_parse_display_substrings_csv,
         customers_available=_customers_available,
         list_sectors=_list_sectors,
@@ -872,6 +809,27 @@ def update_loans_ui():
         list_provision_security_subtypes=list_provision_security_subtypes,
     )
 
+def loan_applications_ui():
+    from ui.loan_applications import render_loan_applications_ui
+
+    _scn = globals().get("search_customers_by_name")
+    render_loan_applications_ui(
+        loan_management_available=_loan_management_available,
+        loan_management_error=_loan_management_error,
+        customers_available=_customers_available,
+        search_customers_by_name=_scn if callable(_scn) else (lambda *a, **k: []),
+        get_customer=globals().get("get_customer"),
+        get_display_name=globals().get("get_display_name") or (lambda _id: ""),
+        create_individual=globals().get("create_individual"),
+        create_corporate_with_entities=globals().get("create_corporate_with_entities"),
+        get_consumer_schemes=_get_consumer_schemes if _loan_management_available else (lambda: []),
+        list_sectors=globals().get("list_sectors") or (lambda: []),
+        list_subsectors=globals().get("list_subsectors") or (lambda *a, **k: []),
+        list_agents=list_agents,
+        get_loan=globals().get("get_loan"),
+    )
+
+
 def approve_loans_ui():
     from ui.loan_management import render_approve_loans_ui
 
@@ -960,7 +918,6 @@ def view_schedule_ui():
         format_schedule_df=_format_schedule_df,
         schedule_export_downloads=_schedule_export_downloads,
     )
-
 
 
 def teller_ui():
@@ -1223,6 +1180,13 @@ def document_management_ui():
 def main():
     # Stage 5: ensure core session state exists early.
     ensure_core_session_state()
+    # Loan applications "Add Individual/Corporate" sets this; must apply before sidebar.radio or widget state overrides it.
+    from ui.loan_applications import consume_loan_app_navigation_intent
+
+    consume_loan_app_navigation_intent()
+    _nav_legacy = st.session_state.get("farnda_app_section_nav")
+    if _nav_legacy == "Loan applications":
+        st.session_state["farnda_app_section_nav"] = "Loan pipeline"
     inject_farnda_global_styles_once()
     inject_tertiary_hyperlink_css_once()
     _nav_sections = get_loan_app_sections()
@@ -1238,28 +1202,6 @@ def main():
     )
     st.sidebar.divider()
     render_loan_app_section(nav)
-
-
-LOAN_APP_SECTIONS = [
-    "Customers",
-    "Loan management",
-    "Creditor loans",
-    "Portfolio reports",
-    "Teller",
-    "Reamortisation",
-    "Statements",
-    "Accounting",
-    "Journals",
-    "Notifications",
-    "Document Management",
-    "End of day",
-    "System configurations",
-    "Subscription",
-]
-
-
-def get_loan_app_sections() -> list[str]:
-    return list(LOAN_APP_SECTIONS)
 
 
 def render_loan_app_section(nav: str) -> None:
@@ -1281,6 +1223,8 @@ def render_loan_app_section(nav: str) -> None:
         return
     if nav == "Customers":
         customers_ui()
+    elif nav == "Loan pipeline":
+        loan_applications_ui()
     elif nav == "Teller":
         teller_ui()
     elif nav == "Reamortisation":
@@ -1297,10 +1241,21 @@ def render_loan_app_section(nav: str) -> None:
         render_creditor_loans_ui(
             get_system_date=_get_system_date,
             get_cached_source_cash_account_entries=get_cached_source_cash_account_entries,
+            documents_available=_documents_available,
+            list_document_categories=globals().get("list_document_categories"),
+            upload_document=globals().get("upload_document"),
+            money_df_column_config=_money_df_column_config,
         )
     elif nav == "Loan management":
         # Single subnav + one active branch: avoids ``st.tabs`` running every tab body on each rerun.
+        # Legacy session: old tab label inside Loan management — migrate to Loan Capture without
+        # forcing the sidebar to Loan pipeline (that broke Loan Capture workflow / Jump from pipeline).
+        if st.session_state.get("loan_mgmt_subnav") == "Loan applications":
+            st.session_state["loan_mgmt_subnav"] = "Loan Capture"
+            st.rerun()
         _lm_sections = ["Loan Capture"]
+        if _user_can_loan_batch_capture_tab():
+            _lm_sections.append("Batch Capture")
         if _user_can_loan_schedules_repayments_tab():
             _lm_sections.append("Schedules & repayments")
         _lm_sections.extend(
@@ -1312,8 +1267,6 @@ def render_loan_app_section(nav: str) -> None:
         )
         if _user_can_loan_approve_tab():
             _lm_sections.append("Approve Loans")
-        if _user_can_loan_batch_capture_tab():
-            _lm_sections.insert(1, "Batch Capture")
         _lm_legacy = {
             "Loan capture": "Loan Capture",
             "Batch capture": "Batch Capture",
@@ -1348,6 +1301,10 @@ def render_loan_app_section(nav: str) -> None:
         _lm_active = st.session_state["loan_mgmt_subnav"]
 
         if _lm_active == "Loan Capture":
+            # Pipeline "Jump to Loan Capture" stores this flash, but Loan pipeline UI does not rerun here — show it once on capture.
+            _lm_pipe_flash = st.session_state.pop("loan_apps_flash", None)
+            if _lm_pipe_flash:
+                st.success(_lm_pipe_flash)
             try:
                 from subscription.access import basic_tier_hide_loan_capture
 
@@ -1355,7 +1312,11 @@ def render_loan_app_section(nav: str) -> None:
             except Exception:
                 _hide_capture = False
             if _hide_capture:
-                st.warning("Loan capture (origination) requires a **Premium** subscription.")
+                st.warning(
+                    "Loan **capture** is off for your subscription tier — **Loan management** is not enabled "
+                    "for this tier in **System configurations → Subscription vendor**. Ask your administrator "
+                    "to tick **Loan management** for your tier (or upgrade tier under **Subscription**)."
+                )
             else:
                 inject_tertiary_hyperlink_css_once()
                 st.session_state.setdefault("capture_open_draft_panel", None)

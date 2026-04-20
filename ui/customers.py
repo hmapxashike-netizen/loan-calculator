@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from html import escape
+import time
 
 import pandas as pd
 import streamlit as st
@@ -19,6 +20,14 @@ from constants import (
     CORPORATE_DOC_TYPES,
     INDIVIDUAL_DOC_TYPES,
 )
+
+from customers.national_id_validation import (
+    NATIONAL_ID_FORMAT_HELP,
+    is_valid_national_id_format,
+    normalize_national_id_input,
+)
+
+from ui.loan_applications import _SK_CUSTOMER, _SK_INNER_TAB_INTENT, _SK_RETURN_FROM_CUSTOMER
 
 
 def _fmt_status_filter(v: str) -> str:
@@ -96,6 +105,37 @@ def _format_commission_display(v: object) -> str:
         return str(v)
 
 
+def _maybe_return_to_loan_applications_after_customer_create(customer_id: int) -> None:
+    """If user opened Add Individual/Corporate from Loan applications, jump back to stage 2 after save."""
+    ctx = st.session_state.get(_SK_RETURN_FROM_CUSTOMER)
+    if ctx is True:
+        # Legacy/stale boolean from earlier versions: clear it so manual customer creation never auto-links.
+        st.session_state.pop(_SK_RETURN_FROM_CUSTOMER, None)
+        return
+    if not isinstance(ctx, dict):
+        return
+    if ctx.get("source") != "loan_applications":
+        st.session_state.pop(_SK_RETURN_FROM_CUSTOMER, None)
+        return
+    try:
+        expires_at = float(ctx.get("expires_at") or 0)
+    except (TypeError, ValueError):
+        expires_at = 0.0
+    if expires_at and time.time() > expires_at:
+        st.session_state.pop(_SK_RETURN_FROM_CUSTOMER, None)
+        return
+    st.session_state.pop(_SK_RETURN_FROM_CUSTOMER, None)
+    st.session_state[_SK_CUSTOMER] = int(customer_id)
+    from ui.loan_applications import queue_main_nav_after_widgets
+
+    queue_main_nav_after_widgets("Loan pipeline")
+    st.session_state[_SK_INNER_TAB_INTENT] = "Loan Application"
+    st.session_state["loan_apps_flash"] = (
+        f"Customer **#{customer_id}** saved — complete **Step 2 — File a Loan Application** below."
+    )
+    st.rerun()
+
+
 def render_add_individual_tab(
     *,
     customers_available: bool,
@@ -115,7 +155,12 @@ def render_add_individual_tab(
         with ir1a:
             name = st.text_input("Full Name *", placeholder="e.g. John Doe", key="ind_full_name")
         with ir1b:
-            national_id = st.text_input("National ID", placeholder="Optional", key="ind_national_id")
+            national_id = st.text_input(
+                "National ID *",
+                placeholder="e.g. 1234567A12 or 12345678A12",
+                key="ind_national_id",
+                help=NATIONAL_ID_FORMAT_HELP,
+            )
         with ir1c:
             phone1 = st.text_input("Phone 1", placeholder="Optional", key="ind_phone1")
         with ir1d:
@@ -233,7 +278,7 @@ def render_add_individual_tab(
                 st.info("Document Module Is Unavailable.")
 
         submitted = st.form_submit_button("Create individual", type="primary")
-        if submitted and name.strip():
+        if submitted and name.strip() and is_valid_national_id_format(national_id):
             addresses = None
             if use_addr and line1.strip():
                 addresses = [
@@ -248,9 +293,10 @@ def render_add_individual_tab(
                     }
                 ]
             try:
+                nid_store = normalize_national_id_input(national_id)
                 cid = create_individual(
                     name=name.strip(),
-                    national_id=national_id.strip() or None,
+                    national_id=nid_store,
                     employer_details=employer_details.strip() or None,
                     phone1=phone1.strip() or None,
                     phone2=phone2.strip() or None,
@@ -287,10 +333,13 @@ def render_add_individual_tab(
                     if doc_count > 0:
                         st.success(f"Successfully Uploaded {doc_count} Documents.")
                 st.session_state["ind_docs_staged"] = []
+                _maybe_return_to_loan_applications_after_customer_create(int(cid))
             except Exception as e:
                 st.error(f"Could Not Create Customer: {e}")
         elif submitted and not name.strip():
             st.warning("Please Enter A Name.")
+        elif submitted and name.strip() and not is_valid_national_id_format(national_id):
+            st.error(f"National ID is required and must match: {NATIONAL_ID_FORMAT_HELP}.")
 
 
 def render_add_corporate_tab(
@@ -361,7 +410,11 @@ def render_add_corporate_tab(
             with cp1:
                 cp_name = st.text_input("Full Name", key="corp_cp_name")
             with cp2:
-                cp_national_id = st.text_input("National ID", key="corp_cp_national_id")
+                cp_national_id = st.text_input(
+                    "National ID * (signatory)",
+                    key="corp_cp_national_id",
+                    help=NATIONAL_ID_FORMAT_HELP,
+                )
             with cp3:
                 cp_designation = st.text_input("Designation", key="corp_cp_designation")
             with cp4:
@@ -429,7 +482,11 @@ def render_add_corporate_tab(
             with dz1:
                 dir_name = st.text_input("Director Full Name", key="corp_dir_name")
             with dz2:
-                dir_national_id = st.text_input("Director National ID", key="corp_dir_national_id")
+                dir_national_id = st.text_input(
+                    "Director National ID *",
+                    key="corp_dir_national_id",
+                    help=NATIONAL_ID_FORMAT_HELP,
+                )
             with dz3:
                 dir_designation = st.text_input("Director Designation", key="corp_dir_designation")
             with dz4:
@@ -560,104 +617,148 @@ def render_add_corporate_tab(
         submitted = st.form_submit_button("Create corporate", type="primary")
         if submitted and legal_name.strip():
             addresses = [{"address_type": addr_type or None, "line1": line1 or None, "line2": line2 or None, "city": city or None, "region": region or None, "postal_code": postal_code or None, "country": country or None}] if use_addr and line1.strip() else None
-            contact_person = None
+            validation_errs: list[str] = []
             if use_cp and cp_name.strip():
-                contact_person = {"full_name": cp_name.strip(), "national_id": cp_national_id.strip() or None, "designation": cp_designation.strip() or None, "phone1": cp_phone1.strip() or None, "phone2": cp_phone2.strip() or None, "email": cp_email.strip() or None, "address_line1": cp_addr1.strip() or None, "address_line2": cp_addr2.strip() or None, "city": cp_city.strip() or None, "country": cp_country.strip() or None}
-            directors = [{"full_name": dir_name.strip(), "national_id": dir_national_id.strip() or None, "designation": dir_designation.strip() or None, "phone1": dir_phone1.strip() or None, "phone2": dir_phone2.strip() or None, "email": dir_email.strip() or None, "address_line1": None, "address_line2": None, "city": None, "country": None}] if use_dir and dir_name.strip() else None
-            shareholders = [{"full_name": sh_name.strip(), "national_id": sh_national_id.strip() or None, "designation": sh_designation.strip() or None, "phone1": sh_phone1.strip() or None, "phone2": sh_phone2.strip() or None, "email": sh_email.strip() or None, "address_line1": None, "address_line2": None, "city": None, "country": None, "shareholding_pct": sh_pct}] if use_sh and sh_name.strip() else None
-            try:
-                created = create_corporate_with_entities(
-                    legal_name=legal_name.strip(),
-                    trading_name=trading_name.strip() or None,
-                    reg_number=reg_number.strip() or None,
-                    tin=tin.strip() or None,
-                    addresses=addresses,
-                    contact_person=contact_person,
-                    directors=directors,
-                    shareholders=shareholders,
-                    sector_id=corp_sector_id,
-                    subsector_id=corp_subsector_id,
+                if not is_valid_national_id_format(cp_national_id):
+                    validation_errs.append(
+                        f"Contact person (signatory): national ID must be {NATIONAL_ID_FORMAT_HELP}."
+                    )
+            if use_dir and dir_name.strip():
+                if not is_valid_national_id_format(dir_national_id):
+                    validation_errs.append(
+                        f"Director: national ID must be {NATIONAL_ID_FORMAT_HELP}."
+                    )
+            if validation_errs:
+                for msg in validation_errs:
+                    st.error(msg)
+            else:
+                contact_person = None
+                if use_cp and cp_name.strip():
+                    contact_person = {
+                        "full_name": cp_name.strip(),
+                        "national_id": normalize_national_id_input(cp_national_id),
+                        "designation": cp_designation.strip() or None,
+                        "phone1": cp_phone1.strip() or None,
+                        "phone2": cp_phone2.strip() or None,
+                        "email": cp_email.strip() or None,
+                        "address_line1": cp_addr1.strip() or None,
+                        "address_line2": cp_addr2.strip() or None,
+                        "city": cp_city.strip() or None,
+                        "country": cp_country.strip() or None,
+                    }
+                directors = (
+                    [
+                        {
+                            "full_name": dir_name.strip(),
+                            "national_id": normalize_national_id_input(dir_national_id),
+                            "designation": dir_designation.strip() or None,
+                            "phone1": dir_phone1.strip() or None,
+                            "phone2": dir_phone2.strip() or None,
+                            "email": dir_email.strip() or None,
+                            "address_line1": None,
+                            "address_line2": None,
+                            "city": None,
+                            "country": None,
+                        }
+                    ]
+                    if use_dir and dir_name.strip()
+                    else None
                 )
-                cid = int(created["customer_id"])
-                st.success(f"Corporate Customer Created. Customer ID: **{cid}**.")
+                shareholders = [{"full_name": sh_name.strip(), "national_id": sh_national_id.strip() or None, "designation": sh_designation.strip() or None, "phone1": sh_phone1.strip() or None, "phone2": sh_phone2.strip() or None, "email": sh_email.strip() or None, "address_line1": None, "address_line2": None, "city": None, "country": None, "shareholding_pct": sh_pct}] if use_sh and sh_name.strip() else None
+                try:
+                    created = create_corporate_with_entities(
+                        legal_name=legal_name.strip(),
+                        trading_name=trading_name.strip() or None,
+                        reg_number=reg_number.strip() or None,
+                        tin=tin.strip() or None,
+                        addresses=addresses,
+                        contact_person=contact_person,
+                        directors=directors,
+                        shareholders=shareholders,
+                        sector_id=corp_sector_id,
+                        subsector_id=corp_subsector_id,
+                    )
+                    cid = int(created["customer_id"])
+                    st.success(f"Corporate Customer Created. Customer ID: **{cid}**.")
 
-                staged_corp_docs = st.session_state.get("corp_docs_staged") or []
-                if documents_available and staged_corp_docs:
-                    doc_count = 0
-                    for row in staged_corp_docs:
-                        cat_id = row["category_id"]
-                        f = row["file"]
-                        notes = row.get("notes") or ""
-                        try:
-                            upload_document(
-                                "customer",
-                                cid,
-                                cat_id,
-                                f.name,
-                                f.type,
-                                f.size,
-                                f.getvalue(),
-                                uploaded_by="System User",
-                                notes=notes,
-                            )
-                            doc_count += 1
-                        except Exception as e:
-                            st.error(f"Failed to upload {f.name}: {e}")
-                    if doc_count > 0:
-                        st.success(f"Successfully Uploaded {doc_count} Documents.")
-                staged_contact_docs = st.session_state.get("corp_contact_docs_staged") or []
-                contact_ids = created.get("contact_person_ids") or []
-                if documents_available and staged_contact_docs and contact_ids:
-                    cp_id = int(contact_ids[0])
-                    cp_count = 0
-                    for row in staged_contact_docs:
-                        try:
-                            upload_document(
-                                "contact_person",
-                                cp_id,
-                                row["category_id"],
-                                row["file"].name,
-                                row["file"].type,
-                                row["file"].size,
-                                row["file"].getvalue(),
-                                uploaded_by="System User",
-                                notes=row.get("notes") or "",
-                            )
-                            cp_count += 1
-                        except Exception as e:
-                            st.error(f"Failed to upload contact person doc {row['file'].name}: {e}")
-                    if cp_count > 0:
-                        st.success(f"Uploaded {cp_count} Contact Person Document(s).")
-                staged_director_docs = st.session_state.get("corp_director_docs_staged") or []
-                director_ids = created.get("director_ids") or []
-                if documents_available and staged_director_docs and director_ids:
-                    dir_id = int(director_ids[0])
-                    dir_count = 0
-                    for row in staged_director_docs:
-                        try:
-                            upload_document(
-                                "director",
-                                dir_id,
-                                row["category_id"],
-                                row["file"].name,
-                                row["file"].type,
-                                row["file"].size,
-                                row["file"].getvalue(),
-                                uploaded_by="System User",
-                                notes=row.get("notes") or "",
-                            )
-                            dir_count += 1
-                        except Exception as e:
-                            st.error(f"Failed to upload director doc {row['file'].name}: {e}")
-                    if dir_count > 0:
-                        st.success(f"Uploaded {dir_count} Director Document(s).")
-                st.session_state["corp_docs_staged"] = []
-                st.session_state["corp_contact_docs_staged"] = []
-                st.session_state["corp_director_docs_staged"] = []
+                    staged_corp_docs = st.session_state.get("corp_docs_staged") or []
+                    if documents_available and staged_corp_docs:
+                        doc_count = 0
+                        for row in staged_corp_docs:
+                            cat_id = row["category_id"]
+                            f = row["file"]
+                            notes = row.get("notes") or ""
+                            try:
+                                upload_document(
+                                    "customer",
+                                    cid,
+                                    cat_id,
+                                    f.name,
+                                    f.type,
+                                    f.size,
+                                    f.getvalue(),
+                                    uploaded_by="System User",
+                                    notes=notes,
+                                )
+                                doc_count += 1
+                            except Exception as e:
+                                st.error(f"Failed to upload {f.name}: {e}")
+                        if doc_count > 0:
+                            st.success(f"Successfully Uploaded {doc_count} Documents.")
+                    staged_contact_docs = st.session_state.get("corp_contact_docs_staged") or []
+                    contact_ids = created.get("contact_person_ids") or []
+                    if documents_available and staged_contact_docs and contact_ids:
+                        cp_id = int(contact_ids[0])
+                        cp_count = 0
+                        for row in staged_contact_docs:
+                            try:
+                                upload_document(
+                                    "contact_person",
+                                    cp_id,
+                                    row["category_id"],
+                                    row["file"].name,
+                                    row["file"].type,
+                                    row["file"].size,
+                                    row["file"].getvalue(),
+                                    uploaded_by="System User",
+                                    notes=row.get("notes") or "",
+                                )
+                                cp_count += 1
+                            except Exception as e:
+                                st.error(f"Failed to upload contact person doc {row['file'].name}: {e}")
+                        if cp_count > 0:
+                            st.success(f"Uploaded {cp_count} Contact Person Document(s).")
+                    staged_director_docs = st.session_state.get("corp_director_docs_staged") or []
+                    director_ids = created.get("director_ids") or []
+                    if documents_available and staged_director_docs and director_ids:
+                        dir_id = int(director_ids[0])
+                        dir_count = 0
+                        for row in staged_director_docs:
+                            try:
+                                upload_document(
+                                    "director",
+                                    dir_id,
+                                    row["category_id"],
+                                    row["file"].name,
+                                    row["file"].type,
+                                    row["file"].size,
+                                    row["file"].getvalue(),
+                                    uploaded_by="System User",
+                                    notes=row.get("notes") or "",
+                                )
+                                dir_count += 1
+                            except Exception as e:
+                                st.error(f"Failed to upload director doc {row['file'].name}: {e}")
+                        if dir_count > 0:
+                            st.success(f"Uploaded {dir_count} Director Document(s).")
+                    st.session_state["corp_docs_staged"] = []
+                    st.session_state["corp_contact_docs_staged"] = []
+                    st.session_state["corp_director_docs_staged"] = []
+                    _maybe_return_to_loan_applications_after_customer_create(cid)
 
-            except Exception as e:
-                st.error(f"Could Not Create Customer: {e}")
-                st.exception(e)
+                except Exception as e:
+                    st.error(f"Could Not Create Customer: {e}")
+                    st.exception(e)
         elif submitted and not legal_name.strip():
             st.warning("Please Enter A Legal Name.")
 
@@ -1612,6 +1713,14 @@ def render_customers_ui(
         return
 
     inject_tertiary_hyperlink_css_once()
+    _ret_ctx = st.session_state.get(_SK_RETURN_FROM_CUSTOMER)
+    if isinstance(_ret_ctx, dict):
+        try:
+            _exp = float(_ret_ctx.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            _exp = 0.0
+        if _exp and time.time() > _exp:
+            st.session_state.pop(_SK_RETURN_FROM_CUSTOMER, None)
 
     try:
         from rbac.subfeature_access import (
@@ -1656,14 +1765,19 @@ def render_customers_ui(
         '<p class="farnda-cust-section-nav" aria-hidden="true"></p>',
         unsafe_allow_html=True,
     )
-    st.caption("Section")
-    st.selectbox(
+    st.radio(
         "Customers section",
         _cust_nav,
         key="customers_subnav",
+        horizontal=True,
         label_visibility="collapsed",
     )
     _cust_active = st.session_state["customers_subnav"]
+    if st.session_state.get(_SK_RETURN_FROM_CUSTOMER) and _cust_active not in (
+        "Add Individual",
+        "Add Corporate",
+    ):
+        st.session_state.pop(_SK_RETURN_FROM_CUSTOMER, None)
 
     if _cust_active == "Add Individual":
         render_add_individual_tab(

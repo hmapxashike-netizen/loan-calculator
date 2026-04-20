@@ -51,13 +51,28 @@ def all_permission_records() -> tuple[PermissionRecord, ...]:
             nav_section="Customers",
         ),
         PermissionRecord(
+            permission_key="nav.loan_applications",
+            label="Loan pipeline",
+            category="Navigation",
+            summary="Loan prospect pipeline separate from Loan Capture: customers, filings, status, link booked loans.",
+            grants_md=_md_bullets(
+                (
+                    "Open **Loan pipeline** from the sidebar (standalone from Loan Capture).",
+                    "Pipeline status definitions stay under **System configurations → Loan pipeline**.",
+                )
+            ),
+            risk_tag="standard",
+            grant_restricted_to_superadmin=False,
+            nav_section="Loan pipeline",
+        ),
+        PermissionRecord(
             permission_key="nav.loan_management",
             label="Loan management",
             category="Navigation",
             summary="Origination, schedules, approvals, and loan maintenance.",
             grants_md=_md_bullets(
                 (
-                    "Access loan capture, schedules, calculators, updates, suspense, and approvals.",
+                    "Access loan capture, schedules, calculators, updates, suspense, and approvals (loan prospect pipeline has its own sidebar section: **Loan pipeline**).",
                     "**Batch loan capture (migration)** is a separate permission (see **Loan management — batch loan capture**).",
                     "Subscription may still hide some sub-areas (e.g. capture on basic tier).",
                 )

@@ -40,11 +40,22 @@ def render_financial_reports_tab(
         )
     except Exception:
         month_bounds = None
-    rep_tb, rep_pl, rep_bs, rep_eq, rep_cf, rep_snap = st.tabs([
+    _fin_tabs = [
         "Trial Balance", "Profit & Loss", "Balance Sheet", "Statement of Equity", "Cash Flow", "Snapshots"
-    ])
+    ]
+    st.session_state.setdefault("financial_reports_subnav", _fin_tabs[0])
+    if st.session_state["financial_reports_subnav"] not in _fin_tabs:
+        st.session_state["financial_reports_subnav"] = _fin_tabs[0]
+    st.radio(
+        "Financial report type",
+        _fin_tabs,
+        key="financial_reports_subnav",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    _fin_active = st.session_state["financial_reports_subnav"]
 
-    with rep_tb:
+    if _fin_active == "Trial Balance":
         st.markdown("### Trial Balance")
         sys_date = get_system_date()
         tb_as_of = st.date_input("As of Date", value=sys_date, key="tb_as_of")
@@ -69,7 +80,7 @@ def render_financial_reports_tab(
             else:
                 st.info("No data.")
 
-    with rep_pl:
+    elif _fin_active == "Profit & Loss":
         st.markdown("### Profit and Loss")
         st.caption(
             "Period amounts exclude month-end P&L closing journals; nominal clearing to equity in the GL is unchanged."
@@ -98,7 +109,7 @@ def render_financial_reports_tab(
             else:
                 st.info("No data.")
 
-    with rep_bs:
+    elif _fin_active == "Balance Sheet":
         st.markdown("### Balance Sheet")
         sys_date = get_system_date()
         col_bs1, col_bs2 = st.columns(2)
@@ -162,7 +173,7 @@ def render_financial_reports_tab(
             else:
                 st.info("No data.")
 
-    with rep_eq:
+    elif _fin_active == "Statement of Equity":
         st.markdown("### Statement of Changes in Equity")
         sys_date = get_system_date()
         eq_dates = st.date_input(
@@ -188,7 +199,7 @@ def render_financial_reports_tab(
             else:
                 st.info("No data.")
 
-    with rep_cf:
+    elif _fin_active == "Cash Flow":
         st.markdown("### Statement of Cash Flows (Indirect)")
         sys_date = get_system_date()
         cf_dates = st.date_input(
@@ -207,7 +218,7 @@ def render_financial_reports_tab(
             cf = reports.get_cash_flow_statement(cf_start, cf_as_of)
             st.json(cf)
 
-    with rep_snap:
+    elif _fin_active == "Snapshots":
         st.markdown("### Statement Snapshot History")
         st.caption(
             "View immutable month-end and year-end financial statements captured at accounting period close."

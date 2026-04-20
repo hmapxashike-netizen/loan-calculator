@@ -232,3 +232,200 @@ def _ensure_loan_approval_drafts_table(conn: Any) -> None:
             END $$;
             """
         )
+
+
+def _ensure_loan_applications_schema(conn: Any) -> None:
+    """Idempotent DDL for loan_applications, ref sequences, commission accrual stub, and FK columns."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS loan_application_ref_sequences (
+                prefix VARCHAR(8) PRIMARY KEY,
+                next_num INTEGER NOT NULL DEFAULT 1
+            );
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS loan_applications (
+                id BIGSERIAL PRIMARY KEY,
+                reference_number VARCHAR(32) NOT NULL UNIQUE,
+                customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+                national_id TEXT,
+                requested_principal NUMERIC(22, 10),
+                product_code VARCHAR(64),
+                status VARCHAR(64) NOT NULL DEFAULT 'PROSPECT',
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                loan_id INTEGER UNIQUE REFERENCES loans(id) ON DELETE SET NULL,
+                superseded_at TIMESTAMPTZ,
+                superseded_by_id BIGINT REFERENCES loan_applications(id) ON DELETE SET NULL,
+                deleted_at TIMESTAMPTZ,
+                deleted_by VARCHAR(128),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_by VARCHAR(128)
+            );
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_loan_applications_customer ON loan_applications(customer_id) "
+            "WHERE deleted_at IS NULL;"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_loan_applications_agent ON loan_applications(agent_id) "
+            "WHERE deleted_at IS NULL;"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_loan_applications_status ON loan_applications(status, updated_at) "
+            "WHERE deleted_at IS NULL;"
+        )
+        cur.execute(
+            """
+            ALTER TABLE loans
+            ADD COLUMN IF NOT EXISTS source_application_id BIGINT
+            REFERENCES loan_applications(id) ON DELETE SET NULL;
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_loans_source_application_id ON loans(source_application_id);"
+        )
+        cur.execute(
+            """
+            ALTER TABLE loan_approval_drafts
+            ADD COLUMN IF NOT EXISTS application_id BIGINT
+            REFERENCES loan_applications(id) ON DELETE SET NULL;
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS ix_loan_approval_drafts_application_id "
+            "ON loan_approval_drafts(application_id);"
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_commission_accruals (
+                id BIGSERIAL PRIMARY KEY,
+                loan_id INTEGER NOT NULL UNIQUE REFERENCES loans(id) ON DELETE CASCADE,
+                application_id BIGINT REFERENCES loan_applications(id) ON DELETE SET NULL,
+                agent_id INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+                principal_at_booking NUMERIC(22, 10) NOT NULL,
+                commission_rate_pct_snapshot NUMERIC(22, 10),
+                commission_amount NUMERIC(22, 10) NOT NULL,
+                accrual_status VARCHAR(32) NOT NULL DEFAULT 'PENDING_POST',
+                journal_entry_id UUID,
+                invoice_id BIGINT,
+                paid_at TIMESTAMPTZ,
+                recognised_at TIMESTAMPTZ,
+                payment_journal_entry_id UUID,
+                recognition_journal_entry_id UUID,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_commission_invoices (
+                id BIGSERIAL PRIMARY KEY,
+                invoice_number VARCHAR(64) NOT NULL UNIQUE,
+                agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+                period_start DATE NOT NULL,
+                period_end DATE NOT NULL,
+                invoice_date DATE NOT NULL DEFAULT CURRENT_DATE,
+                total_commission NUMERIC(22, 10) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'ISSUED',
+                paid_at TIMESTAMPTZ,
+                created_by VARCHAR(128),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                payment_journal_entry_id UUID
+            );
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_commission_invoice_lines (
+                id BIGSERIAL PRIMARY KEY,
+                invoice_id BIGINT NOT NULL REFERENCES agent_commission_invoices(id) ON DELETE CASCADE,
+                accrual_id BIGINT NOT NULL UNIQUE REFERENCES agent_commission_accruals(id) ON DELETE RESTRICT,
+                loan_id INTEGER NOT NULL REFERENCES loans(id) ON DELETE RESTRICT,
+                application_id BIGINT REFERENCES loan_applications(id) ON DELETE SET NULL,
+                commission_amount NUMERIC(22, 10) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_commission_accruals_application "
+            "ON agent_commission_accruals(application_id);"
+        )
+        cur.execute(
+            """
+            ALTER TABLE agent_commission_accruals
+            ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS recognised_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS recognised_months INTEGER NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS recognised_amount NUMERIC(22, 10) NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS payment_journal_entry_id UUID,
+            ADD COLUMN IF NOT EXISTS recognition_journal_entry_id UUID;
+            """
+        )
+        cur.execute(
+            """
+            DO $ac_inv$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'agent_commission_accruals'
+                      AND column_name = 'invoice_id'
+                ) THEN
+                    ALTER TABLE agent_commission_accruals
+                    ADD COLUMN invoice_id BIGINT;
+                END IF;
+            END $ac_inv$;
+            """
+        )
+        cur.execute(
+            """
+            DO $ac_fk$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM information_schema.table_constraints
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'agent_commission_accruals'
+                      AND constraint_name = 'fk_agent_commission_accruals_invoice'
+                ) THEN
+                    ALTER TABLE agent_commission_accruals
+                    ADD CONSTRAINT fk_agent_commission_accruals_invoice
+                    FOREIGN KEY (invoice_id) REFERENCES agent_commission_invoices(id) ON DELETE SET NULL;
+                END IF;
+            END $ac_fk$;
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_commission_accruals_invoice "
+            "ON agent_commission_accruals(invoice_id);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_commission_invoices_agent_period "
+            "ON agent_commission_invoices(agent_id, period_start, period_end, status);"
+        )
+        cur.execute(
+            """
+            DO $ldl$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'loan_applications'
+                      AND column_name = 'status'
+                      AND character_maximum_length IS NOT NULL
+                      AND character_maximum_length < 64
+                ) THEN
+                    ALTER TABLE loan_applications ALTER COLUMN status TYPE VARCHAR(64);
+                END IF;
+            END $ldl$;
+            """
+        )

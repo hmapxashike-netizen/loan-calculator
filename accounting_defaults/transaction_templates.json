@@ -688,10 +688,24 @@
       "trigger_type": "EVENT"
     },
     {
-      "event_type": "AGENT_COMMISSION_PAYMENT",
-      "system_tag": "fees_commission_expense",
+      "event_type": "AGENT_COMMISSION_ACCRUAL",
+      "system_tag": "deferred_fee_commission_asset",
       "direction": "DEBIT",
-      "description": "Payment of agent commission",
+      "description": "Accrue agent commission as deferred asset",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "AGENT_COMMISSION_ACCRUAL",
+      "system_tag": "accrued_expenses",
+      "direction": "CREDIT",
+      "description": "Accrue agent commission payable",
+      "trigger_type": "EVENT"
+    },
+    {
+      "event_type": "AGENT_COMMISSION_PAYMENT",
+      "system_tag": "accrued_expenses",
+      "direction": "DEBIT",
+      "description": "Settlement of accrued agent commission",
       "trigger_type": "EVENT"
     },
     {

@@ -255,6 +255,7 @@ def create_corporate_with_entities(
     tin: str | None = None,
     addresses: list[dict] | None = None,
     contact_person: dict | None = None,
+    contact_persons: list[dict] | None = None,
     directors: list[dict] | None = None,
     shareholders: list[dict] | None = None,
     sector_id: int | None = None,
@@ -315,7 +316,19 @@ def create_corporate_with_entities(
                             addr.get("country"),
                         ),
                     )
-            if contact_person:
+            if contact_persons:
+                for cp in contact_persons:
+                    if not cp:
+                        continue
+                    t = _contact_row(cp)
+                    cur.execute(
+                        """INSERT INTO corporate_contact_persons (customer_id, full_name, national_id, designation, phone1, phone2, email, address_line1, address_line2, city, country)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           RETURNING id""",
+                        (customer_id,) + t,
+                    )
+                    out["contact_person_ids"].append(cur.fetchone()[0])
+            elif contact_person:
                 t = _contact_row(contact_person)
                 cur.execute(
                     """INSERT INTO corporate_contact_persons (customer_id, full_name, national_id, designation, phone1, phone2, email, address_line1, address_line2, city, country)

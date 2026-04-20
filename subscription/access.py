@@ -9,18 +9,13 @@ from typing import Any, Callable
 import streamlit as st
 
 from subscription import repository as sub_repo
+from subscription.repository import get_vendor_tier_features, merge_vendor_tier_features
 from db.tenant_registry import get_stored_tenant_schema
 from subscription.subscription_utils import SubscriptionBand, subscription_band
 
 RESTRICTED_NAV_SECTIONS = frozenset({"Portfolio reports", "Subscription"})
 
-BASIC_TIER_EXCLUDED_SECTIONS = frozenset(
-    {
-        "Notifications",
-        "Document Management",
-        "Portfolio reports",
-    }
-)
+_SKIPPED_ENFORCEMENT_FEATURES = merge_vendor_tier_features(None)
 
 
 @dataclass(frozen=True)
@@ -34,6 +29,8 @@ class SubscriptionAccessSnapshot:
     restricted_nav: bool
     terminated: bool
     basic_tier: bool
+    #: Entitlements from ``public.vendor_subscription_tiers.features`` (merged with defaults).
+    tier_features: dict[str, Any]
     message: str | None
     enforcement_skipped: bool
     grace_access_active: bool = False
@@ -61,6 +58,7 @@ def refresh_subscription_access_snapshot(user: dict[str, Any] | None) -> Subscri
             restricted_nav=False,
             terminated=False,
             basic_tier=False,
+            tier_features=dict(_SKIPPED_ENFORCEMENT_FEATURES),
             message=None,
             enforcement_skipped=True,
             grace_access_active=False,
@@ -80,6 +78,7 @@ def refresh_subscription_access_snapshot(user: dict[str, Any] | None) -> Subscri
             restricted_nav=False,
             terminated=False,
             basic_tier=False,
+            tier_features=dict(_SKIPPED_ENFORCEMENT_FEATURES),
             message=None,
             enforcement_skipped=True,
             grace_access_active=False,
@@ -99,6 +98,7 @@ def refresh_subscription_access_snapshot(user: dict[str, Any] | None) -> Subscri
             restricted_nav=False,
             terminated=False,
             basic_tier=False,
+            tier_features=dict(_SKIPPED_ENFORCEMENT_FEATURES),
             message="No tenant context; subscription enforcement skipped.",
             enforcement_skipped=True,
             grace_access_active=False,
@@ -119,6 +119,7 @@ def refresh_subscription_access_snapshot(user: dict[str, Any] | None) -> Subscri
             restricted_nav=False,
             terminated=False,
             basic_tier=False,
+            tier_features=dict(_SKIPPED_ENFORCEMENT_FEATURES),
             message=f"Subscription load failed ({e}); enforcement skipped.",
             enforcement_skipped=True,
             grace_access_active=False,
@@ -127,6 +128,14 @@ def refresh_subscription_access_snapshot(user: dict[str, Any] | None) -> Subscri
         return snap
 
     if not row:
+        prev = st.session_state.get("subscription_access_snapshot")
+        # Avoid sidebar/menu tier flapping when the subscription row is briefly missing but we already
+        # computed tier features earlier in this session (next successful read updates again).
+        if isinstance(prev, SubscriptionAccessSnapshot) and not prev.enforcement_skipped:
+            return prev
+
+        _tf = get_vendor_tier_features("Basic")
+        _allowed = _tf.get("allowed_sidebar_sections") or []
         snap = SubscriptionAccessSnapshot(
             band=SubscriptionBand.CURRENT,
             tier_name="Basic",
@@ -136,7 +145,8 @@ def refresh_subscription_access_snapshot(user: dict[str, Any] | None) -> Subscri
             frozen_effective_date=None,
             restricted_nav=False,
             terminated=False,
-            basic_tier=True,
+            basic_tier="Loan management" not in set(_allowed),
+            tier_features=dict(_tf),
             message=None,
             enforcement_skipped=False,
             grace_access_active=False,
@@ -161,7 +171,9 @@ def refresh_subscription_access_snapshot(user: dict[str, Any] | None) -> Subscri
 
     restricted = band == SubscriptionBand.RESTRICTED_NAV
     terminated = band == SubscriptionBand.TERMINATED
-    basic_tier = tier_name.strip().lower() == "basic"
+    tier_features = get_vendor_tier_features(tier_name)
+    _allowed_nav = tier_features.get("allowed_sidebar_sections") or []
+    basic_tier = "Loan management" not in set(_allowed_nav)
 
     msg: str | None = None
     if band == SubscriptionBand.WARNING:
@@ -195,6 +207,7 @@ def refresh_subscription_access_snapshot(user: dict[str, Any] | None) -> Subscri
         restricted_nav=restricted,
         terminated=terminated,
         basic_tier=basic_tier,
+        tier_features=dict(tier_features),
         message=msg,
         enforcement_skipped=False,
         grace_access_active=grace_active,
@@ -240,10 +253,44 @@ def filter_menu_for_subscription(
         out = {k: v for k, v in menu.items() if k in allowed}
         return out
 
-    if snapshot.basic_tier:
-        for name in BASIC_TIER_EXCLUDED_SECTIONS:
-            out.pop(name, None)
+    allowed = snapshot.tier_features.get("allowed_sidebar_sections")
+    if not isinstance(allowed, list):
+        return out
+    allowed_set = {str(x).strip() for x in allowed if str(x).strip()}
+    if not allowed_set:
+        return {}
+    for k in list(out.keys()):
+        if k not in allowed_set:
+            out.pop(k, None)
     return out
+
+
+def render_subscription_account_sidebar_status(snapshot: SubscriptionAccessSnapshot | None) -> None:
+    """Compact tier + billing period countdown in the sidebar for tenant-backed sessions."""
+    if snapshot is None or snapshot.enforcement_skipped:
+        return
+    tier = snapshot.tier_name or "—"
+    pe = snapshot.period_end
+    today = _today()
+    if pe is None:
+        st.sidebar.markdown(
+            f"<small>Subscription · **{tier}** · period end not set</small>",
+            unsafe_allow_html=True,
+        )
+        return
+    pe_s = pe.isoformat()
+    if today > pe:
+        overdue = (today - pe).days
+        st.sidebar.markdown(
+            f"<small>Subscription · **{tier}** · **{overdue}**d overdue · ended {pe_s}</small>",
+            unsafe_allow_html=True,
+        )
+        return
+    remaining = (pe - today).days
+    st.sidebar.markdown(
+        f"<small>Subscription · **{tier}** · **{remaining}** day(s) to expiry · ends {pe_s}</small>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_subscription_banners(snapshot: SubscriptionAccessSnapshot | None) -> None:
@@ -288,11 +335,12 @@ def premium_bank_reconciliation_enabled() -> bool:
     snap = get_subscription_snapshot()
     if snap is None or snap.enforcement_skipped:
         return True
-    return not snap.basic_tier
+    return bool(snap.tier_features.get("bank_reconciliation", True))
 
 
 def basic_tier_hide_loan_capture() -> bool:
     snap = get_subscription_snapshot()
     if snap is None or snap.enforcement_skipped:
         return False
-    return snap.basic_tier
+    allowed = snap.tier_features.get("allowed_sidebar_sections") or []
+    return "Loan management" not in set(allowed)

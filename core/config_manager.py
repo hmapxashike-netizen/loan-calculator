@@ -108,10 +108,6 @@ def get_system_config(*, key: str = "system_config") -> dict:
                 "arrangement_pct": 2.5,
             },
         },
-        "consumer_schemes": [
-            {"name": "SSB", "interest_rate_pct": 7.0, "admin_fee_pct": 7.0},
-            {"name": "TPC", "interest_rate_pct": 7.0, "admin_fee_pct": 5.0},
-        ],
         "consumer_default_additional_rate_pct": 0.0,
         # End-of-day processing defaults
         "eod_settings": {
@@ -156,6 +152,16 @@ def get_system_config(*, key: str = "system_config") -> dict:
         )
 
         defaults[PROVISION_RBZ_CONFIG_KEY] = default_provision_rbz_config()
+    except Exception:
+        pass
+    try:
+        from loan_management.loan_pipeline_config import (
+            default_business_facility_subtypes,
+            default_loan_application_statuses,
+        )
+
+        defaults["loan_application_statuses"] = default_loan_application_statuses()
+        defaults["business_facility_subtypes"] = default_business_facility_subtypes()
     except Exception:
         pass
 

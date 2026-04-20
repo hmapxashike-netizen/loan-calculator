@@ -277,7 +277,7 @@ class AuthService:
             return False, f"Password must be at least {_MIN_RECOVERY_PASSWORD_LEN} characters."
 
         user = self.users.get_by_email(email)
-        _fail_msg = (
+        _fail_unknown = (
             "Unable to reset password. Check email, recovery code, password length (10+ characters), "
             "and that the account uses two-step verification."
         )
@@ -291,9 +291,9 @@ class AuthService:
                 user_agent=user_agent,
                 event_type="PASSWORD_RESET_BACKUP",
             )
-            return False, _fail_msg
+            return False, _fail_unknown
 
-        if not self.role_requires_totp_enrollment(user.role) or not user.two_factor_enabled:
+        if not self.role_requires_totp_enrollment(user.role):
             self.audit.log_login_attempt(
                 user_id=user.id,
                 email_used=email,
@@ -302,7 +302,41 @@ class AuthService:
                 user_agent=user_agent,
                 event_type="PASSWORD_RESET_BACKUP",
             )
-            return False, _fail_msg
+            return (
+                False,
+                "Password reset with a recovery code is only available for vendor or super-admin accounts.",
+            )
+
+        if not user.two_factor_enabled:
+            self.audit.log_login_attempt(
+                user_id=user.id,
+                email_used=email,
+                success=False,
+                ip_address=ip,
+                user_agent=user_agent,
+                event_type="PASSWORD_RESET_BACKUP",
+            )
+            return (
+                False,
+                "Two-step verification is not enabled on this account. Complete enrollment first, "
+                "or use a break-glass database procedure.",
+            )
+
+        if self.users.count_unused_backup_codes(user.id) == 0:
+            self.audit.log_login_attempt(
+                user_id=user.id,
+                email_used=email,
+                success=False,
+                ip_address=ip,
+                user_agent=user_agent,
+                event_type="PASSWORD_RESET_BACKUP",
+            )
+            return (
+                False,
+                "There are no unused recovery codes left for this account. Each code works once; "
+                "sign-in with a backup code uses it up. If you generated new codes while logged in, "
+                "only the newest list is valid. Use another environment restore or a break-glass procedure.",
+            )
 
         norm = normalize_backup_code(backup_code)
         if not norm or not self.users.try_consume_backup_code(user.id, norm):
@@ -314,7 +348,13 @@ class AuthService:
                 user_agent=user_agent,
                 event_type="PASSWORD_RESET_BACKUP",
             )
-            return False, _fail_msg
+            return (
+                False,
+                "That recovery code did not match any unused code on file. "
+                "Use one full code from your printed/saved list (format XXXX-XXXX, letters and digits only—"
+                "not your login password). If you already used this code to sign in, or clicked "
+                "\"Generate new recovery codes\", it will no longer work.",
+            )
 
         pw_hash = self.hash_password(new_password)
         self.users.update_password(user.id, pw_hash)

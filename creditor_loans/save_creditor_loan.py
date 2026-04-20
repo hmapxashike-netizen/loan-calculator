@@ -19,6 +19,34 @@ from .persistence import get_facility, insert_creditor_schedule_from_dataframe
 _logger = logging.getLogger(__name__)
 
 
+def build_borrowing_drawdown_journal_payload(
+    *,
+    principal: float,
+    drawdown_fee_amount: float = 0.0,
+    arrangement_fee_amount: float = 0.0,
+    cash_gl_account_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Amounts and optional cash GL override for ``BORROWING_DRAWDOWN`` (``simulate_event`` / ``post_event``).
+    """
+    fee_total = float(as_10dp(drawdown_fee_amount + arrangement_fee_amount))
+    net_cash = max(0.0, float(as_10dp(principal - fee_total)))
+    principal_dec = Decimal(str(as_10dp(principal)))
+    fee_asset = Decimal(str(as_10dp(fee_total)))
+    cash_amt = Decimal(str(as_10dp(net_cash)))
+    payload: dict[str, Any] = {
+        "cash_operating": cash_amt,
+        "deferred_fee_asset_borrowings": fee_asset,
+        "borrowings_loan_principal": principal_dec,
+    }
+    cash_s = None if cash_gl_account_id is None else str(cash_gl_account_id).strip()
+    if cash_s:
+        ao = dict(payload.get("account_overrides") or {})
+        ao["cash_operating"] = cash_s
+        payload["account_overrides"] = ao
+    return payload
+
+
 def save_creditor_loan(
     *,
     creditor_facility_id: int,
@@ -136,16 +164,12 @@ def save_creditor_loan(
                 from accounting.service import AccountingService
 
                 svc = AccountingService()
-                fee_total = float(as_10dp(ddf + aaf))
-                net_cash = max(0.0, float(as_10dp(principal - fee_total)))
-                principal_dec = Decimal(str(as_10dp(principal)))
-                fee_asset = Decimal(str(as_10dp(fee_total)))
-                cash_amt = Decimal(str(as_10dp(net_cash)))
-                payload = {
-                    "cash_operating": cash_amt,
-                    "deferred_fee_asset_borrowings": fee_asset,
-                    "borrowings_loan_principal": principal_dec,
-                }
+                payload = build_borrowing_drawdown_journal_payload(
+                    principal=principal,
+                    drawdown_fee_amount=ddf,
+                    arrangement_fee_amount=aaf,
+                    cash_gl_account_id=cash_gl_account_id,
+                )
                 svc.post_event(
                     event_type="BORROWING_DRAWDOWN",
                     reference=f"CL-{dd_id}",

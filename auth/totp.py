@@ -13,6 +13,9 @@ TOTP_MANDATORY_ROLES = frozenset({"SUPERADMIN", "VENDOR"})
 
 BACKUP_CODE_COUNT = 10
 BACKUP_CODE_GROUP_LEN = 4
+# Easy to read: no 0/O/1/I confusion; same set used to normalize pasted codes.
+BACKUP_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_BACKUP_CODE_CHARS = frozenset(BACKUP_CODE_ALPHABET)
 
 
 def random_totp_secret() -> str:
@@ -42,13 +45,16 @@ def qr_png_bytes(uri: str, *, box_size: int = 6) -> bytes:
 
 
 def normalize_backup_code(raw: str) -> str:
-    s = (raw or "").upper().replace(" ", "").replace("-", "")
-    return s
+    """
+    Uppercase and keep only valid backup-code characters.
+    Strips spaces, hyphens, unicode dashes, and other noise from copy/paste.
+    """
+    return "".join(c for c in (raw or "").upper() if c in _BACKUP_CODE_CHARS)
 
 
 def generate_backup_codes_plain(*, count: int = BACKUP_CODE_COUNT) -> list[str]:
     """Human-readable groups, e.g. A3F2-9K1L (alphanumeric uppercase)."""
-    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    alphabet = BACKUP_CODE_ALPHABET
     out: list[str] = []
     for _ in range(count):
         parts = []

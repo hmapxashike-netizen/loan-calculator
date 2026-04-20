@@ -5,6 +5,12 @@ alwaysApply: true
 
 # Project Standards
 
+## Running the app (local)
+
+- **Streamlit entry file:** `main.py` (run from repo root). It loads `app.py` as the loan UI module via `get_loan_app()` / importlib — do **not** treat `streamlit run app.py` as the normal launcher unless debugging `app.py` in isolation.
+- **PowerShell example:** `Set-Location d:\hmapx\FarndaCred` then `python -m streamlit run main.py`
+- Optional wrapper in repo root: `.\run-main.ps1` (forwards extra args to Streamlit, e.g. `.\run-main.ps1 --server.port 8502`).
+
 ## 1. Configuration and system settings
 
 - **Avoid hardcoding** configurations or system settings. They should normally come from **system config** (e.g. DB-backed, product/system settings).

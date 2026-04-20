@@ -7,6 +7,25 @@ Implementation lives in the sibling modules imported below, not in this barrel.
 
 from __future__ import annotations
 
+from .application_pipeline import (
+    generate_agent_commission_invoices,
+    get_agent_commission_invoice_detail,
+    get_agent_commission_invoice_pdf_bytes,
+    link_loan_to_application,
+    list_agent_commission_invoices,
+    mark_agent_commission_invoice_paid,
+    recognise_agent_commission_eom,
+    submit_application_for_approval,
+)
+from .loan_pipeline_config import (
+    SKIP_PIPELINE_BUTTON_CODES,
+    default_business_facility_subtypes,
+    default_loan_application_statuses,
+    effective_business_facility_subtypes,
+    effective_loan_application_statuses,
+    is_terminal_application_status,
+    status_label_for_code,
+)
 from .allocation_audit import _log_allocation_audit
 from .allocation_queries import (
     get_allocation_totals_for_loan_date,
@@ -41,6 +60,24 @@ from .daily_state import (
 )
 from .db import _connection
 from .delinquency_views import get_teller_amount_due_today
+from .loan_applications import (
+    STATUS_BOOKED,
+    STATUS_DECLINED,
+    STATUS_IN_PROGRESS,
+    STATUS_PROSPECT,
+    STATUS_SENT_FOR_APPROVAL,
+    STATUS_SUPERSEDED,
+    STATUS_WITHDRAWN,
+    agent_surname_prefix,
+    create_loan_application,
+    get_loan_application,
+    list_loan_applications,
+    set_loan_approval_draft_application_id,
+    soft_delete_loan_application,
+    supersede_loan_application,
+    update_application_status,
+    update_loan_application,
+)
 from .loan_purposes import (
     clear_all_loan_purposes,
     count_loan_purposes_rows,

@@ -5,11 +5,11 @@ import streamlit as st
 from accrual_convention import normalize_accrual_start_convention
 
 from ui.system_configurations.accounting_tab import render_accounting_config_tab
-from ui.system_configurations.consumer_schemes_tab import render_consumer_schemes_tab
 from ui.system_configurations.display_tab import render_display_tab
 from ui.system_configurations.eod_tab import render_eod_config_tab
 from ui.system_configurations.grade_scales_tab import render_grade_scales_tab
 from ui.system_configurations.ifrs_provision_tab import render_ifrs_provision_tab
+from ui.system_configurations.loan_pipeline_tab import render_loan_pipeline_tab
 from ui.system_configurations.loan_purposes_tab import render_loan_purposes_tab
 from ui.system_configurations.products_tab import render_products_tab
 from ui.system_configurations.sectors_tab import render_sectors_tab
@@ -20,7 +20,6 @@ from ui.system_configurations.subscription_vendor_tab import render_subscription
 def render_system_configurations_ui(
     *,
     get_system_config,
-    consumer_schemes_admin_editor_ui,
     parse_display_substrings_csv,
     customers_available: bool,
     list_sectors,
@@ -46,7 +45,6 @@ def render_system_configurations_ui(
     clear_all_loan_purposes,
 ) -> None:
     _get_system_config = get_system_config
-    _consumer_schemes_admin_editor_ui = consumer_schemes_admin_editor_ui
     _parse_display_substrings_csv = parse_display_substrings_csv
     _customers_available = customers_available
     _loan_management_available = loan_management_available
@@ -105,8 +103,8 @@ def render_system_configurations_ui(
         tab_sectors,
         tab_eod,
         tab_accounting,
-        tab_consumer_schemes,
         tab_products,
+        tab_loan_pipeline,
         tab_loan_purposes,
         tab_grade_scales,
         tab_ifrs_prov,
@@ -118,8 +116,8 @@ def render_system_configurations_ui(
             "Sectors & subsectors",
             "EOD configurations",
             "Accounting configurations",
-            "Consumer schemes",
             "Products",
+            "Loan pipeline",
             "Loan purposes",
             "Loan grade scales",
             "IFRS provision config",
@@ -163,11 +161,6 @@ def render_system_configurations_ui(
         fiscal_year_end_month = _acc.fiscal_year_end_month
         snapshot_max_rows = _acc.snapshot_max_rows
 
-    with tab_consumer_schemes:
-        render_consumer_schemes_tab(
-            consumer_schemes_admin_editor_ui=_consumer_schemes_admin_editor_ui,
-        )
-
     with tab_products:
         render_products_tab(
             loan_management_available=_loan_management_available,
@@ -182,6 +175,9 @@ def render_system_configurations_ui(
             save_product_config_to_db=save_product_config_to_db,
             cfg=cfg,
         )
+
+    with tab_loan_pipeline:
+        _lp = render_loan_pipeline_tab(cfg=cfg)
 
     with tab_loan_purposes:
         render_loan_purposes_tab(
@@ -220,7 +216,7 @@ def render_system_configurations_ui(
         disp_money_subs = _disp.disp_money_subs
         disp_skip_subs = _disp.disp_skip_subs
 
-    st.session_state["system_config"] = {
+    _merged_cfg = {
         **cfg,
         "accrual_start_convention": normalize_accrual_start_convention(
             accrual_start_convention_selected
@@ -270,7 +266,13 @@ def render_system_configurations_ui(
             "fiscal_year_end_month": int(fiscal_year_end_month),
             "snapshot_max_rows": int(snapshot_max_rows),
         },
+        "loan_application_statuses": list(_lp.loan_application_statuses),
+        "business_facility_subtypes": list(_lp.business_facility_subtypes),
     }
+    # Consumer loan rate pairs are defined per product (product_config), not here.
+    _merged_cfg.pop("consumer_schemes", None)
+    st.session_state["system_config"] = _merged_cfg
+
     st.divider()
     if st.button("Update System Configurations", type="primary", key="syscfg_save_db"):
         try:

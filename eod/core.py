@@ -2317,14 +2317,33 @@ def _run_accounting_events(as_of_date: date, sys_cfg: Dict[str, Any]) -> None:
             as_of_date, events_to_run, svc
         )
         t_restructure_s = time.perf_counter() - t_rest0
+        t_comm0 = time.perf_counter()
+        n_comm_amort = 0
+        if "COMMISSION_AMORTISATION" in events_to_run:
+            try:
+                from loan_management.application_pipeline import recognise_agent_commission_eom
+
+                n_comm_amort = recognise_agent_commission_eom(
+                    as_of_date=as_of_date,
+                    created_by="system",
+                )
+            except Exception:
+                _logger.exception(
+                    "EOM commission amortisation failed for %s",
+                    as_of_date.isoformat(),
+                )
+                raise
+        t_comm_amort_s = time.perf_counter() - t_comm0
         _logger.info(
             "EOD accounting_events eom_fee_restructure as_of=%s fee_amort_items=%s t_fee_amort_s=%.3f "
-            "restructure_items=%s t_restructure_s=%.3f",
+            "restructure_items=%s t_restructure_s=%.3f commission_items=%s t_commission_s=%.3f",
             as_of_date.isoformat(),
             n_fee_amort,
             t_fee_amort_s,
             n_restructure,
             t_restructure_s,
+            n_comm_amort,
+            t_comm_amort_s,
         )
 
 

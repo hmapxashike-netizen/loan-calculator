@@ -149,6 +149,7 @@ BEGIN
   FROM rbac_roles r
   CROSS JOIN LATERAL unnest(ARRAY[
     'nav.customers',
+    'nav.loan_applications',
     'nav.loan_management',
     'nav.creditor_loans',
     'nav.portfolio_reports',

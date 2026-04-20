@@ -560,7 +560,8 @@ button[aria-label="Generate"]{
             customers: list = []
             if customers_available:
                 if not search:
-                    customers = list_customers()
+                    # Avoid loading the entire customer table on every rerun (scales poorly).
+                    customers = []
                 elif _loan_id_token.isdigit():
                     lid = int(_loan_id_token)
                     loan = get_loan(lid)
@@ -580,7 +581,7 @@ button[aria-label="Generate"]{
                             ]
                     else:
                         st.warning(f"No loan found with ID **{lid}**.")
-                        customers = list_customers()
+                        customers = []
                 else:
                     customers = search_customers_by_name(search, limit=800)
 
@@ -591,7 +592,13 @@ button[aria-label="Generate"]{
                 )
 
             if not customers and preselect_cust_id is None:
-                st.info("No customers found. Create a customer or enter a valid Loan ID.")
+                if not search:
+                    st.info(
+                        "Enter a **customer name** to search (up to 800 matches), or a **Loan ID** "
+                        "(with or without #) to jump to that loan."
+                    )
+                else:
+                    st.info("No customers found. Create a customer or enter a valid Loan ID.")
             else:
                 cust_options = [
                     (_normalize_customer_id(c.get("id")), _customer_row_label(c)) for c in customers

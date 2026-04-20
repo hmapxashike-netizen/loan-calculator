@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 
+from decimal_utils import as_10dp
 
 from style import render_main_header, render_sub_header, render_sub_sub_header
 
@@ -34,6 +36,57 @@ _CAPTURE_LOAN_DOC_TYPE_NAMES = {
     "Supply Agreement",
     "Other",
 }
+
+
+def _compute_agent_commission_from_net_proceeds(
+    *,
+    details: dict | None,
+    agent_id: object,
+) -> dict[str, object]:
+    """Return agent commission preview inputs using net proceeds (disbursed amount)."""
+    det = details or {}
+    net_raw = det.get("disbursed_amount", det.get("principal", 0)) or 0
+    net_d = Decimal(str(as_10dp(net_raw)))
+    out: dict[str, object] = {
+        "agent_id": None,
+        "agent_name": None,
+        "commission_rate_pct": Decimal("0"),
+        "net_proceeds": net_d,
+        "commission_amount": Decimal("0"),
+        "applicable": False,
+        "reason": "No agent selected.",
+    }
+    if agent_id is None or str(agent_id).strip() == "":
+        return out
+
+    try:
+        aid = int(agent_id)
+    except (TypeError, ValueError):
+        out["reason"] = "Invalid agent selected."
+        return out
+    out["agent_id"] = aid
+
+    try:
+        from agents import get_agent
+
+        agent = get_agent(aid) or {}
+    except Exception:
+        agent = {}
+    out["agent_name"] = str(agent.get("name") or f"Agent #{aid}")
+    rate_raw = agent.get("commission_rate_pct")
+    rate_d = Decimal(str(as_10dp(rate_raw or 0)))
+    out["commission_rate_pct"] = rate_d
+    if rate_d <= 0:
+        out["reason"] = "Agent commission rate is 0%."
+        return out
+    if net_d <= 0:
+        out["reason"] = "Net proceeds are 0."
+        return out
+    comm = Decimal(str(as_10dp(net_d * rate_d / Decimal("100"))))
+    out["commission_amount"] = comm
+    out["applicable"] = comm > 0
+    out["reason"] = "Commission applies."
+    return out
 
 
 # Loan capture workspace: flat panel, brand colours (#16A34A / #0F766E align with sidebar logo styling).
@@ -258,6 +311,191 @@ def _fcapture_clear_session_after_submit() -> None:
     st.session_state["capture_loan_step"] = 0
 
 
+_CAP_LT_DISPLAY = {
+    "consumer_loan": "Consumer Loan",
+    "term_loan": "Term Loan",
+    "bullet_loan": "Bullet Loan",
+    "customised_repayments": "Customised Repayments",
+}
+
+
+def _pipeline_meta_as_dict(meta: object) -> dict:
+    if meta is None:
+        return {}
+    if isinstance(meta, dict):
+        return meta
+    if isinstance(meta, str):
+        import json
+
+        try:
+            return json.loads(meta) if meta.strip() else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _prefill_pop_widget_keys_for_resync() -> None:
+    for _wk in (
+        "cap_customer_sel",
+        "cap_product_sel",
+        "cap_rm_t1",
+        "cap_agent_sel_t0",
+        "cap_cash_gl_sel_t0",
+        "cap_loan_purpose_sel",
+    ):
+        st.session_state.pop(_wk, None)
+
+
+def _set_net_proceeds_amount_for_loan_type(display_loan_type: str, amount: float) -> None:
+    amt = float(amount)
+    if display_loan_type == "Consumer Loan":
+        st.session_state["cap_cl_principal_mode"] = "Net Proceeds"
+        st.session_state["cap_cl_principal"] = amt
+    elif display_loan_type == "Term Loan":
+        st.session_state["cap_term_principal_mode"] = "Net Proceeds"
+        st.session_state["cap_term_principal"] = amt
+    elif display_loan_type == "Bullet Loan":
+        st.session_state["cap_bullet_principal_mode"] = "Net Proceeds"
+        st.session_state["cap_bullet_principal"] = amt
+    elif display_loan_type == "Customised Repayments":
+        st.session_state["cap_cust_principal_mode"] = "Net Proceeds"
+        st.session_state["cap_cust_principal"] = amt
+
+
+def _resolve_product_row(list_products, product_code: str | None):
+    if not product_code or not list_products:
+        return None
+    opts = list_products(active_only=True) or []
+    code = str(product_code).strip()
+    for p in opts:
+        if str(p.get("code") or "").strip() == code:
+            return p
+    return None
+
+
+def _apply_pending_pipeline_net_amount(*, list_products) -> None:
+    pending = st.session_state.get("capture_prefill_net_amount")
+    if pending is None:
+        return
+    pcode = st.session_state.get("capture_product_code")
+    if not pcode:
+        return
+    prod = _resolve_product_row(list_products, str(pcode))
+    if not prod:
+        return
+    lt_raw = prod.get("loan_type") or ""
+    display = _CAP_LT_DISPLAY.get(lt_raw, lt_raw)
+    try:
+        _set_net_proceeds_amount_for_loan_type(display, float(pending))
+    except (TypeError, ValueError):
+        return
+    st.session_state.pop("capture_prefill_net_amount", None)
+    _prefill_pop_widget_keys_for_resync()
+    msg = (
+        f"Applied pipeline amount **{float(pending):,.2f}** as **Net Proceeds** for **{display}**."
+    )
+    prev = st.session_state.get("capture_flash_message")
+    st.session_state["capture_flash_message"] = f"{prev} {msg}".strip() if prev else msg
+
+
+def _apply_pipeline_jump_prefill(*, list_products, loan_management_available: bool) -> None:
+    _apply_pending_pipeline_net_amount(list_products=list_products)
+    aid = st.session_state.pop("capture_prefill_application_id", None)
+    if aid is None:
+        return
+    try:
+        from loan_management import get_loan_application
+    except Exception:
+        st.session_state["capture_flash_message"] = (
+            "Loan applications module unavailable — cannot prefill from pipeline."
+        )
+        return
+    try:
+        row = get_loan_application(int(aid))
+    except Exception as ex:
+        st.session_state["capture_flash_message"] = f"Could not load application #{aid}: {ex}"
+        return
+    if not row:
+        st.session_state["capture_flash_message"] = f"Loan application **#{aid}** was not found."
+        return
+
+    meta = _pipeline_meta_as_dict(row.get("metadata"))
+    rp = row.get("requested_principal")
+    try:
+        amt = float(rp) if rp is not None else 0.0
+    except (TypeError, ValueError):
+        amt = 0.0
+
+    _prefill_pop_widget_keys_for_resync()
+    st.session_state.pop("capture_loan_details", None)
+    st.session_state.pop("capture_loan_schedule_df", None)
+    st.session_state["capture_loan_step"] = 0
+    st.session_state.pop("capture_prefill_net_amount", None)
+
+    cid = row.get("customer_id")
+    if cid is not None:
+        try:
+            st.session_state["capture_customer_id"] = int(cid)
+        except (TypeError, ValueError):
+            pass
+    ag = row.get("agent_id")
+    if ag is not None:
+        try:
+            st.session_state["capture_agent_id"] = int(ag)
+        except (TypeError, ValueError):
+            pass
+
+    pcode_raw = row.get("product_code")
+    pcode = str(pcode_raw).strip() if pcode_raw else None
+    prod = (
+        _resolve_product_row(list_products, pcode)
+        if (loan_management_available and pcode)
+        else None
+    )
+
+    st.session_state["capture_pipeline_metadata"] = {
+        "application_id": int(aid),
+        "facility_type": meta.get("facility_type"),
+        "sector_id": meta.get("sector_id"),
+        "subsector_id": meta.get("subsector_id"),
+        "business_facility_subtype": meta.get("business_facility_subtype"),
+        "consumer_scheme_label": meta.get("consumer_scheme_label"),
+    }
+
+    if prod and pcode:
+        lt_raw = prod.get("loan_type") or ""
+        display = _CAP_LT_DISPLAY.get(lt_raw, lt_raw)
+        st.session_state["capture_product_code"] = pcode
+        st.session_state["capture_loan_type"] = display
+        if amt > 0:
+            _set_net_proceeds_amount_for_loan_type(display, amt)
+        msg = (
+            f"Prefilled from loan application **#{aid}**: product **{pcode}**, agent, "
+            f"and **Net Proceeds** **{amt:,.2f}**."
+        )
+    elif pcode and not prod:
+        st.session_state.pop("capture_product_code", None)
+        st.session_state["capture_loan_type"] = "Term Loan"
+        if amt > 0:
+            st.session_state["capture_prefill_net_amount"] = amt
+        msg = (
+            f"Prefilled from application **#{aid}**. Product code **{pcode}** is not in the active catalog — "
+            f"choose a **Product**; **{amt:,.2f}** will apply as **Net Proceeds** once selected."
+        )
+    else:
+        st.session_state.pop("capture_product_code", None)
+        st.session_state["capture_loan_type"] = "Term Loan"
+        if amt > 0:
+            st.session_state["capture_prefill_net_amount"] = amt
+        msg = (
+            f"Prefilled from application **#{aid}** (customer & agent). "
+            f"No scheme on file — choose a **Product**; **{amt:,.2f}** applies as **Net Proceeds** once selected."
+        )
+
+    prev = st.session_state.get("capture_flash_message")
+    st.session_state["capture_flash_message"] = f"{prev} {msg}".strip() if prev else msg
+
+
 def render_capture_loan_ui(
     *,
     documents_available: bool,
@@ -299,6 +537,11 @@ def render_capture_loan_ui(
 
     if "capture_loan_step" not in st.session_state:
         st.session_state["capture_loan_step"] = 0
+
+    _apply_pipeline_jump_prefill(
+        list_products=list_products,
+        loan_management_available=loan_management_available,
+    )
 
     def _stage1_session_details() -> dict:
         return {
@@ -667,6 +910,36 @@ def render_capture_loan_ui(
     # Keep this unbordered so the "Details" heading does not appear as a blocking bar.
     with st.container():
         render_sub_sub_header("Details")
+        _pm = st.session_state.get("capture_pipeline_metadata")
+        if isinstance(_pm, dict) and _pm.get("application_id"):
+            try:
+                from customers.core import list_sectors, list_subsectors
+
+                sectors_c = {int(s["id"]): str(s.get("name") or "") for s in (list_sectors() or [])}
+                sid = _pm.get("sector_id")
+                ssid = _pm.get("subsector_id")
+                sec_nm = sectors_c.get(int(sid)) if sid is not None else None
+                sub_nm = None
+                if sid is not None and ssid is not None:
+                    for x in list_subsectors(int(sid)) or []:
+                        if int(x["id"]) == int(ssid):
+                            sub_nm = str(x.get("name") or "")
+                            break
+                bits: list[str] = []
+                ft = _pm.get("business_facility_subtype") or _pm.get("facility_type")
+                if ft:
+                    bits.append(f"Facility (pipeline): **{ft}**")
+                csl = _pm.get("consumer_scheme_label")
+                if csl:
+                    bits.append(f"Scheme (pipeline): **{csl}**")
+                if sec_nm:
+                    bits.append(f"Sector (pipeline): **{sec_nm}**")
+                if sub_nm:
+                    bits.append(f"Subsector: **{sub_nm}**")
+                if bits:
+                    st.caption(" · ".join(bits))
+            except Exception:
+                pass
         customers_list = list_customers(status="active") or []
         if not customers_list:
             st.warning("No active customers. Add a customer first under **Customers**.")
@@ -978,7 +1251,6 @@ def render_capture_loan_ui(
                     loan_required = st.number_input(
                         "Loan Amount",
                         min_value=0.0,
-                        value=0.0,
                         step=10.0,
                         format="%.2f",
                         key="cap_cl_principal",
@@ -1194,7 +1466,6 @@ def render_capture_loan_ui(
                     loan_required = st.number_input(
                         "Loan Amount",
                         min_value=0.0,
-                        value=0.0,
                         step=100.0,
                         format="%.2f",
                         key="cap_term_principal",
@@ -1352,7 +1623,6 @@ def render_capture_loan_ui(
                     loan_required = st.number_input(
                         "Loan Amount",
                         min_value=0.0,
-                        value=0.0,
                         step=100.0,
                         format="%.2f",
                         key="cap_bullet_principal",
@@ -1525,7 +1795,11 @@ def render_capture_loan_ui(
                     input_tf = _cupr == "Principal (Total Loan Amount)"
                 with cu2:
                     loan_required = st.number_input(
-                        "Loan Amount", min_value=0.0, value=0.0, step=100.0, format="%.2f", key="cap_cust_principal"
+                        "Loan Amount",
+                        min_value=0.0,
+                        step=100.0,
+                        format="%.2f",
+                        key="cap_cust_principal",
                     )
                     loan_term = st.number_input("Term (Months)", 1, 120, 12, key="cap_cust_term")
                 with cu3:
@@ -1834,6 +2108,68 @@ def render_capture_loan_ui(
                     st.info("No LOAN_APPROVAL template lines.")
             except Exception as e:
                 st.warning(f"Journal preview unavailable: {e}")
+
+            _comm = _compute_agent_commission_from_net_proceeds(
+                details=_rv_det,
+                agent_id=st.session_state.get("capture_agent_id"),
+            )
+            st.markdown(
+                '<h3 style="text-align:right;margin:0.75rem 0 0.2rem 0;font-weight:600;">'
+                "Agent commission journal preview</h3>",
+                unsafe_allow_html=True,
+            )
+            _comm_amt = float(_comm.get("commission_amount") or 0.0)
+            _comm_rate = float(_comm.get("commission_rate_pct") or 0.0)
+            _comm_net = float(_comm.get("net_proceeds") or 0.0)
+            _comm_agent = _comm.get("agent_name") or "—"
+            st.caption(
+                f"Agent: **{_comm_agent}** · Net proceeds: **{_comm_net:,.2f}** · "
+                f"Rate: **{_comm_rate:.4f}%** · Commission: **{_comm_amt:,.2f}**"
+            )
+            if bool(_comm.get("applicable")):
+                try:
+                    payload_comm = {
+                        "accrued_expenses": _comm_amt,
+                        "fees_commission_expense": _comm_amt,
+                        "cash_operating": _comm_amt,
+                    }
+                    if _cash_gl_prev:
+                        _ao_comm = {"cash_operating": str(_cash_gl_prev).strip()}
+                        payload_comm["account_overrides"] = _ao_comm
+                    sim_comm = AccountingService().simulate_event(
+                        "AGENT_COMMISSION_PAYMENT",
+                        payload=payload_comm,
+                    )
+                    if sim_comm.lines:
+                        if not sim_comm.balanced and sim_comm.warning:
+                            st.warning(sim_comm.warning)
+                        df_comm = pd.DataFrame(
+                            [
+                                {
+                                    "Account": f"{line['account_name']} ({line['account_code']})",
+                                    "Debit": float(line["debit"]),
+                                    "Credit": float(line["credit"]),
+                                }
+                                for line in sim_comm.lines
+                            ]
+                        )
+                        _jc_cfg = dict(money_df_column_config(df_comm))
+                        for _jc in ("Debit", "Credit"):
+                            if _jc in _jc_cfg and isinstance(_jc_cfg[_jc], dict):
+                                _jc_cfg[_jc] = {**_jc_cfg[_jc], "alignment": "right"}
+                        st.dataframe(
+                            df_comm,
+                            width="stretch",
+                            hide_index=True,
+                            height=min(180, 42 + len(sim_comm.lines) * 36),
+                            column_config=_jc_cfg,
+                        )
+                    else:
+                        st.info("No AGENT_COMMISSION_PAYMENT template lines.")
+                except Exception as e:
+                    st.warning(f"Commission journal preview unavailable: {e}")
+            else:
+                st.info(str(_comm.get("reason") or "No commission journal for this loan."))
             render_sub_sub_header("Repayment Schedule")
             render_schedule_readonly_dataframe(_rv_df, money_df_column_config=money_df_column_config)
 

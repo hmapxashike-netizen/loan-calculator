@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, datetime
-from decimal import Decimal
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -29,7 +30,63 @@ def _creditor_perm(user: dict | None, key: str) -> bool:
         return role in ("ADMIN", "SUPERADMIN")
 
 
-def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_entries) -> None:
+def _render_creditor_drawdown_doc_staging(
+    *,
+    documents_available: bool,
+    list_document_categories: Callable[..., Any] | None,
+    upload_document: Callable[..., Any] | None,
+) -> None:
+    """Stage files for attachment on drawdown commit (entity_type ``creditor_drawdown``)."""
+    st.session_state.setdefault("cl_dd_docs_staged", [])
+    staged: list[dict[str, Any]] = st.session_state["cl_dd_docs_staged"]
+    if not documents_available or not upload_document or not list_document_categories:
+        st.caption("Document uploads require the documents module and configuration.")
+        return
+    try:
+        cats = list_document_categories(active_only=True) or []
+    except Exception as ex:
+        st.warning(f"Could not load document categories: {ex}")
+        return
+    names = sorted({str(c["name"]) for c in cats if c.get("name")})
+    if not names:
+        st.info("No document categories configured.")
+        return
+    cat_by_name = {str(c["name"]): c for c in cats if c.get("name")}
+    d1, d2 = st.columns([2, 2], gap="small")
+    with d1:
+        pick = st.selectbox("Category", names, key="cl_dd_doc_cat")
+    with d2:
+        fu = st.file_uploader("File", type=["pdf", "png", "jpg", "jpeg"], key="cl_dd_doc_file")
+    n1, n2 = st.columns([3, 1], gap="small")
+    with n1:
+        doc_notes = st.text_input("Notes (optional)", key="cl_dd_doc_notes")
+    with n2:
+        st.write("")
+        st.write("")
+        if st.button("Stage", key="cl_dd_doc_add") and fu is not None:
+            row = cat_by_name[pick]
+            staged.append(
+                {
+                    "category_id": int(row["id"]),
+                    "file": fu,
+                    "notes": (doc_notes or "").strip(),
+                }
+            )
+            st.session_state["cl_dd_docs_staged"] = staged
+            st.rerun()
+    if staged:
+        st.caption("**Staged for commit:** " + " · ".join(f"{r['file'].name}" for r in staged))
+
+
+def render_creditor_loans_ui(
+    *,
+    get_system_date,
+    get_cached_source_cash_account_entries,
+    documents_available: bool = False,
+    list_document_categories: Callable[..., Any] | None = None,
+    upload_document: Callable[..., Any] | None = None,
+    money_df_column_config: Callable[..., Any] | None = None,
+) -> None:
     from middleware import get_current_user
 
     user = get_current_user()
@@ -56,6 +113,9 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
     with tab_objs[0]:
         render_sub_sub_header("Counterparties (lenders)")
         st.session_state.setdefault("cp_counterparty_panel", None)
+        _cp_toast = st.session_state.pop("cp_toast", None)
+        if _cp_toast:
+            st.success(_cp_toast)
 
         try:
             from creditor_loans.persistence import list_counterparties
@@ -118,7 +178,9 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
                         )
 
                     run_with_spinner("Saving…", _go)
-                    st.success("Counterparty saved.")
+                    st.session_state["cp_toast"] = "Counterparty saved."
+                    st.session_state["cp_counterparty_panel"] = None
+                    st.rerun()
                 except Exception as e:
                     st.error(str(e))
             st.caption("Creditor ID is the database **id** shown in the table below.")
@@ -154,7 +216,9 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
                                     update_counterparty_status(upd_id, upd_st)
 
                                 run_with_spinner("Updating…", _u)
-                                st.success("Status updated.")
+                                st.session_state["cp_toast"] = "Status updated."
+                                st.session_state["cp_counterparty_panel"] = None
+                                st.rerun()
                             except Exception as e:
                                 st.error(str(e))
                 else:
@@ -173,6 +237,9 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
     with tab_objs[1]:
         render_sub_sub_header("Capture facility (limit, expiry, facility fee)")
         st.session_state.setdefault("cf_panel", None)
+        _cf_toast = st.session_state.pop("cf_toast", None)
+        if _cf_toast:
+            st.success(_cf_toast)
 
         try:
             from creditor_loans.persistence import list_facilities as _list_fac_tbl
@@ -229,7 +296,11 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
                                 )
 
                             new_fid = run_with_spinner("Saving facility…", _sf)
-                            st.success(f"Facility **#{new_fid}** created. Use **Capture drawdown** to fund a tranche.")
+                            st.session_state["cf_toast"] = (
+                                f"Facility **#{new_fid}** created. Use **Capture drawdown** to fund a tranche."
+                            )
+                            st.session_state["cf_panel"] = None
+                            st.rerun()
                         except Exception as e:
                             st.error(str(e))
             except Exception as e:
@@ -289,7 +360,9 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
                             )
 
                         run_with_spinner("Saving…", _uf)
-                        st.success(f"Facility **CF-{fid}** updated.")
+                        st.session_state["cf_toast"] = f"Facility **CF-{fid}** updated."
+                        st.session_state["cf_panel"] = None
+                        st.rerun()
             except Exception as e:
                 st.error(str(e))
 
@@ -312,6 +385,9 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
     with tab_objs[2]:
         render_sub_sub_header("Capture drawdown (schedule + GL)")
         st.session_state.setdefault("dd_panel", None)
+        _dd_toast = st.session_state.pop("dd_toast", None)
+        if _dd_toast:
+            st.success(_dd_toast)
 
         try:
             from creditor_loans.persistence import list_creditor_loans as _list_dd_tbl
@@ -383,7 +459,9 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
                                 update_creditor_drawdown(did, status=str(e_st), accrual_mode=str(e_am))
 
                             run_with_spinner("Saving…", _dd_u)
-                            st.success(f"Drawdown **DD-{did}** updated.")
+                            st.session_state["dd_toast"] = f"Drawdown **DD-{did}** updated."
+                            st.session_state["dd_panel"] = None
+                            st.rerun()
                         except Exception as ex:
                             st.error(str(ex))
             except Exception as e:
@@ -633,6 +711,10 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
                             st.error(str(ex))
 
                     if st.session_state.get("cl_sched_df") is not None:
+                        st.caption(
+                            "Review **journal preview** and optional **documents**, then **Commit drawdown** "
+                            "(save + post GL when disbursement is on or before the business date)."
+                        )
                         if engine == "customised_actual_360":
                             st.caption("Edit **Payment** (and **Date** if needed); schedule recomputes each run.")
                             edited = st.data_editor(
@@ -655,7 +737,74 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
                                 st.warning(f"Recompute: {ex}")
                         else:
                             st.dataframe(st.session_state["cl_sched_df"], height=240, width="stretch")
-                        if st.button("Save drawdown + post GL", type="primary", key="cl_save"):
+
+                        render_sub_sub_header("Journal preview (drawdown)")
+                        try:
+                            from eod.system_business_date import get_effective_date
+
+                            _biz_dd = get_effective_date()
+                        except Exception:
+                            _biz_dd = disb
+                        if disb > _biz_dd:
+                            st.caption(
+                                "Disbursement date is **after** the current business date — the drawdown is still "
+                                "saved on commit; **BORROWING_DRAWDOWN** posts when disbursement is on or before "
+                                "the business date."
+                            )
+                        try:
+                            from accounting.service import AccountingService
+                            from creditor_loans.save_creditor_loan import build_borrowing_drawdown_journal_payload
+
+                            _cash_gl_prev = ids[int(cash_ix)] if (labels and cash_ix is not None) else None
+                            _pl = build_borrowing_drawdown_journal_payload(
+                                principal=float(principal),
+                                drawdown_fee_amount=float(ddf),
+                                arrangement_fee_amount=0.0,
+                                cash_gl_account_id=_cash_gl_prev,
+                            )
+                            sim = AccountingService().simulate_event("BORROWING_DRAWDOWN", payload=dict(_pl))
+                            if sim.lines:
+                                if not sim.balanced and sim.warning:
+                                    st.warning(sim.warning)
+                                df_j = pd.DataFrame(
+                                    [
+                                        {
+                                            "Account": f"{line['account_name']} ({line['account_code']})",
+                                            "Debit": float(line["debit"]),
+                                            "Credit": float(line["credit"]),
+                                        }
+                                        for line in sim.lines
+                                    ]
+                                )
+                                _jp_cfg = (
+                                    dict(money_df_column_config(df_j))
+                                    if callable(money_df_column_config)
+                                    else None
+                                )
+                                if _jp_cfg and isinstance(_jp_cfg, dict):
+                                    for _jc in ("Debit", "Credit"):
+                                        if _jc in _jp_cfg and isinstance(_jp_cfg[_jc], dict):
+                                            _jp_cfg[_jc] = {**_jp_cfg[_jc], "alignment": "right"}
+                                st.dataframe(
+                                    df_j,
+                                    width="stretch",
+                                    hide_index=True,
+                                    height=min(220, 42 + len(sim.lines) * 36),
+                                    column_config=_jp_cfg,
+                                )
+                            else:
+                                st.info("No BORROWING_DRAWDOWN template lines (check accounting templates).")
+                        except Exception as ex:
+                            st.warning(f"Journal preview unavailable: {ex}")
+
+                        render_sub_sub_header("Documents")
+                        _render_creditor_drawdown_doc_staging(
+                            documents_available=documents_available,
+                            list_document_categories=list_document_categories,
+                            upload_document=upload_document,
+                        )
+
+                        if st.button("Commit drawdown", type="primary", key="cl_commit"):
                             try:
                                 from creditor_loans.save_creditor_loan import save_creditor_loan
 
@@ -693,8 +842,40 @@ def render_creditor_loans_ui(*, get_system_date, get_cached_source_cash_account_
                                     )
 
                                 new_id = run_with_spinner("Saving drawdown…", _save)
-                                st.success(f"Drawdown **#{new_id}** saved (under facility **CF-{fac_id}**).")
+                                staged_docs = list(st.session_state.pop("cl_dd_docs_staged", []) or [])
+                                doc_errs: list[str] = []
+                                doc_ok = 0
+                                if upload_document and staged_docs:
+                                    created_by = (
+                                        str(user.get("username") or user.get("email") or "creditor_ui").strip()
+                                        or "creditor_ui"
+                                    )
+                                    for row in staged_docs:
+                                        f = row["file"]
+                                        try:
+                                            upload_document(
+                                                "creditor_drawdown",
+                                                int(new_id),
+                                                int(row["category_id"]),
+                                                f.name,
+                                                f.type,
+                                                f.size,
+                                                f.getvalue(),
+                                                uploaded_by=created_by,
+                                                notes=str(row.get("notes") or ""),
+                                            )
+                                            doc_ok += 1
+                                        except Exception as de:
+                                            doc_errs.append(f"{f.name}: {de}")
+                                _toast = f"Drawdown **#{new_id}** saved (under facility **CF-{fac_id}**)."
+                                if doc_ok:
+                                    _toast += f" {doc_ok} document(s) attached."
+                                if doc_errs:
+                                    _toast += " Document errors: " + "; ".join(doc_errs)
+                                st.session_state["dd_toast"] = _toast
                                 st.session_state["cl_sched_df"] = None
+                                st.session_state["dd_panel"] = None
+                                st.rerun()
                             except Exception as ex:
                                 st.error(str(ex))
             except Exception as e:

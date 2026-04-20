@@ -209,7 +209,7 @@ class UserRepository:
     def try_consume_backup_code(self, user_id: str, plain_normalized: str) -> bool:
         """
         If plain matches an unused backup code, mark it used and return True.
-        ``plain_normalized`` must be uppercase, no spaces/dashes (see auth.totp.normalize_backup_code).
+        ``plain_normalized`` must match auth.totp.normalize_backup_code (allowed charset only).
         """
         if not plain_normalized:
             return False

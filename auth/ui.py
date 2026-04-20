@@ -410,8 +410,9 @@ def _render_totp_setup_wizard() -> None:
 def _render_recovery_form() -> None:
     render_sub_sub_header("Recover or reset password (super-admin / vendor)")
     st.caption(
-        "Use a **one-time recovery code** from when you enabled two-step verification, plus a **new password**. "
-        "If you have no codes left, use a database or infrastructure break-glass procedure."
+        "These codes are **not** your password — they are the **XXXX-XXXX** backup codes shown once after "
+        "you enabled two-step verification (super-admin/vendor). Each code works **once**; using it at sign-in "
+        "uses it up. Generating new codes replaces unused old ones. If you have no codes left, use break-glass."
     )
     email = st.text_input("Account email", key="farnda_rec_email", autocomplete="username")
     backup = st.text_input("Recovery code", key="farnda_rec_backup", autocomplete="one-time-code")

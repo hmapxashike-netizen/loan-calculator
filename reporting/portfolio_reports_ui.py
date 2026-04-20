@@ -1,6 +1,6 @@
 """
 Portfolio reporting: credit risk, listings, IIS movement, concentration, ECL (provisions).
-Shell placeholders: creditor mirror, roll rates, collection efficiency.
+Shell placeholders: roll rates, collection efficiency (others implemented).
 Debtor maturity + bucketed arrears ageing: see portfolio_reporting.py (read-only).
 """
 from __future__ import annotations
@@ -28,6 +28,10 @@ from reporting.portfolio_reporting import (
     RESTRUCTURE_SCOPE_SPLIT,
     RESTRUCTURE_SCOPE_TOPUP,
     build_arrears_aging_report,
+    build_creditor_arrears_aging_report,
+    build_creditor_maturity_profile_report,
+    build_debtor_creditor_maturity_gap_summary,
+    explain_creditor_maturity_profile_empty,
     build_maturity_profile_report,
     build_regulatory_maturity_profile_report,
     build_regulatory_maturity_summary_table,
@@ -73,6 +77,7 @@ _PORTFOLIO_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         [
             ("Debtor Maturity Profile (when your money is coming in)", "mat_11"),
             ("Creditor Maturity Profile (when your debts are due to be paid)", "shell_12"),
+            ("Creditor Arrears Ageing (past-due borrowing obligations)", "treas_cred_arrears"),
             ("Gap Analysis (variance between debtor and creditor timing)", "shell_gap"),
         ],
     ),
@@ -106,7 +111,9 @@ _LEGACY_PORTFOLIO_LABEL_TO_RK: dict[str, str] = {
     "IFRS Provisions (single loan)": "ifrs",
     "Debtor maturity profile": "mat_11",
     "Regulatory maturity profile": "reg_mat",
-    "Creditor maturity profile (shell)": "shell_12",
+    "Creditor maturity profile": "shell_12",
+    "Creditor arrears ageing": "treas_cred_arrears",
+    "Gap analysis": "shell_gap",
     "Debtor arrears (aging)": "r21",
     "Portfolio at risk (PAR)": "r22",
     "Migration / roll rates (shell)": "shell_23",
@@ -130,7 +137,7 @@ def _portfolio_group_id_for_rk(rk: str) -> str:
 
 # Reports whose loan base queries support restructure tag filters (OR semantics).
 _REPORT_KEYS_WITH_RESTRUCTURE_FILTER = frozenset(
-    {"mat_11", "reg_mat", "r21", "r22", "r31", "r32", "r42", "r51", "r52", "r53"}
+    {"mat_11", "reg_mat", "r21", "r22", "r31", "r32", "r42", "r51", "r52", "r53", "shell_gap"}
 )
 
 def _project_root_for_export() -> str:
@@ -183,53 +190,107 @@ def _df_download(df: pd.DataFrame, filename: str, *, button_key: str) -> None:
     )
 
 
-def _report_creditor_maturity_profile(as_of: date) -> None:
-    """Creditor-side outstanding by facility (``creditor_*`` tables only; no debtor mix)."""
+def _report_creditor_maturity_profile(as_of: date, active_only: bool) -> None:
+    """Creditor drawdowns: future scheduled amounts from ``creditor_schedule_lines`` placed in tenor buckets."""
     render_sub_sub_header("Creditor maturity profile")
     st.caption(
-        "Latest **creditor_loan_daily_state** on or before as-of, by facility. "
-        "Principal not due / arrears and interest buckets mirror the liability engine."
+        "**Schedule-based:** each instalment with due date **after** this as-of contributes its scheduled "
+        "**principal** (principal-only view) or **principal + interest** (cash-flow view) to the maturity bucket "
+        "for that due date (days from as-of to due). This is **not** weighted to ``principal_not_due`` or other "
+        "daily-state balances — compare to the **Debtor maturity profile** if you need balance-reconciled timing."
     )
+    view_type_label = st.radio(
+        "Maturity view",
+        [
+            "Principal-only (standard)",
+            "Full cash flow (principal + interest)",
+        ],
+        horizontal=True,
+        key="port_cred_mat_view",
+    )
+    view_type = "principal" if "Principal-only" in view_type_label else "cash_flow"
+
     try:
-        cur_cls = _portfolio_real_dict_cursor()
-        with _connection() as conn:
-            with conn.cursor(cursor_factory=cur_cls) as cur:
-                cur.execute(
-                    """
-                    SELECT
-                        cl.id,
-                        cp.name AS lender,
-                        cl.principal AS facility_principal,
-                        st.principal_not_due,
-                        st.principal_arrears,
-                        st.interest_accrued_balance,
-                        st.interest_arrears_balance,
-                        st.total_exposure,
-                        st.as_of_date AS state_as_of
-                    FROM creditor_drawdowns cl
-                    JOIN creditor_facilities cf ON cf.id = cl.creditor_facility_id
-                    JOIN creditor_counterparties cp ON cp.id = cf.creditor_counterparty_id
-                    LEFT JOIN LATERAL (
-                        SELECT d.*
-                        FROM creditor_loan_daily_state d
-                        WHERE d.creditor_drawdown_id = cl.id AND d.as_of_date <= %s
-                        ORDER BY d.as_of_date DESC
-                        LIMIT 1
-                    ) st ON TRUE
-                    WHERE cl.status = 'active'
-                    ORDER BY cl.id
-                    """,
-                    (as_of,),
-                )
-                rows = cur.fetchall()
-        if not rows:
-            st.info("No active creditor drawdowns or daily state yet (run EOD after migrations 84 / 90).")
-            return
-        df = pd.DataFrame([dict(r) for r in rows])
-        st.dataframe(df, hide_index=True, width="stretch", height=360)
-        _df_download(df, f"creditor_maturity_profile_{as_of.isoformat()}.csv", button_key="port_cl_mat_csv")
+        df = build_creditor_maturity_profile_report(
+            as_of,
+            active_only=active_only,
+            view_type=view_type,
+        )
     except Exception as ex:
-        st.error(f"Creditor maturity report failed: {ex}")
+        st.error(f"Could not build creditor maturity profile: {ex}")
+        return
+
+    if df.empty:
+        try:
+            st.info(explain_creditor_maturity_profile_empty(as_of, active_only=active_only))
+        except Exception:
+            st.info(
+                "No creditor maturity rows. Check **Active loans only**, that each drawdown has a **schedule** "
+                "with **future** instalments after this as-of, and that line **principal** (or P+I in cash-flow view) "
+                "is positive."
+            )
+        return
+
+    rename = {k: lbl for k, lbl in zip(MATURITY_BUCKET_KEYS, MATURITY_BUCKET_LABELS, strict=True)}
+    rename.update(
+        {
+            "creditor_drawdown_id": "Drawdown ID",
+            "lender_name": "Lender",
+            "creditor_facility_id": "Facility ID",
+            "loan_type": "Loan type",
+            "scheduled_future_total": "Scheduled future (total)",
+            "bucket_sum": "Bucket sum",
+        }
+    )
+    df_view = df.rename(columns=rename)
+
+    st.dataframe(df_view, hide_index=True, width="stretch", height=360)
+    _df_download(df, f"creditor_maturity_profile_{view_type}_{as_of.isoformat()}.csv", button_key="port_cl_mat_csv")
+
+
+def _report_gap_analysis(
+    as_of: date,
+    active_only: bool,
+    restructure_scope: frozenset[str] | None,
+) -> None:
+    render_sub_sub_header("Gap analysis (debtor vs creditor timing)")
+    st.caption(
+        "Sums **Debtor maturity profile** (balance-weighted to ``principal_not_due``) and **Creditor maturity "
+        "profile** (pure **scheduled** future flows) into the same tenor bucket labels. **Net** = inflows − "
+        "outflows; **Cumulative net** runs shortest-to-longest bucket. Restructure tags apply to **debtor** loans only."
+    )
+    view_type_label = st.radio(
+        "Maturity basis (both sides)",
+        ["Principal-only", "Full cash flow (principal + interest)"],
+        horizontal=True,
+        key="port_gap_mat_view",
+    )
+    view_type = "principal" if view_type_label.startswith("Principal") else "cash_flow"
+    try:
+        df = build_debtor_creditor_maturity_gap_summary(
+            as_of,
+            active_only=active_only,
+            view_type=view_type,
+            restructure_scope=restructure_scope,
+        )
+    except Exception as ex:
+        st.error(f"Could not build gap analysis: {ex}")
+        return
+    df_view = df.rename(
+        columns={
+            "bucket": "Tenor bucket",
+            "debtor_cash_inflows": "Debtor cash inflows",
+            "creditor_cash_outflows": "Creditor cash outflows",
+            "net_position": "Net (in − out)",
+            "cumulative_position": "Cumulative net",
+        }
+    )
+    st.dataframe(df_view, hide_index=True, width="stretch", height=320)
+    _df_download(
+        df,
+        f"liquidity_gap_maturity_{view_type}_{as_of.isoformat()}.csv",
+        button_key="port_gap_csv",
+    )
 
 
 def _shell_report(title: str, planned: list[str]) -> None:
@@ -294,6 +355,43 @@ def _report_arrears_aging(
     _df_download(df_view, "debtor_arrears_aging_buckets.csv", button_key="port_r21_csv")
 
 
+def _report_creditor_arrears_aging(as_of: date, active_only: bool) -> None:
+    render_sub_sub_header("Creditor arrears (ageing)")
+    st.caption(
+        "Same methodology as **Debtor loans arrears (ageing)**: principal and interest arrears are allocated to "
+        "past-due instalments (newest due first); penalty, default interest, and fees use daily state series when "
+        "available. **Active loans only** limits to drawdowns with status **active**."
+    )
+    try:
+        df = build_creditor_arrears_aging_report(as_of, active_only=active_only)
+    except Exception as ex:
+        st.error(f"Could not build creditor arrears ageing report: {ex}")
+        return
+    if df.empty:
+        st.info("No creditor drawdowns in arrears at this as-of date (or no daily state yet).")
+        return
+    rename = {k: lbl for k, lbl in zip(ARREARS_BUCKET_KEYS, ARREARS_BUCKET_LABELS, strict=True)}
+    rename.update(
+        {
+            "creditor_drawdown_id": "Drawdown ID",
+            "lender_name": "Lender",
+            "creditor_facility_id": "Facility ID",
+            "loan_type": "Loan type",
+            "state_as_of": "State as-of",
+            "days_overdue": "Days overdue",
+            "total_outstanding_balance": "Total outstanding balance",
+            "total_delinquency_arrears": "Total delinquency arrears",
+        }
+    )
+    df_view = df.rename(columns=rename)
+    st.dataframe(df_view, hide_index=True, width="stretch", height=360)
+    _df_download(
+        df_view,
+        f"creditor_arrears_aging_{as_of.isoformat()}.csv",
+        button_key="port_cl_arr_csv",
+    )
+
+
 def _report_debtor_maturity(
     as_of: date,
     active_only: bool,
@@ -354,7 +452,9 @@ def _report_regulatory_maturity_profile(
         "Debtor **cash inflows** are the same engine as **Debtor maturity profile**: `principal_not_due` from "
         "latest `loan_daily_state` on/before as-of, spread across **future** instalments by scheduled principal "
         "(or principal + interest in cash-flow view). Amounts are **re-bucketed** into regulatory bands "
-        "(0–7, 8–14, 15–30, …, 360+). **Cash outflows (maturing liabilities)** are **0** until creditor data is wired."
+        "(0–7, 8–14, 15–30, …, 360+). **Cash outflows** in the net summary below stay **0** (debtor-only table); "
+        "use **Gap analysis** for combined timing in standard maturity buckets, or **Creditor maturity profile** "
+        "for schedule-only liability cashflows."
     )
     view_type_label = st.radio(
         "Maturity basis",
@@ -1265,7 +1365,7 @@ def render_portfolio_reports_ui() -> None:
         rk = _sr2 if _sr2 else None
         report_open = bool(rk)
 
-    _no_snap = rk in ("ifrs", "r32", "r42", "shell_12", "shell_23", "shell_41", "shell_gap") if rk else True
+    _no_snap = rk in ("ifrs", "r32", "r42", "shell_12", "shell_23", "shell_41") if rk else True
     with c2:
         if report_open and not _no_snap:
             st.caption("As-of")
@@ -1332,15 +1432,11 @@ def render_portfolio_reports_ui() -> None:
     elif rk == "reg_mat":
         _report_regulatory_maturity_profile(as_of, active_only, restructure_scope)
     elif rk == "shell_12":
-        _report_creditor_maturity_profile(as_of)
+        _report_creditor_maturity_profile(as_of, active_only)
+    elif rk == "treas_cred_arrears":
+        _report_creditor_arrears_aging(as_of, active_only)
     elif rk == "shell_gap":
-        _shell_report(
-            "Gap analysis (debtor vs creditor timing)",
-            [
-                "Compare **debtor maturity** (cash inflows) vs **creditor maturity** (outflows) by period bucket.",
-                "Variance highlights liquidity gaps; needs both asset-side and liability-side maturity inputs.",
-            ],
-        )
+        _report_gap_analysis(as_of, active_only, restructure_scope)
     elif rk == "shell_23":
         _shell_report(
             "Migration analysis (roll rates)",
